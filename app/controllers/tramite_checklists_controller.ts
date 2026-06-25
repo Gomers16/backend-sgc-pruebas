@@ -5,6 +5,7 @@ import TramiteChecklist from '#models/tramite_checklist'
 const CAMPOS_CHECKLIST = [
   'tarjetaPropiedad',
   'soat',
+  'fotocopiaCedula',
   'runtVendedor',
   'runtComprador',
   'antecedentesComprador',
@@ -19,23 +20,6 @@ const CAMPOS_CHECKLIST = [
   'observaciones',
 ] as const
 
-const CHECKLIST_VACIO = {
-  id: null,
-  tarjetaPropiedad: false,
-  soat: false,
-  runtVendedor: false,
-  runtComprador: false,
-  antecedentesComprador: false,
-  antecedentesVendedor: false,
-  levantaPrendaOriginal: false,
-  inscribePrendaOriginal: false,
-  camaraComercio: false,
-  certificadoImpuestos: false,
-  declaracionExtrajuicio: false,
-  pazSalvoEmpresa: false,
-  cesionDerechoEmpresa: false,
-  observaciones: null,
-}
 
 export default class TramiteChecklistsController {
   /** GET /tramites/checklist?sedeId=&fecha=&turnoNumero= */
@@ -56,7 +40,7 @@ export default class TramiteChecklistsController {
         .first()
 
       if (!checklist) {
-        return response.ok({ ...CHECKLIST_VACIO, sedeId, fecha, turnoNumero })
+        return response.notFound({ message: 'No existe checklist para este turno' })
       }
 
       return response.ok(checklist)

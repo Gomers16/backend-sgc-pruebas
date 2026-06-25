@@ -62,6 +62,9 @@ export default class TramiteChecklist extends BaseModel {
   @column({ columnName: 'cesion_derecho_empresa' })
   declare cesionDerechoEmpresa: boolean | null
 
+  @column({ columnName: 'fotocopia_cedula' })
+  declare fotocopiaCedula: boolean | null
+
   @column()
   declare observaciones: string | null
 

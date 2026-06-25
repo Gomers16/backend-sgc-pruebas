@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import app from '@adonisjs/core/services/app'
+import { existsSync } from 'node:fs'
 import PdfkitTable from 'pdfkit-table'
 
 const PDFDocument = PdfkitTable as any
@@ -81,6 +82,16 @@ export default class TramiteLiquidacionesController {
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })
 
       const raw = request.only([...CAMPOS_LIQUIDACION])
+
+      const camposNegativos = CAMPOS_LIQUIDACION.filter(
+        (c) => raw[c] !== undefined && Number(raw[c]) < 0
+      )
+      if (camposNegativos.length > 0) {
+        return response.badRequest({
+          message: `Los valores de liquidación no pueden ser negativos: ${camposNegativos.join(', ')}`,
+        })
+      }
+
       const updates = Object.fromEntries(
         Object.entries(raw).filter(([, v]) => v !== undefined)
       )
@@ -148,7 +159,9 @@ export default class TramiteLiquidacionesController {
 
       // Logo
       const logoPath = app.makePath('storage/logo_tramites/logo_tramites_centro.png')
-      doc.image(logoPath, 50, 45, { width: 110 })
+      if (existsSync(logoPath)) {
+        doc.image(logoPath, 50, 45, { width: 110 })
+      }
       doc.moveDown(4)
 
       // Título

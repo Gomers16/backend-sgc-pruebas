@@ -184,6 +184,13 @@ export default class TramitesController {
 
       const hoyISO = fechaGuardar.toISODate()!
 
+      const cedulaNorm = String(raw.cedula).replace(/\D/g, '')
+      const tramiteExistente = await Tramite.query({ client: trx })
+        .where('sede_id', usuario.sedeId)
+        .where('fecha', hoyISO)
+        .where('cedula', cedulaNorm)
+        .first()
+
       // FIX 1: FOR UPDATE bloquea la lectura del máximo hasta que el INSERT confirme,
       // eliminando la race condition en creaciones concurrentes para la misma sede+fecha.
       const rowMax = await trx
@@ -229,7 +236,11 @@ export default class TramitesController {
       await tramite.load('sede')
       await tramite.load('servicio')
 
-      return response.created(tramite)
+      const payload: Record<string, unknown> = tramite.serialize()
+      if (tramiteExistente) {
+        payload.advertencia = `Ya existe un trámite con esta cédula hoy (Turno #${tramiteExistente.turnoNumero} — ${tramiteExistente.nombreCliente})`
+      }
+      return response.created(payload)
     } catch (error) {
       try {
         await (trx as any).rollback()
@@ -237,6 +248,115 @@ export default class TramitesController {
       console.error('Error al crear trámite:', error)
       return response.internalServerError({
         message: 'Error al crear el trámite',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /** POST /tramites/:turnoNumero/agregar — agrega un trámite a un turno existente */
+  public async agregarATurno({ params, request, response }: HttpContext) {
+    const trx = await Database.transaction()
+    try {
+      const turnoNumero = Number(params.turnoNumero)
+      const raw = request.only([
+        'usuarioId',
+        'servicioId',
+        'nombreCliente',
+        'cedula',
+        'telefono',
+        'email',
+        'placa',
+        'tipoTramite',
+        'observaciones',
+        'fecha',
+        'horaIngreso',
+      ])
+
+      if (!raw.usuarioId || !raw.servicioId || !raw.nombreCliente || !raw.cedula) {
+        await trx.rollback()
+        return response.badRequest({
+          message: 'Campos obligatorios: usuarioId, servicioId, nombreCliente, cedula',
+        })
+      }
+
+      const usuario = await Usuario.query({ client: trx })
+        .where('id', Number(raw.usuarioId))
+        .preload('sede')
+        .first()
+
+      if (!usuario || !usuario.sedeId) {
+        await trx.rollback()
+        return response.badRequest({
+          message: !usuario
+            ? `Usuario ${raw.usuarioId} no encontrado`
+            : 'Tu usuario no tiene sede asignada',
+        })
+      }
+
+      const servicio = await Servicio.find(Number(raw.servicioId))
+      if (!servicio) {
+        await trx.rollback()
+        return response.badRequest({ message: 'Servicio no encontrado' })
+      }
+
+      const fechaGuardar = raw.fecha
+        ? DateTime.fromISO(raw.fecha, { zone: 'America/Bogota' })
+        : DateTime.local().setZone('America/Bogota')
+
+      const hoyISO = fechaGuardar.toISODate()!
+      const horaIngreso =
+        raw.horaIngreso || DateTime.local().setZone('America/Bogota').toFormat('HH:mm')
+
+      const tramiteRef = await trx
+        .from('tramites')
+        .where('sede_id', usuario.sedeId)
+        .where('fecha', hoyISO)
+        .where('turno_numero', turnoNumero)
+        .select('turno_codigo')
+        .first()
+
+      if (!tramiteRef) {
+        await trx.rollback()
+        return response.notFound({
+          message: `No existe el turno #${turnoNumero} para la sede y fecha indicadas`,
+        })
+      }
+
+      const tramite = await Tramite.create(
+        {
+          sedeId: usuario.sedeId,
+          funcionarioId: usuario.id,
+          servicioId: servicio.id,
+          nombreCliente: String(raw.nombreCliente).trim(),
+          cedula: String(raw.cedula).replace(/\D/g, ''),
+          telefono: raw.telefono ? String(raw.telefono).replace(/\D/g, '') : null,
+          email: raw.email || null,
+          placa: raw.placa ? String(raw.placa).toUpperCase().trim() : null,
+          tipoTramite: raw.tipoTramite || null,
+          observaciones: raw.observaciones || null,
+          fecha: fechaGuardar,
+          horaIngreso,
+          turnoNumero,
+          turnoCodigo: tramiteRef.turno_codigo,
+          estado: 'en_espera',
+        } as any,
+        { client: trx }
+      )
+
+      await trx.commit()
+
+      await tramite.load('funcionario')
+      await tramite.load('sede')
+      await tramite.load('servicio')
+
+      return response.created(tramite)
+    } catch (error) {
+      try {
+        await (trx as any).rollback()
+      } catch {}
+      console.error('Error al agregar trámite al turno:', error)
+      return response.internalServerError({
+        message: 'Error al agregar el trámite',
         error: error instanceof Error ? error.message : String(error),
       })
     }
@@ -287,6 +407,9 @@ export default class TramitesController {
         }
       }
 
+      // Si el tipo efectivo (tras el update) no es TRASPASO, forzar incluyeCompraventa = false
+      const effectiveTipo = raw.tipoTramite ?? tramite.tipoTramite
+
       tramite.merge({
         ...(raw.tipoTramite ? { tipoTramite: raw.tipoTramite } : {}),
         ...(raw.estado ? { estado: raw.estado } : {}),
@@ -295,7 +418,9 @@ export default class TramitesController {
         ...(raw.placa !== undefined
           ? { placa: raw.placa ? String(raw.placa).toUpperCase().trim() : null }
           : {}),
-        ...(raw.incluyeCompraventa !== undefined ? { incluyeCompraventa: raw.incluyeCompraventa } : {}),
+        ...(effectiveTipo && effectiveTipo !== 'TRASPASO'
+          ? { incluyeCompraventa: false }
+          : (raw.incluyeCompraventa !== undefined ? { incluyeCompraventa: raw.incluyeCompraventa } : {})),
       })
 
       await tramite.save()

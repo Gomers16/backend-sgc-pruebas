@@ -75,8 +75,18 @@ export default defineConfig({
     ],
     forceExit: false,
   },
-  metaFiles: [{
-    pattern: 'public/**',
-    reloadServer: false,
-  }]
+  metaFiles: [
+    {
+      pattern: 'public/**',
+      reloadServer: false,
+    },
+    {
+      pattern: 'storage/runt/**',
+      reloadServer: false,
+    },
+    {
+      pattern: 'storage/logo_tramites/**',
+      reloadServer: false,
+    },
+  ]
 })

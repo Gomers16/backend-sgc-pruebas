@@ -9,6 +9,11 @@
 |
 */
 
+// Fijar zona horaria antes de que el servidor arrange y procese cualquier fecha.
+// Garantiza que DateTime.local(), new Date() y el driver MySQL2 usen Bogotá,
+// incluso en servidores Linux cuyo OS timezone es UTC.
+process.env.TZ = 'America/Bogota'
+
 import 'reflect-metadata'
 import { Ignitor, prettyPrintError } from '@adonisjs/core'
 

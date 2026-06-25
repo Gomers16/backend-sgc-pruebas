@@ -11,6 +11,10 @@
 |
 */
 
+// Fijar zona horaria antes de ejecutar cualquier comando Ace (migraciones,
+// seeders, etc.) para que las fechas calculadas correspondan a Bogotá.
+process.env.TZ = 'America/Bogota'
+
 import 'reflect-metadata'
 import { Ignitor, prettyPrintError } from '@adonisjs/core'
 

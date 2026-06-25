@@ -1682,6 +1682,17 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
       ])
 
+    router
+      .post('/tramites/:turnoNumero/agregar', async (ctx) => {
+        const { default: TramitesController } = await import('#controllers/tramites_controller')
+        return new TramitesController().agregarATurno(ctx)
+      })
+      .where('turnoNumero', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+      ])
+
     /* ========================== MANDATO ================================ */
 
     router

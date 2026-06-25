@@ -4,6 +4,7 @@ import app from '@adonisjs/core/services/app'
 
 import FormularioRunt from '#models/formulario_runt'
 import Tramite from '#models/tramite'
+import TramiteChecklist from '#models/tramite_checklist'
 
 const TIPO_TRAMITE_LABEL: Record<string, string> = {
   MATRICULA_REGISTRO:             'MATRICULA / REGISTRO',
@@ -122,6 +123,24 @@ const CLASE_VEHICULO_CELDAS: Record<string, string> = {
   otro:          'S19',
 }
 
+// Para exportPaqueteCompleto: el FORMULARIO lee estos checkmarks vía fórmulas =DATOS!Exx
+const CLASE_VEHICULO_DATOS_CELDAS: Record<string, string> = {
+  automovil:      'E20',
+  bus:            'F20',
+  buseta:         'G20',
+  camion:         'H20',
+  camioneta:      'I20',
+  campero:        'J20',
+  microbus:       'K20',
+  tractocamion:   'E22',
+  motocicleta:    'F22',
+  motocarro:      'G22',
+  mototriciciclo: 'H22',
+  cuatrimoto:     'I22',
+  volqueta:       'J22',
+  otro:           'K22',
+}
+
 const COMBUSTIBLE_CELDAS: Record<string, string> = {
   gasolina:  'AC8',
   diesel:    'AE8',
@@ -200,6 +219,8 @@ export default class FormulariosRuntController {
       const updates = Object.fromEntries(
         Object.entries(raw).filter(([, v]) => v !== undefined)
       )
+
+      if (typeof updates.placa === 'string') updates.placa = updates.placa.substring(0, 6)
 
       let formulario = await FormularioRunt.query()
         .where('tramite_id', tramite.id)
@@ -559,6 +580,8 @@ export default class FormulariosRuntController {
       const tramite = await Tramite.query()
         .where('id', Number(params.tramiteId))
         .preload('formularioRunt')
+        .preload('sede')
+        .preload('liquidacion')
         .first()
 
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })
@@ -595,8 +618,10 @@ export default class FormulariosRuntController {
       set('B7', formulario.propDireccion       ?? null)
       set('B8', formulario.propCiudad          ?? null)
 
-      // Comprador (solo cuando incluyeCompraventa)
-      if (tramite.incluyeCompraventa) {
+      // Comprador: solo TRASPASO con incluyeCompraventa activo.
+      // El else limpia explícitamente las celdas para no heredar datos
+      // residuales del template (que puede tener valores de prueba guardados).
+      if (tramite.tipoTramite === 'TRASPASO' && tramite.incluyeCompraventa) {
         set('B11', formulario.compPrimerApellido  ?? null)
         set('C11', formulario.compSegundoApellido ?? null)
         set('D11', formulario.compNombres         ?? null)
@@ -605,12 +630,26 @@ export default class FormulariosRuntController {
         set('B14', formulario.compCorreo          ?? null)
         set('B15', formulario.compDireccion       ?? null)
         set('B16', formulario.compCiudad          ?? null)
+      } else {
+        set('B11', null)
+        set('C11', null)
+        set('D11', null)
+        set('B12', null)
+        set('B13', null)
+        set('B14', null)
+        set('B15', null)
+        set('B16', null)
       }
 
       // Vehículo
       set('B19', formulario.placa          ?? null)
+      set('C19', formulario.placa?.substring(0, 3)  ?? null)
+      set('D19', formulario.placa?.substring(3)     ?? null)
       set('B20', formulario.modelo         ?? null)
       set('B21', formulario.claseVehiculo  ?? null)
+      if (formulario.claseVehiculo && CLASE_VEHICULO_DATOS_CELDAS[formulario.claseVehiculo]) {
+        set(CLASE_VEHICULO_DATOS_CELDAS[formulario.claseVehiculo], 'X')
+      }
       set('B22', formulario.marca          ?? null)
       set('B23', formulario.linea          ?? null)
       set('B24', formulario.color          ?? null)
@@ -622,6 +661,20 @@ export default class FormulariosRuntController {
       set('B30', formulario.noVin          ?? null)
       set('B31', formulario.cilindrada     ?? null)
       set('B32', formulario.capacidadKg    ?? null)
+      set('B33', formulario.potenciaHp     ?? null)
+      set('B34', formulario.cilindrada     ?? null)
+
+      // Fecha del contrato: ciudad, día, mes, año
+      set('E26', tramite.sede?.nombre      ?? null)
+      set('F26', tramite.fecha?.day   ?? null)
+      set('G26', tramite.fecha?.month ?? null)
+      set('H26', tramite.fecha?.year  ?? null)
+
+      // Valor vehículo, forma de pago, fecha entrega, destrate
+      set('B40', tramite.valorVehiculo  ?? null)
+      set('B41', tramite.formaPago      ?? null)
+      set('B42', tramite.fechaEntrega?.toFormat('dd/MM/yyyy') ?? null)
+      set('B44', tramite.destrate       ?? null)
 
       // Tipo de trámite — alimenta la fórmula =DATOS!B43 en " MANDATO"!P25
       set('B43', tramite.tipoTramite
@@ -639,6 +692,51 @@ export default class FormulariosRuntController {
         }
         setMandato('C11', formulario.mandatarioNombre    ?? null)
         setMandato('F13', formulario.mandatarioDocumento ?? null)
+      }
+
+      // ── Hoja "CHECK LIST": liquidación + checkmarks ──────────────────────
+      const wsCheck = workbook.getWorksheet('CHECK LIST')
+      if (wsCheck) {
+        const setK = (addr: string, value: ExcelJS.CellValue) => {
+          wsCheck.getCell(addr).value = value
+        }
+        const x = (v: boolean | null | undefined) => (v ? 'X' : null)
+
+        // Liquidación — columna B (filas 8-16)
+        const liq = tramite.liquidacion
+        if (liq) {
+          setK('B8',  liq.retencion          ?? null)
+          setK('B9',  liq.derechosTraspaso   ?? null)
+          setK('B10', liq.pazSalvo           ?? null)
+          setK('B11', liq.levantamientoPrenda ?? null)
+          setK('B12', liq.inscripcionPrenda  ?? null)
+          setK('B13', liq.papeleria          ?? null)
+          setK('B14', liq.honorarios         ?? null)
+          setK('B15', liq.impuestoAnioActual ?? null)
+          setK('B16', liq.impuestoAniosVencidos ?? null)
+        }
+
+        // Checklist — columna E (filas 8-21, orden = layout del template)
+        const cl = await TramiteChecklist.query()
+          .where('sede_id', tramite.sedeId)
+          .where('fecha', tramite.fecha.toSQLDate()!)
+          .where('turno_numero', tramite.turnoNumero)
+          .first()
+
+        setK('E8',  x(cl?.tarjetaPropiedad))
+        setK('E9',  x(cl?.soat))
+        setK('E10', x(cl?.fotocopiaCedula))
+        setK('E11', x(cl?.runtVendedor))
+        setK('E12', x(cl?.runtComprador))
+        setK('E13', x(cl?.antecedentesComprador))
+        setK('E14', x(cl?.antecedentesVendedor))
+        setK('E15', x(cl?.levantaPrendaOriginal))
+        setK('E16', x(cl?.inscribePrendaOriginal))
+        setK('E17', x(cl?.camaraComercio))
+        setK('E18', x(cl?.certificadoImpuestos))
+        setK('E19', x(cl?.declaracionExtrajuicio))
+        setK('E20', x(cl?.pazSalvoEmpresa))
+        setK('E21', x(cl?.cesionDerechoEmpresa))
       }
 
       // ── Serializar y enviar el workbook completo ──────────────────────────

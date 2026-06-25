@@ -23,3 +23,7 @@ yarn-error.log
 
 # Platform specific
 .DS_Store
+
+# Runtime uploads — archivos generados por usuarios, no van en el repo
+uploads/abonos/
+uploads/pagos/

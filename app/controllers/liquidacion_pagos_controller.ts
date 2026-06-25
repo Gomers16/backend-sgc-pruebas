@@ -129,6 +129,10 @@ export default class LiquidacionPagosController {
         return response.badRequest({ message: 'fecha y monto son requeridos' })
       }
 
+      if (!formaPago) {
+        return response.badRequest({ message: 'La forma de pago es obligatoria' })
+      }
+
       const fechaPago = DateTime.fromISO(fechaRaw, { zone: 'America/Bogota' })
       if (!fechaPago.isValid) {
         return response.badRequest({ message: 'fecha inválida — use formato YYYY-MM-DD' })
@@ -160,18 +164,21 @@ export default class LiquidacionPagosController {
 
       // ── Subida de evidencia ──────────────────────────────────────────────
       let evidenciaUrl: string | null = null
-      const evidencia = request.file('evidencia', {
-        size: '10mb',
-        extnames: ['jpg', 'jpeg', 'png', 'pdf', 'webp'],
-      })
+      const EXTS_EVIDENCIA = ['jpg', 'jpeg', 'jfif', 'png', 'pdf', 'webp']
+      const evidencia = request.file('evidencia', { size: '10mb' })
 
       if (evidencia && evidencia.tmpPath) {
         if (evidencia.hasErrors) {
-          return response.badRequest({ message: evidencia.errors[0]?.message ?? 'Archivo inválido' })
+          return response.badRequest({ message: evidencia.errors[0]?.message ?? 'Archivo demasiado grande (máx 10MB)' })
+        }
+        const ext = (evidencia.clientName?.split('.').pop() ?? '').toLowerCase()
+        if (!ext || !EXTS_EVIDENCIA.includes(ext)) {
+          return response.badRequest({
+            message: `Extensión .${ext || 'desconocida'} no permitida. Solo se aceptan: ${EXTS_EVIDENCIA.join(', ')}`,
+          })
         }
         const abonoDir = app.makePath('uploads', 'abonos')
         await mkdir(abonoDir, { recursive: true })
-        const ext  = evidencia.extname ?? 'png'
         const name = `abono-liq-${liquidacion.id}-${Date.now()}.${ext}`
         const dest = `${abonoDir}/${name}`
         await pipeline(createReadStream(evidencia.tmpPath), createWriteStream(dest))
@@ -216,7 +223,9 @@ export default class LiquidacionPagosController {
       const doc = new PDFDocument({ margin: 50, size: 'LETTER' })
 
       const logoPath = app.makePath('storage/logo_tramites/logo_tramites_centro.png')
-      doc.image(logoPath, 50, 45, { width: 110 })
+      if (existsSync(logoPath)) {
+        doc.image(logoPath, 50, 45, { width: 110 })
+      }
       doc.moveDown(4)
 
       doc
@@ -393,6 +402,9 @@ export default class LiquidacionPagosController {
       if (!dtInicio.isValid || !dtFin.isValid) {
         return response.badRequest({ message: 'Fechas inválidas — use formato YYYY-MM-DD' })
       }
+      if (dtInicio > dtFin) {
+        return response.badRequest({ message: 'La fecha de inicio no puede ser mayor que la fecha fin' })
+      }
 
       // ── 1. Pagos en el período ───────────────────────────────────────────
       const pagosEnPeriodo = await LiquidacionPago.query()
@@ -466,6 +478,7 @@ export default class LiquidacionPagosController {
             monto:          Number(p.monto),
             formaPago:      p.formaPago,
             referenciaPago: p.referenciaPago,
+            evidenciaUrl:   p.evidenciaUrl ?? null,
           })),
         })
       }
