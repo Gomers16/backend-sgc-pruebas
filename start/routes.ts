@@ -1336,6 +1336,26 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
       ])
 
+    router
+      .post('/comisiones/pagar-masivo', async (ctx) => {
+        const { default: ComisionesController } = await import('#controllers/comisiones_controller')
+        return new ComisionesController().pagarMasivo(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
+    router
+      .get('/comisiones/resumen-por-asesor', async (ctx) => {
+        const { default: ComisionesController } = await import('#controllers/comisiones_controller')
+        return new ComisionesController().resumenPorAsesor(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
     /* =============================== DESCUENTOS ======================== */
 
     router
@@ -1979,6 +1999,131 @@ router
         )
         return new HistoricoDateoRtmController().importar(ctx)
       })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    /* ======================== REPORTES ADMINISTRATIVOS ================= */
+    router
+      .group(() => {
+        router.get('/ingresos-canal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().ingresosPorCanal(ctx)
+        })
+        router.get('/produccion-lider', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().produccionPorLider(ctx)
+        })
+        router.get('/asesores', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().reporteAsesores(ctx)
+        })
+        router.get('/detalle-asesor', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().detallePorAsesor(ctx)
+        })
+        router.get('/detalle-canal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().detallePorCanal(ctx)
+        })
+        router.get('/retencion', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().retencionClientes(ctx)
+        })
+        router.get('/detalle-retencion', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().detallePorRetencion(ctx)
+        })
+        router.get('/servicios', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().reporteServicios(ctx)
+        })
+        router.get('/descuentos-por-tipo', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().descuentosPorTipo(ctx)
+        })
+        router.get('/descuentos-por-canal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().descuentosPorCanal(ctx)
+        })
+        router.get('/descuentos-por-autorizador', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().descuentosPorAutorizador(ctx)
+        })
+        router.get('/detalle-descuentos', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().detalleDescuentos(ctx)
+        })
+        router.get('/comisiones', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().reporteComisiones(ctx)
+        })
+        router.get('/detalle-comisiones', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().detalleComisiones(ctx)
+        })
+      })
+      .prefix('/reportes-admin')
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
+    /* ======================== TARIFAS POR SERVICIO ====================== */
+    router
+      .group(() => {
+        router.get('/', async (ctx) => {
+          const { default: TarifasServiciosController } = await import(
+            '#controllers/tarifas_servicios_controller'
+          )
+          return new TarifasServiciosController().index(ctx)
+        })
+        router.post('/', async (ctx) => {
+          const { default: TarifasServiciosController } = await import(
+            '#controllers/tarifas_servicios_controller'
+          )
+          return new TarifasServiciosController().store(ctx)
+        })
+        router.put('/:id', async (ctx) => {
+          const { default: TarifasServiciosController } = await import(
+            '#controllers/tarifas_servicios_controller'
+          )
+          return new TarifasServiciosController().update(ctx)
+        })
+        router.delete('/:id', async (ctx) => {
+          const { default: TarifasServiciosController } = await import(
+            '#controllers/tarifas_servicios_controller'
+          )
+          return new TarifasServiciosController().destroy(ctx)
+        })
+      })
+      .prefix('/tarifas-servicios')
       .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
   })
   .prefix('/api')

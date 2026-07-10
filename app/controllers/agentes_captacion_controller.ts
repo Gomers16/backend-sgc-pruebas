@@ -29,7 +29,12 @@ const DOC_TIPOS = new Set(['CC', 'NIT'])
 const ACTIVO_CALC_SQL = `
   CASE
     WHEN agentes_captacions.tipo IN ('ASESOR_COMERCIAL','ASESOR_TELEMERCADEO')
-      THEN CASE WHEN LOWER(usuarios.estado) = 'activo' THEN 1 ELSE 0 END
+      THEN CASE
+        WHEN agentes_captacions.usuario_id IS NULL
+          THEN CASE WHEN agentes_captacions.activo = TRUE THEN 1 ELSE 0 END
+        WHEN LOWER(usuarios.estado) = 'activo' THEN 1
+        ELSE 0
+      END
     ELSE CASE WHEN agentes_captacions.activo = TRUE THEN 1 ELSE 0 END
   END
 `

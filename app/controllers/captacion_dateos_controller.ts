@@ -189,7 +189,7 @@ export default class CaptacionDateosController {
   /** GET /captacion-dateos */
   public async index({ request }: HttpContext) {
     const page = Number(request.input('page', 1))
-    const perPage = Math.min(Number(request.input('perPage', 20)), 100)
+    const perPage = Math.min(Number(request.input('perPage', 20)), 1000)
 
     const placa = normalizePlaca(request.input('placa') as string | undefined)
     const telefono = normalizePhone(request.input('telefono') as string | undefined)
@@ -293,7 +293,7 @@ export default class CaptacionDateosController {
       }
     })
 
-    return { data, total: result.total, page: result.currentPage, perPage: result.perPage }
+    return { data, total: result.total, page: result.currentPage, perPage: result.perPage, lastPage: result.lastPage }
   }
 
   /** GET /captacion-dateos/:id */

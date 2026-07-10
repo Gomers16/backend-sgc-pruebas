@@ -465,7 +465,7 @@ export default class ProspectosController {
         : String(vigenteRaw) === 'true' || String(vigenteRaw) === '1'
 
     const page = Number(q.page ?? 1)
-    const perPage = Math.min(Number(q.perPage ?? 20), 200)
+    const perPage = Math.min(Number(q.perPage ?? 20), 1000)
     const sortBy = String(q.sortBy ?? 'updated_at')
     const order: 'asc' | 'desc' = String(q.order ?? 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc'
 
@@ -625,6 +625,7 @@ export default class ProspectosController {
       total: paginator.total,
       page: paginator.currentPage,
       perPage: paginator.perPage,
+      lastPage: paginator.lastPage,
     }
   }
 
