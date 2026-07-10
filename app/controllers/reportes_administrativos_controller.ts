@@ -723,7 +723,7 @@ export default class ReportesAdministrativosController {
     if (error) return response.badRequest({ message: error })
 
     const rows = (await Database.from('facturacion_tickets as ft')
-      .join('usuarios as u', 'u.id', 'ft.autorizado_por_id')
+      .leftJoin('usuarios as u', 'u.id', 'ft.autorizado_por_id')
       .where('ft.estado', 'CONFIRMADA')
       .whereNotNull('ft.descuento_id')
       .where('ft.descuento_monto_aplicado', '>', 0)
@@ -736,8 +736,8 @@ export default class ReportesAdministrativosController {
       .orderBy('cantidad', 'desc')) as any[]
 
     const porAutorizador = rows.map((r) => ({
-      usuario_id: Number(r.usuario_id),
-      nombre: r.nombre,
+      usuario_id: r.usuario_id ? Number(r.usuario_id) : null,
+      nombre: r.nombre ?? 'Sin autorizador',
       cantidad: Number(r.cantidad),
       total_descuentos: Number(r.total_descuentos) || 0,
     }))
@@ -999,8 +999,8 @@ export default class ReportesAdministrativosController {
     const estado = (request.input('estado') as string | undefined) || null
 
     const query = Database.from('comisiones as c')
-      .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
-      .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+      .leftJoin('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
+      .leftJoin('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
       .join('agentes_captacions as ag', 'ag.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
       .leftJoin('clientes as cl', 'cl.id', 't.cliente_id')
@@ -1039,7 +1039,7 @@ export default class ReportesAdministrativosController {
     const convenio = convenioId ? await Convenio.find(convenioId) : null
 
     const detalle = rows.map((r) => ({
-      placa: r.placa,
+      placa: r.placa ?? 'S/N',
       fecha: r.fecha,
       asesor_nombre: r.asesor_nombre,
       estado: r.estado,
