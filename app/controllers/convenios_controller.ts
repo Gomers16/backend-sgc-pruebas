@@ -23,7 +23,7 @@ export default class ConveniosController {
    */
   public async index({ request }: HttpContext) {
     const page = Number(request.input('page', 1))
-    const perPage = Math.min(Number(request.input('perPage', 10)), 100)
+    const perPage = Math.max(1, Math.min(Number(request.input('perPage', 10)) || 10, 100))
 
     const q = String(request.input('q') || '').trim()
     const activoParam = request.input('activo')
@@ -525,7 +525,7 @@ export default class ConveniosController {
       .filter(Boolean)
 
     const cols = selectRaw.length ? selectRaw : ['id', 'nombre']
-    const perPage = Math.min(Number(request.input('perPage', 100)), 500)
+    const perPage = Math.max(1, Math.min(Number(request.input('perPage', 100)) || 100, 500))
 
     const qb = Database.from('convenios').select(cols).limit(perPage)
     if (onlyActive) qb.where('activo', true)
