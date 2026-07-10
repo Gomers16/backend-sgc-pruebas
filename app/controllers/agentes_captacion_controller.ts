@@ -143,7 +143,7 @@ export default class AgentesCaptacionController {
    */
   public async index({ request }: HttpContext) {
     const page = Number(request.input('page', 1))
-    const perPage = Math.min(Number(request.input('perPage', 20)), 100)
+    const perPage = Math.min(Number(request.input('perPage', 20)), 1000)
     const q = String(request.input('q', '') || '').trim()
     const tipo = String(request.input('tipo', '') || '').trim()
     const activoParam = request.input('activo')
