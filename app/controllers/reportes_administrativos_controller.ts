@@ -51,12 +51,12 @@ export default class ReportesAdministrativosController {
     const rows = (await Database.from('facturacion_tickets')
       .where('estado', 'CONFIRMADA')
       .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select('captacion_canal')
+      .select(Database.raw("COALESCE(captacion_canal, 'FACHADA') as captacion_canal"))
       .count('* as cantidad')
       .sum('total as total_bruto')
       .sum('subtotal as total_neto')
       .avg('total as promedio_ticket')
-      .groupBy('captacion_canal')
+      .groupByRaw("COALESCE(captacion_canal, 'FACHADA')")
       .orderBy('total_bruto', 'desc')) as any[]
 
     const porCanal = rows.map((r) => ({
@@ -193,10 +193,38 @@ export default class ReportesAdministrativosController {
       total_neto: Number(r.total_neto) || 0,
     }))
 
+    // ===== Convenio (solo tickets captados por ASESOR_COMERCIAL — los de
+    // ASESOR_CONVENIO ya están en el segmento "Asesor Convenio", no se duplican) =====
+    const convenioRows = (await Database.from('facturacion_tickets')
+      .where('estado', 'CONFIRMADA')
+      .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .where('captacion_canal', 'ASESOR_COMERCIAL')
+      .whereNotNull('convenio_nombre')
+      .select('convenio_nombre')
+      .select(
+        Database.raw(
+          "GROUP_CONCAT(DISTINCT agente_comercial_nombre ORDER BY agente_comercial_nombre SEPARATOR ', ') as asesores"
+        )
+      )
+      .count('* as total_vehiculos')
+      .sum('total as total_bruto')
+      .sum('subtotal as total_neto')
+      .groupBy('convenio_nombre')
+      .orderBy('total_bruto', 'desc')) as any[]
+
+    const convenios = convenioRows.map((r) => ({
+      convenio_nombre: r.convenio_nombre,
+      asesores: r.asesores ?? '',
+      total_vehiculos: Number(r.total_vehiculos),
+      total_bruto: Number(r.total_bruto) || 0,
+      total_neto: Number(r.total_neto) || 0,
+    }))
+
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       asesores,
+      convenios,
     }
   }
 
@@ -282,7 +310,13 @@ export default class ReportesAdministrativosController {
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
       .where('ft.estado', 'CONFIRMADA')
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .where('ft.captacion_canal', canal)
+      .where((q) => {
+        if (canal === 'FACHADA') {
+          q.where('ft.captacion_canal', 'FACHADA').orWhereNull('ft.captacion_canal')
+        } else {
+          q.where('ft.captacion_canal', canal)
+        }
+      })
       .select(
         'ft.placa',
         'ft.captacion_canal',
@@ -403,10 +437,13 @@ export default class ReportesAdministrativosController {
 
     // ----- Por canal -----
     const canalRows = (await baseQuery()
-      .select('ft.captacion_canal as canal', Database.raw(`${CLASIFICACION_SQL} as categoria`))
+      .select(
+        Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"),
+        Database.raw(`${CLASIFICACION_SQL} as categoria`)
+      )
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
-      .groupBy('ft.captacion_canal')
+      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
       .groupByRaw(CLASIFICACION_SQL)) as any[]
 
     const canalMap = new Map<
@@ -414,7 +451,7 @@ export default class ReportesAdministrativosController {
       { canal: string; nuevos: number; recurrentes: number; recuperaciones: number; total: number; total_bruto: number }
     >()
     for (const r of canalRows) {
-      const canal = r.canal ?? 'SIN_CANAL'
+      const canal = r.canal
       if (!canalMap.has(canal)) {
         canalMap.set(canal, {
           canal,
@@ -506,13 +543,17 @@ export default class ReportesAdministrativosController {
     else if (categoria === 'RECURRENTE') query.where('t.es_recurrente', 1)
     else query.where('t.es_recuperacion', 1)
 
-    if (canal) query.where('ft.captacion_canal', canal)
+    if (canal === 'FACHADA') {
+      query.where((q) => q.where('ft.captacion_canal', 'FACHADA').orWhereNull('ft.captacion_canal'))
+    } else if (canal) {
+      query.where('ft.captacion_canal', canal)
+    }
 
     const rows = (await query
       .select(
         'ft.placa',
         Database.raw('DATE(t.fecha) as fecha'),
-        'ft.captacion_canal',
+        Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"),
         'ft.total',
         'ft.subtotal',
         'ft.tipo_vehiculo',
@@ -723,7 +764,7 @@ export default class ReportesAdministrativosController {
     if (error) return response.badRequest({ message: error })
 
     const rows = (await Database.from('facturacion_tickets as ft')
-      .leftJoin('usuarios as u', 'u.id', 'ft.autorizado_por_id')
+      .join('usuarios as u', 'u.id', 'ft.autorizado_por_id')
       .where('ft.estado', 'CONFIRMADA')
       .whereNotNull('ft.descuento_id')
       .where('ft.descuento_monto_aplicado', '>', 0)
@@ -736,8 +777,8 @@ export default class ReportesAdministrativosController {
       .orderBy('cantidad', 'desc')) as any[]
 
     const porAutorizador = rows.map((r) => ({
-      usuario_id: r.usuario_id ? Number(r.usuario_id) : null,
-      nombre: r.nombre ?? 'Sin autorizador',
+      usuario_id: Number(r.usuario_id),
+      nombre: r.nombre,
       cantidad: Number(r.cantidad),
       total_descuentos: Number(r.total_descuentos) || 0,
     }))
@@ -836,7 +877,8 @@ export default class ReportesAdministrativosController {
    * 3 tabs con datos ya agrupados por el tipo de fila que necesita cada uno:
    *  - comerciales: asesor tipo ASESOR_COMERCIAL, agrupado por asesor
    *  - asesores_convenio: asesor tipo ASESOR_CONVENIO, agrupado por asesor+convenio
-   *  - convenios: agrupado por convenio+asesor (comercial o convenio, cualquiera)
+   *  - convenios: agrupado por convenio+asesor, SOLO asesor comercial (los de
+   *    ASESOR_CONVENIO ya están en asesores_convenio, no se duplican aquí)
    *
    * El `estado` filtra las 3 tablas de tabs, pero NUNCA el resumen/KPIs
    * (resumen.por_estado se calcula siempre sobre el rango completo, sin
@@ -927,11 +969,13 @@ export default class ReportesAdministrativosController {
       estados: String(r.estados ?? ''),
     }))
 
-    // ===== Tab 3: Convenio (agrupado por convenio + asesor, cualquier tipo) =====
+    // ===== Tab 3: Convenio (solo asesor comercial referenciando un convenio —
+    // los asesores tipo ASESOR_CONVENIO ya están en el Tab 2, no se duplican aquí) =====
     const qConvenios = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .join('convenios as conv', 'conv.id', 'c.convenio_id')
       .where('c.es_config', false)
+      .where('a.tipo', 'ASESOR_COMERCIAL')
       .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
     if (estado) qConvenios.where('c.estado', estado)
 
@@ -999,8 +1043,8 @@ export default class ReportesAdministrativosController {
     const estado = (request.input('estado') as string | undefined) || null
 
     const query = Database.from('comisiones as c')
-      .leftJoin('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
-      .leftJoin('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+      .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
+      .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
       .join('agentes_captacions as ag', 'ag.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
       .leftJoin('clientes as cl', 'cl.id', 't.cliente_id')
@@ -1039,7 +1083,7 @@ export default class ReportesAdministrativosController {
     const convenio = convenioId ? await Convenio.find(convenioId) : null
 
     const detalle = rows.map((r) => ({
-      placa: r.placa ?? 'S/N',
+      placa: r.placa,
       fecha: r.fecha,
       asesor_nombre: r.asesor_nombre,
       estado: r.estado,

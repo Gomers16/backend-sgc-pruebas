@@ -548,12 +548,15 @@ export default class OcrController {
       } else if (mes >= 20 && mes <= 29) {
         mes = mes - 20
         console.log('🔧 OCR Backend: Mes 2X → 0X:', mes)
-      } else if (mes >= 80 && mes <= 89) {
-        mes = mes - 80
-        console.log('🔧 OCR Backend: Mes 8X → 0X:', mes)
+      } else if (mes >= 60 && mes <= 69) {
+        mes = mes - 60
+        console.log('🔧 OCR Backend: Mes 6X → 0X (confusión OCR 0↔6):', mes)
       } else if (mes >= 70 && mes <= 79) {
         mes = mes - 70
         console.log('🔧 OCR Backend: Mes 7X → 0X:', mes)
+      } else if (mes >= 80 && mes <= 89) {
+        mes = mes - 80
+        console.log('🔧 OCR Backend: Mes 8X → 0X:', mes)
       }
     }
 
@@ -611,6 +614,13 @@ export default class OcrController {
       mm = m[2].padStart(2, '0')
       const yRaw = m[3]
       yyyy = yRaw.length === 2 ? `20${yRaw}` : yRaw
+    }
+
+    const mmNum = Number(mm)
+    const ddNum = Number(dd)
+    if (mmNum < 1 || mmNum > 12 || ddNum < 1 || ddNum > 31) {
+      console.warn('⚠️ Fecha final fuera de rango tras corrección, descartando:', `${yyyy}-${mm}-${dd}`)
+      return null
     }
 
     const t = this.to24h((hora || '').trim() || '00:00')

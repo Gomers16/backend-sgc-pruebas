@@ -1631,7 +1631,7 @@ function sanitizeNit(v: string): string {
 
 function placaValida(placa?: string | null): boolean {
   if (!placa) return false
-  const rex = /^(?:[A-Z]{3}\d{3}|[A-Z]{3}\d{2}[A-Z]|\d{3}[A-Z]{3})$/
+  const rex = /^(?:[A-Z]{3}\d{3}|[A-Z]{3}\d{2}[A-Z]?|\d{3}[A-Z]{3})$/
   return rex.test(placa.toUpperCase())
 }
 

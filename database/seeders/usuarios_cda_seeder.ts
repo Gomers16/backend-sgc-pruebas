@@ -70,6 +70,8 @@ interface UsuarioDato {
   fechaRetiro: string | null
   estadoContrato: EstadoContrato
   password: string
+  salarioBasico?: number
+  auxilioTransporte?: number
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -113,7 +115,7 @@ const USUARIOS_DATA: UsuarioDato[] = [
     afpId: AFP.PORVENIR,
     arlId: ARL_DEFAULT,
     afcId: AFC_DEFAULT,
-    
+
     ccfId: CCF_DEFAULT,
     ...mc('DIRECTA', 'INDEFINIDO'),
     fechaIngreso: '2025-09-05',
@@ -745,6 +747,64 @@ const USUARIOS_DATA: UsuarioDato[] = [
     estadoContrato: 'activo',
     password: 'Jhondayro@lla',
   },
+
+  // ────────────────────────────────────────────────────────────────
+  // NUEVO — ROL: OPERATIVO_TURNOS | CARGO: ASESOR SERVICIO AL CLIENTE
+  // ────────────────────────────────────────────────────────────────
+  {
+    numeroDocumento: '1110620260',
+    apellidos: 'ALVIS',
+    nombres: 'JUAN',
+    celularPersonal: '',
+    correo: 'juana@cda.com',
+    tipoSangre: null,
+    fechaNacimiento: null,
+    direccion: undefined,
+    rolNombre: 'OPERATIVO_TURNOS',
+    cargoNombre: 'ASESOR SERVICIO AL CLIENTE',
+    epsId: EPS.NUEVA_EPS,
+    afpId: AFP.PORVENIR,
+    arlId: ARL_DEFAULT,
+    afcId: AFC_DEFAULT,
+    ccfId: CCF_DEFAULT,
+    tipoContrato: 'laboral',
+    terminoContrato: 'fijo',
+    fechaIngreso: '2026-06-20',
+    fechaRetiro: '2026-12-20',
+    estadoContrato: 'activo',
+    password: 'Juan2026*',
+    salarioBasico: 1750905,
+    auxilioTransporte: 249095,
+  },
+
+  // ────────────────────────────────────────────────────────────────
+  // NUEVO — ROL: COMERCIAL | CARGO: ASESOR CONVENIO
+  // ────────────────────────────────────────────────────────────────
+  {
+    numeroDocumento: '1110648391',
+    apellidos: 'GONGORA',
+    nombres: 'SONIA',
+    celularPersonal: '',
+    correo: 'soniag@cda.com',
+    tipoSangre: null,
+    fechaNacimiento: null,
+    direccion: undefined,
+    rolNombre: 'COMERCIAL',
+    cargoNombre: 'ASESOR CONVENIO',
+    epsId: EPS.NUEVA_EPS,
+    afpId: AFP.PORVENIR,
+    arlId: ARL_DEFAULT,
+    afcId: AFC_DEFAULT,
+    ccfId: CCF_DEFAULT,
+    tipoContrato: 'laboral',
+    terminoContrato: 'obra_o_labor_determinada',
+    fechaIngreso: '2026-06-20',
+    fechaRetiro: null,
+    estadoContrato: 'activo',
+    password: 'Sonia2026*',
+    salarioBasico: 0,
+    auxilioTransporte: 0,
+  },
 ]
 
 // ─────────────────────────────────────────────────────────────────
@@ -857,9 +917,9 @@ export default class UsuariosExcelSeeder extends BaseSeeder {
           await ContratoSalario.create(
             {
               contratoId: contrato.id,
-              salarioBasico: 0, // ⚠️ actualizar manualmente
+              salarioBasico: dato.salarioBasico ?? 0,
               bonoSalarial: 0,
-              auxilioTransporte: 0,
+              auxilioTransporte: dato.auxilioTransporte ?? 0,
               auxilioNoSalarial: 0,
               fechaEfectiva: fechaInicio,
             },

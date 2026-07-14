@@ -1145,58 +1145,69 @@ export default class ComisionesController {
   public async metasUpsert({ request, response }: HttpContext) {
     const payload = request.only([
       'asesor_id',
+      'tipo_vehiculo',
       'meta_mensual',
       'porcentaje_extra',
       'valor_rtm_moto',
       'valor_rtm_vehiculo',
     ])
 
-    const asesorId = payload.asesor_id ? Number(payload.asesor_id) : null
+    const asesorIdRaw = payload.asesor_id
+    const asesorId = asesorIdRaw ? Number(asesorIdRaw) : null
+
+    const rawTipo = payload.tipo_vehiculo
+    let tipoVehiculo: string | null = null
+    if (rawTipo !== undefined && rawTipo !== null && String(rawTipo).trim() !== '') {
+      const tv = String(rawTipo).toUpperCase()
+      if (!['MOTO', 'VEHICULO'].includes(tv))
+        return response.badRequest({
+          message: 'tipo_vehiculo inválido (MOTO o VEHICULO o vacío para Global)',
+        })
+      tipoVehiculo = tv
+    }
+
     const metaMensual = Math.max(0, toNumber(payload.meta_mensual))
     const porcentajeExtra = Math.max(0, toNumber(payload.porcentaje_extra))
     const valorRtmMoto = Math.max(0, toNumber(payload.valor_rtm_moto))
     const valorRtmVehiculo = Math.max(0, toNumber(payload.valor_rtm_vehiculo))
 
-    const upsertTipo = async (tipo: 'MOTO' | 'VEHICULO') => {
-      const q = Comision.query()
-        .where('es_config', true)
-        .where('tipo_vehiculo', tipo)
-      if (asesorId === null) q.whereNull('asesor_id')
-      else q.where('asesor_id', asesorId)
+    const existingQuery = Comision.query().where('es_config', true)
+    if (tipoVehiculo === null) existingQuery.whereNull('tipo_vehiculo')
+    else existingQuery.where('tipo_vehiculo', tipoVehiculo)
+    if (asesorId === null) existingQuery.whereNull('asesor_id')
+    else existingQuery.where('asesor_id', asesorId)
 
-      let row = await q.first()
-      if (!row) {
-        row = new Comision()
-        row.esConfig = true
-        row.captacionDateoId = null
-        row.asesorId = asesorId
-        row.convenioId = null
-        row.tipoServicio = 'OTRO'
-        ;(row as any).tipoVehiculo = tipo
-        row.base = '0'
-        row.monto = '0'
-        row.valorNuevoDirecto = '0'
-        row.valorPlacaVehiculo = null
-        row.valorPlacaMoto = null
-        row.porcentaje = '0'
-        row.estado = 'PENDIENTE'
-        row.fechaCalculo = DateTime.now()
-        row.metaRtm = 0
-        row.porcentajeComisionMeta = '0'
-        row.valorRtmMoto = 0
-        row.valorRtmVehiculo = 0
-      }
+    let comision = await existingQuery.first()
 
-      row.metaRtm = metaMensual
-      row.porcentajeComisionMeta = String(porcentajeExtra)
-      row.valorRtmMoto = valorRtmMoto
-      row.valorRtmVehiculo = valorRtmVehiculo
-      await row.save()
-      return row
+    if (!comision) {
+      comision = new Comision()
+      comision.esConfig = true
+      comision.captacionDateoId = null
+      comision.asesorId = asesorId
+      comision.convenioId = null
+      comision.tipoServicio = 'OTRO'
+      ;(comision as any).tipoVehiculo = tipoVehiculo
+      comision.base = '0'
+      comision.monto = '0'
+      comision.valorNuevoDirecto = '0'
+      comision.valorPlacaVehiculo = null
+      comision.valorPlacaMoto = null
+      comision.porcentaje = '0'
+      comision.estado = 'PENDIENTE'
+      comision.fechaCalculo = DateTime.now()
+      comision.metaRtm = 0
+      comision.porcentajeComisionMeta = '0'
+      comision.valorRtmMoto = 0
+      comision.valorRtmVehiculo = 0
     }
 
-    const [motoRow] = await Promise.all([upsertTipo('MOTO'), upsertTipo('VEHICULO')])
-    return response.ok(mapMetaToDto(motoRow))
+    comision.metaRtm = metaMensual
+    comision.porcentajeComisionMeta = String(porcentajeExtra)
+    comision.valorRtmMoto = valorRtmMoto
+    comision.valorRtmVehiculo = valorRtmVehiculo
+
+    await comision.save()
+    return response.ok(mapMetaToDto(comision))
   }
 
   public async metasUpdate({ params, request, response }: HttpContext) {
