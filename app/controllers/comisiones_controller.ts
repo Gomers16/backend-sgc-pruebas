@@ -11,8 +11,7 @@ import TurnoRtm from '#models/turno_rtm'
 function toNumber(v: any): number {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0
   if (typeof v === 'string') {
-    const cleaned = v.replace(/\./g, '').replace(',', '.')
-    const n = Number(cleaned)
+    const n = Number(v)
     return Number.isFinite(n) ? n : 0
   }
   return 0
