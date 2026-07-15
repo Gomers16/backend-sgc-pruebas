@@ -155,6 +155,14 @@ export default class CaptacionDateo extends BaseModel {
   declare comprobanteAvanceUrl: string | null
   // ========== FIN AVANCE ==========
 
+  // ========== 🆕 EXCEPCIÓN RTM_VIGENTE (SUPER_ADMIN / GERENCIA) ==========
+  @column({ columnName: 'aprobado_excepcion_por' })
+  declare aprobadoExcepcionPor: number | null
+
+  @column.dateTime({ columnName: 'aprobado_excepcion_at' })
+  declare aprobadoExcepcionAt: DateTime | null
+  // ========== FIN EXCEPCIÓN ==========
+
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime
 
@@ -197,6 +205,10 @@ export default class CaptacionDateo extends BaseModel {
 
   @belongsTo(() => Servicio, { foreignKey: 'servicioId' })
   declare servicio: BelongsTo<typeof Servicio>
+
+  // 🆕 Usuario que aprobó la excepción de días RTM_VIGENTE
+  @belongsTo(() => Usuario, { foreignKey: 'aprobadoExcepcionPor' })
+  declare aprobadoExcepcionUsuario: BelongsTo<typeof Usuario>
 
   // ===== Normalización =====
   @beforeSave()

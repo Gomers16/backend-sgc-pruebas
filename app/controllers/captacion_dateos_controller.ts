@@ -76,6 +76,13 @@ function toSnake(row: any) {
     es_avance: row.esAvance ?? false,
     comprobante_avance_url: row.comprobanteAvanceUrl ?? null,
     // ================================
+    // 🆕 Excepción RTM_VIGENTE (SUPER_ADMIN / GERENCIA)
+    aprobado_excepcion_por: row.aprobadoExcepcionPor ?? null,
+    aprobado_excepcion_at: row.aprobadoExcepcionAt ?? null,
+    aprobado_excepcion_por_nombre: row.aprobadoExcepcionUsuario
+      ? `${row.aprobadoExcepcionUsuario.nombres ?? ''} ${row.aprobadoExcepcionUsuario.apellidos ?? ''}`.trim() ||
+        null
+      : null,
   }
 }
 
@@ -228,6 +235,7 @@ export default class CaptacionDateosController {
       .preload('agente')
       .preload('convenio', (qb) => qb.select(['id', 'nombre']))
       .preload('descuento') // 🆕
+      .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕
 
     if (placa) q.andWhere('placa', placa)
     if (telefono) q.andWhere('telefono', telefono)
@@ -303,6 +311,7 @@ export default class CaptacionDateosController {
       .preload('agente')
       .preload('convenio', (qb) => qb.select(['id', 'nombre']))
       .preload('descuento') // 🆕
+      .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕
       .first()
 
     if (!item) return response.notFound({ message: 'Dateo no encontrado' })
@@ -609,6 +618,14 @@ export default class CaptacionDateosController {
     }
     // VALIDACIÓN 2: Bloquear si tiene RTM vigente — solo aplica si el dateo es para RTM
 
+    // 🆕 Excepción controlada para SUPER_ADMIN/GERENCIA: si confirman explícitamente,
+    // se permite continuar aunque exceda la ventana de días permitida.
+    const confirmarExcepcion =
+      request.input('confirmar_excepcion') === true ||
+      request.input('confirmar_excepcion') === 'true'
+
+    let excepcionRtmAprobada = false
+
     if (esDateoParaRtm) {
       const lastRtmFinalizado = await TurnoRtm.query()
         .where('placa', placa!)
@@ -627,16 +644,35 @@ export default class CaptacionDateosController {
         const ventanaPrevia = caducaEl.minus({ days: diasVentanaPreRtm() })
 
         if (hoy < ventanaPrevia) {
-          return response.conflict({
-            code: 'RTM_VIGENTE',
-            message: `Esta placa tiene RTM vigente hasta ${caducaEl.toFormat('dd/LL/yyyy')}. Podrá datear a partir del ${ventanaPrevia.toFormat('dd/LL/yyyy')}.`,
-            turnoId: lastRtmFinalizado.id,
-            turnoNumero: lastRtmFinalizado.turnoNumero,
-            fechaRtm: fechaUltimoRtm.toISODate(),
-            validoHasta: caducaEl.toISODate(),
-            diasRestantes: Math.ceil(caducaEl.diff(hoy, 'days').days),
-            puedeDataearDesde: ventanaPrevia.toISODate(),
-          })
+          const diasExcedidos = Math.ceil(ventanaPrevia.diff(hoy, 'days').days)
+
+          if (esPrivilegiado && confirmarExcepcion) {
+            // El admin ya confirmó la excepción: se deja continuar y se registra abajo.
+            excepcionRtmAprobada = true
+          } else if (esPrivilegiado) {
+            return response.conflict({
+              code: 'RTM_VIGENTE_EXCEPCION_DISPONIBLE',
+              message: `Esta placa tiene RTM vigente hasta ${caducaEl.toFormat('dd/LL/yyyy')}. Excede el límite permitido por ${diasExcedidos} día(s).`,
+              turnoId: lastRtmFinalizado.id,
+              turnoNumero: lastRtmFinalizado.turnoNumero,
+              fechaRtm: fechaUltimoRtm.toISODate(),
+              validoHasta: caducaEl.toISODate(),
+              diasRestantes: Math.ceil(caducaEl.diff(hoy, 'days').days),
+              puedeDataearDesde: ventanaPrevia.toISODate(),
+              diasExcedidos,
+            })
+          } else {
+            return response.conflict({
+              code: 'RTM_VIGENTE',
+              message: `Esta placa tiene RTM vigente hasta ${caducaEl.toFormat('dd/LL/yyyy')}. Podrá datear a partir del ${ventanaPrevia.toFormat('dd/LL/yyyy')}.`,
+              turnoId: lastRtmFinalizado.id,
+              turnoNumero: lastRtmFinalizado.turnoNumero,
+              fechaRtm: fechaUltimoRtm.toISODate(),
+              validoHasta: caducaEl.toISODate(),
+              diasRestantes: Math.ceil(caducaEl.diff(hoy, 'days').days),
+              puedeDataearDesde: ventanaPrevia.toISODate(),
+            })
+          }
         }
       }
     }
@@ -680,6 +716,9 @@ export default class CaptacionDateosController {
         (turnoActivoHoy.servicio?.codigoServicio ?? '').toUpperCase() === codigoServicioDateo
           ? DateTime.now()
           : undefined,
+      // 🆕 Excepción RTM_VIGENTE: se registra quién (usuario logueado) aprobó, no el asesor
+      aprobadoExcepcionPor: excepcionRtmAprobada ? auth.user!.id : undefined,
+      aprobadoExcepcionAt: excepcionRtmAprobada ? DateTime.now() : undefined,
     })
     if (placa) {
       try {
