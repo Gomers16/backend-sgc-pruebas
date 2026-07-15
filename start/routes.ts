@@ -797,6 +797,31 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
       ])
 
+    // ⏱ Configuración de horas de exclusividad del dateo (buildReserva)
+    router
+      .get('/captacion-dateos/config/exclusividad', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().exclusividadConfigGet(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ])
+
+    router
+      .post('/captacion-dateos/config/exclusividad', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().exclusividadConfigUpsert(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }),
+      ])
+
     router
       .get('/captacion-dateos/:id', async (ctx) => {
         const { default: CaptacionDateosController } = await import(

@@ -14,6 +14,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import FacturacionTicket from '#models/facturacion_ticket'
 import AgenteCaptacion from '#models/agente_captacion'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
+import { buildReserva } from '#services/reserva_dateo_service'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -47,34 +48,6 @@ function bloqueoMesesPorServicio(codigo?: string): number {
   const c = (codigo || '').toUpperCase()
   if (c === 'RTM' || c === 'SOAT') return 12
   return 0
-}
-
-function ttlSinConsumir(): number {
-  return Number(process.env.TTL_SIN_CONSUMIR_DIAS ?? 7)
-}
-function ttlPostConsumo(): number {
-  return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
-}
-function buildReserva(d: CaptacionDateo) {
-  const now = new Date()
-  let vigente = false
-  let bloqueaHasta: Date | null = null
-
-  if (d.consumidoTurnoId && d.consumidoAt) {
-    const hasta = new Date(d.consumidoAt.toJSDate().getTime())
-    hasta.setDate(hasta.getDate() + ttlPostConsumo())
-    vigente = now < hasta
-    bloqueaHasta = hasta
-  } else {
-    const created = d.createdAt?.toJSDate()
-    if (created) {
-      const hasta = new Date(created.getTime())
-      hasta.setDate(hasta.getDate() + ttlSinConsumir())
-      vigente = now < hasta
-      bloqueaHasta = hasta
-    }
-  }
-  return { vigente, bloqueaHasta }
 }
 
 const normalizeCanal = (v?: string): CanalAtrib | null => {
@@ -603,7 +576,7 @@ export default class TurnosRtmController {
       let nextGlobal: number
       let reasignadoDeTurnoId: number | null = null
 
-      if (huecoGlobal?.slot_libre != null) {
+      if (huecoGlobal?.slot_libre !== null) {
         nextGlobal = Number(huecoGlobal.slot_libre)
         reasignadoDeTurnoId = Number(huecoGlobal.id)
       } else {
@@ -621,7 +594,7 @@ export default class TurnosRtmController {
 
       let nextPorServicio: number
 
-      if (huecoServicio?.slot_svc_libre != null) {
+      if (huecoServicio?.slot_svc_libre !== null) {
         nextPorServicio = Number(huecoServicio.slot_svc_libre)
       } else {
         const rowSvc = await trx
@@ -744,7 +717,7 @@ export default class TurnosRtmController {
       let esAvanceHeredado: boolean = false
 
       if (dateo) {
-        const r = buildReserva(dateo)
+        const r = await buildReserva(dateo)
         if (r.vigente) {
           const cRaw = (dateo as any).canal as string | undefined
           const cNorm = normalizeCanal(cRaw)
@@ -1382,15 +1355,13 @@ export default class TurnosRtmController {
       const hoy = DateTime.local().setZone('America/Bogota').toISODate()!
 
       // Hueco global disponible (slot más pequeño liberado por un cancelado)
-      const slotsClamadosSig = Database
-        .from('turnos_rtms')
+      const slotsClamadosSig = Database.from('turnos_rtms')
         .select('reasignado_de_turno_id')
         .where('sede_id', usuarioSolicitante.sedeId)
         .where('fecha', hoy)
         .whereNotNull('reasignado_de_turno_id')
 
-      const huecoGlobalSig = await Database
-        .from('turnos_rtms')
+      const huecoGlobalSig = await Database.from('turnos_rtms')
         .select(Database.raw('ABS(turno_numero) AS slot_libre'))
         .where('sede_id', usuarioSolicitante.sedeId)
         .where('fecha', hoy)
@@ -1402,7 +1373,7 @@ export default class TurnosRtmController {
         .first()
 
       let siguiente: number
-      if (huecoGlobalSig?.slot_libre != null) {
+      if (huecoGlobalSig?.slot_libre !== null) {
         siguiente = Number(huecoGlobalSig.slot_libre)
       } else {
         const rowGlobal = await Database.from('turnos_rtms')
@@ -1431,8 +1402,7 @@ export default class TurnosRtmController {
           sid = s.id
         }
 
-        const huecoSvcSig = await Database
-          .from('turnos_rtms')
+        const huecoSvcSig = await Database.from('turnos_rtms')
           .select(Database.raw('ABS(turno_numero_servicio) AS slot_svc_libre'))
           .where('sede_id', usuarioSolicitante.sedeId)
           .where('fecha', hoy)
@@ -1443,7 +1413,7 @@ export default class TurnosRtmController {
           .limit(1)
           .first()
 
-        if (huecoSvcSig?.slot_svc_libre != null) {
+        if (huecoSvcSig?.slot_svc_libre !== null) {
           siguientePorServicio = Number(huecoSvcSig.slot_svc_libre)
         } else {
           const rowSvc = await Database.from('turnos_rtms')

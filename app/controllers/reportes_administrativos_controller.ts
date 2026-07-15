@@ -126,15 +126,55 @@ export default class ReportesAdministrativosController {
       }
     }
 
-    const porSede = rows.map((r) => ({
-      sede_nombre: r.sede_nombre,
-      lider_nombre: r.sede_id
-        ? (liderPorSede.get(Number(r.sede_id)) ?? 'Sin líder asignado')
-        : 'Sin líder asignado',
-      vehiculos: Number(r.vehiculos),
-      total_bruto: Number(r.total_bruto) || 0,
-      total_neto: Number(r.total_neto) || 0,
-    }))
+    // ===== Desglose por servicio (RTM/SOAT/PREV/PERI) =====
+    // Turnos ATENDIDOS (turnos_rtms), no facturación: SOAT/PREV/PERI no generan
+    // ticket en este entorno (ver reporteServicios), así que facturacion_tickets
+    // no sirve para este conteo. Vehículos/Total Bruto/Total Neto de arriba
+    // siguen siendo de facturacion_tickets — por eso pueden no coincidir.
+    const turnosPorServicio = (await Database.from('turnos_rtms as t')
+      .join('servicios as s', 's.id', 't.servicio_id')
+      .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereRaw("t.placa NOT LIKE 'TST%'")
+      .select('t.sede_id', 's.codigo_servicio')
+      .count('* as turnos')
+      .groupBy('t.sede_id', 's.codigo_servicio')) as any[]
+
+    const SERVICIOS_DESGLOSE = ['RTM', 'SOAT', 'PREV', 'PERI'] as const
+    const serviciosPorSede = new Map<number, Record<(typeof SERVICIOS_DESGLOSE)[number], number>>()
+    for (const r of turnosPorServicio) {
+      const sedeId = r.sede_id === null ? null : Number(r.sede_id)
+      if (sedeId === null) continue
+      if (!serviciosPorSede.has(sedeId)) {
+        serviciosPorSede.set(sedeId, { RTM: 0, SOAT: 0, PREV: 0, PERI: 0 })
+      }
+      const codigo = String(r.codigo_servicio).toUpperCase() as (typeof SERVICIOS_DESGLOSE)[number]
+      if (SERVICIOS_DESGLOSE.includes(codigo)) {
+        serviciosPorSede.get(sedeId)![codigo] = Number(r.turnos)
+      }
+    }
+
+    const porSede = rows.map((r) => {
+      const sedeId = r.sede_id === null ? null : Number(r.sede_id)
+      const servicios = (sedeId !== null && serviciosPorSede.get(sedeId)) || {
+        RTM: 0,
+        SOAT: 0,
+        PREV: 0,
+        PERI: 0,
+      }
+      return {
+        sede_nombre: r.sede_nombre,
+        lider_nombre: sedeId !== null
+          ? (liderPorSede.get(sedeId) ?? 'Sin líder asignado')
+          : 'Sin líder asignado',
+        vehiculos: Number(r.vehiculos),
+        total_bruto: Number(r.total_bruto) || 0,
+        total_neto: Number(r.total_neto) || 0,
+        turnos_rtm: servicios.RTM,
+        turnos_soat: servicios.SOAT,
+        turnos_prev: servicios.PREV,
+        turnos_peri: servicios.PERI,
+      }
+    })
 
     return {
       fecha_inicio: fechaInicio,

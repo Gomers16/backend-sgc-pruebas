@@ -13,6 +13,7 @@ import Prospecto from '#models/prospecto'
 import Descuento from '#models/descuento' // 🆕
 import Servicio from '#models/servicio' // 🆕 servicio del dateo
 import Comision from '#models/comision'
+import { buildReserva, invalidateHorasExclusividadCache } from '#services/reserva_dateo_service'
 
 /* ======================= Constantes / Tipos ======================= */
 const CANALES_DB = ['FACHADA', 'ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELE', 'REDES'] as const
@@ -31,23 +32,10 @@ function normalizePlaca(v?: string | null) {
 function normalizePhone(v?: string | null) {
   return v ? v.replace(/\D/g, '') : (v ?? null)
 }
-function ttlSinConsumir() {
-  return Number(process.env.TTL_SIN_CONSUMIR_DIAS ?? 7)
-}
-function ttlPostConsumo() {
-  return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
-}
 function diasVentanaPreRtm() {
   return Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
 }
-/** Reserva/ventana de exclusividad */
-function buildReserva(d: CaptacionDateo) {
-  const now = DateTime.now()
-  const base = d.consumidoTurnoId && d.consumidoAt ? d.consumidoAt : d.createdAt
-  const days = d.consumidoTurnoId && d.consumidoAt ? ttlPostConsumo() : ttlSinConsumir()
-  const hasta = base.plus({ days })
-  return { vigente: now < hasta, bloqueaHasta: hasta.toISO() }
-}
+/** Reserva/ventana de exclusividad — ver #services/reserva_dateo_service */
 
 /** Formato AM/PM Bogotá */
 function fmtBogotaAmPm(iso?: string) {
@@ -115,6 +103,54 @@ function serializeTurnoInfo(t: any | null) {
 }
 
 export default class CaptacionDateosController {
+  /**
+   * GET /captacion-dateos/config/exclusividad
+   * Devuelve las horas de exclusividad configuradas para buildReserva()
+   * (bloqueo de placa/teléfono mientras el dateo esté sin consumir).
+   */
+  public async exclusividadConfigGet({ response }: HttpContext) {
+    const { default: ConfiguracionReservaDateo } = await import(
+      '#models/configuracion_reserva_dateo'
+    )
+
+    let config = await ConfiguracionReservaDateo.query().first()
+    if (!config) {
+      config = await ConfiguracionReservaDateo.create({ horasExclusividad: 60 } as any)
+    }
+
+    return response.ok({ horas_exclusividad: config.horasExclusividad })
+  }
+
+  /**
+   * POST /captacion-dateos/config/exclusividad
+   * Actualiza las horas de exclusividad. body: { horas_exclusividad }
+   */
+  public async exclusividadConfigUpsert({ request, response }: HttpContext) {
+    const { default: ConfiguracionReservaDateo } = await import(
+      '#models/configuracion_reserva_dateo'
+    )
+
+    const raw = request.input('horas_exclusividad')
+    const horas = Math.trunc(Number(raw))
+    if (!Number.isFinite(horas) || horas <= 0) {
+      return response.badRequest({
+        message: 'horas_exclusividad debe ser un número entero mayor a 0',
+      })
+    }
+
+    let config = await ConfiguracionReservaDateo.query().first()
+    if (!config) {
+      config = await ConfiguracionReservaDateo.create({ horasExclusividad: horas } as any)
+    } else {
+      config.horasExclusividad = horas
+      await config.save()
+    }
+
+    invalidateHorasExclusividadCache()
+
+    return response.ok({ horas_exclusividad: config.horasExclusividad })
+  }
+
   /**
    * POST /captacion-dateos/verificar-vencidos
    *
@@ -301,7 +337,13 @@ export default class CaptacionDateosController {
       }
     })
 
-    return { data, total: result.total, page: result.currentPage, perPage: result.perPage, lastPage: result.lastPage }
+    return {
+      data,
+      total: result.total,
+      page: result.currentPage,
+      perPage: result.perPage,
+      lastPage: result.lastPage,
+    }
   }
 
   /** GET /captacion-dateos/:id */
@@ -342,7 +384,7 @@ export default class CaptacionDateosController {
       turnoInfo = serializeTurnoInfo(t)
     }
 
-    const reserva = buildReserva(item)
+    const reserva = await buildReserva(item)
     return { ...toSnake(out), reserva, turnoInfo }
   }
   /**
@@ -565,7 +607,7 @@ export default class CaptacionDateosController {
       .first()
 
     if (ultimo) {
-      const reserva = buildReserva(ultimo)
+      const reserva = await buildReserva(ultimo)
       if (reserva.vigente) {
         const u = ultimo.serialize() as any
         return response.status(409).send({
@@ -915,9 +957,9 @@ export default class CaptacionDateosController {
           const tipoServicio = (
             (turnoParaComision as any).servicio?.codigoServicio ?? 'RTM'
           ).toUpperCase()
-          const tipoVehiculo: 'MOTO' | 'VEHICULO' = (turnoParaComision as any).tipoVehiculo?.includes(
-            'Motocicleta'
-          )
+          const tipoVehiculo: 'MOTO' | 'VEHICULO' = (
+            turnoParaComision as any
+          ).tipoVehiculo?.includes('Motocicleta')
             ? 'MOTO'
             : 'VEHICULO'
 
@@ -980,13 +1022,21 @@ export default class CaptacionDateosController {
           const esMoto = tipoVehiculo === 'MOTO'
           let valorRecurrente = Number(
             esMoto
-              ? (globalCfg?.valor_dateo_recurrencia_moto ?? globalCfg?.valor_dateo_recurrencia ?? 4300)
-              : (globalCfg?.valor_dateo_recurrencia_vehiculo ?? globalCfg?.valor_dateo_recurrencia ?? 4300)
+              ? (globalCfg?.valor_dateo_recurrencia_moto ??
+                  globalCfg?.valor_dateo_recurrencia ??
+                  4300)
+              : (globalCfg?.valor_dateo_recurrencia_vehiculo ??
+                  globalCfg?.valor_dateo_recurrencia ??
+                  4300)
           )
           let valorRecuperacion = Number(
             esMoto
-              ? (globalCfg?.valor_dateo_recuperacion_moto ?? globalCfg?.valor_dateo_recuperacion ?? 8600)
-              : (globalCfg?.valor_dateo_recuperacion_vehiculo ?? globalCfg?.valor_dateo_recuperacion ?? 8600)
+              ? (globalCfg?.valor_dateo_recuperacion_moto ??
+                  globalCfg?.valor_dateo_recuperacion ??
+                  8600)
+              : (globalCfg?.valor_dateo_recuperacion_vehiculo ??
+                  globalCfg?.valor_dateo_recuperacion ??
+                  8600)
           )
           if (asesorId) {
             const asesorCfg = await db
@@ -1004,8 +1054,7 @@ export default class CaptacionDateosController {
           const esRecurrente = Boolean((turnoParaComision as any).esRecurrente)
           const esRecuperacion = Boolean((turnoParaComision as any).esRecuperacion)
           const esClienteNuevo = !esRecurrente && !esRecuperacion
-          const esAsesorConvenio =
-            item.canal === 'ASESOR_CONVENIO' || asesorId === asesorConvenioId
+          const esAsesorConvenio = item.canal === 'ASESOR_CONVENIO' || asesorId === asesorConvenioId
 
           let montoAsesor = 0
           let montoConvenio = 0
@@ -1096,7 +1145,7 @@ export default class CaptacionDateosController {
       turnoInfo = serializeTurnoInfo(t)
     }
 
-    const reserva = buildReserva(item)
+    const reserva = await buildReserva(item)
     return { ...toSnake(out), reserva, turnoInfo }
   }
   /** DELETE /captacion-dateos/:id */

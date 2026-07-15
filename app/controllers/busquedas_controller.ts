@@ -8,6 +8,7 @@ import Prospecto from '#models/prospecto'
 import Convenio from '#models/convenio'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import TurnoRtm from '#models/turno_rtm'
+import { buildReserva } from '#services/reserva_dateo_service'
 
 type CanalSimple = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
 
@@ -22,37 +23,6 @@ function normalizePlaca(v?: string | null) {
 }
 function normalizePhone(v?: string | null) {
   return v ? v.replace(/\D/g, '') : null
-}
-
-function ttlSinConsumir(): number {
-  return Number(process.env.TTL_SIN_CONSUMIR_DIAS ?? 7)
-}
-function ttlPostConsumo(): number {
-  return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
-}
-
-function buildReserva(d: CaptacionDateoInstance) {
-  const now = new Date()
-  let vigente = false
-  let bloqueaHasta: Date | null = null
-
-  if (d.consumidoTurnoId && d.consumidoAt) {
-    const hasta = new Date(d.consumidoAt.toJSDate().getTime())
-    hasta.setDate(hasta.getDate() + ttlPostConsumo())
-    vigente = now < hasta
-    bloqueaHasta = hasta
-  } else if (d.createdAt) {
-    const created = d.createdAt.toJSDate()
-    const hasta = new Date(created.getTime())
-    hasta.setDate(hasta.getDate() + ttlSinConsumir())
-    vigente = now < hasta
-    bloqueaHasta = hasta
-  }
-
-  return {
-    vigente,
-    bloqueaHasta: bloqueaHasta ? bloqueaHasta.toISOString() : null,
-  }
 }
 
 /** Asesor activo asignado a un convenio (si existe) */
@@ -219,7 +189,7 @@ export default class BusquedasController {
     let reserva: { vigente: boolean; bloqueaHasta: string | null } | null = null
 
     if (dateo) {
-      const r = buildReserva(dateo)
+      const r = await buildReserva(dateo)
       reserva = r
       if (r.vigente) {
         const conv = (dateo as any).convenio
@@ -320,7 +290,7 @@ export default class BusquedasController {
       await dateo.load('agente')
       await dateo.load('convenio')
 
-      const r = buildReserva(dateo)
+      const r = await buildReserva(dateo)
       const conv = (dateo as any).convenio
         ? {
             id: (dateo as any).convenio.id,
