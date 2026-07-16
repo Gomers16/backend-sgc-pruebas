@@ -83,35 +83,35 @@ interface ConteoDiarioMeta {
  * Conteo diario (zero-filled, un registro por cada día del mes, sin huecos)
  * de turnos RTM finalizados para un mes/año, separado en livianos/motos.
  *
- * Regla de fuente — se auto-resuelve con el tiempo, no requiere tocar
- * código a futuro:
- *   1. Si turnos_rtms tiene AL MENOS un registro finalizado ese mes/año,
- *      se usa turnos_rtms (dato real).
- *   2. Si no tiene ninguno, se usa historico_meta_diario como respaldo.
- *   3. Si NINGUNA de las dos fuentes tiene datos para ese mes/año (ej.
- *      mayo/2025, que no se cargó), se retorna `dias: []` y
- *      `fuente: 'sin_datos'` — el llamador NO debe fabricar ceros ahí,
- *      ya que "sin datos" y "cero turnos" son cosas distintas.
+ * Regla de fuente — CORTE POR FECHA FIJO (ya no por disponibilidad de datos):
+ *   1. Meses ANTERIORES a junio 2026 (2025 completo + 2026 ene-may) →
+ *      SIEMPRE historico_meta_diario. Si ese mes no tiene filas cargadas
+ *      (ej. mayo/2025), se retorna `dias: []` y `fuente: 'sin_datos'`.
+ *   2. Meses junio 2026 en adelante → SIEMPRE turnos_rtms (excluyendo
+ *      placas de prueba TST%/FIX%/NEW%), incluso si no tiene ningún
+ *      registro ese mes — nunca cae a historico_meta_diario.
  */
+const FUENTE_CORTE_MES = 6
+const FUENTE_CORTE_ANIO = 2026
+const FILTRO_PLACAS_PRUEBA =
+  "placa NOT LIKE 'TST%' AND placa NOT LIKE 'FIX%' AND placa NOT LIKE 'NEW%'"
+
+function esFuenteReal(mes: number, anio: number): boolean {
+  return anio > FUENTE_CORTE_ANIO || (anio === FUENTE_CORTE_ANIO && mes >= FUENTE_CORTE_MES)
+}
+
 async function obtenerConteoDiarioConFallback(
   mes: number,
   anio: number
 ): Promise<{ dias: ConteoDiarioMeta[]; fuente: 'real' | 'historico' | 'sin_datos' }> {
-  const conteoReal = await Database.from('turnos_rtms')
-    .where('estado', 'finalizado')
-    .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
-    .count('* as total')
-    .first()
-
-  const hayDatosReales = Number((conteoReal as any)?.total ?? 0) > 0
-
   let rowsRaw: any[] = []
   let fuente: 'real' | 'historico' | 'sin_datos' = 'sin_datos'
 
-  if (hayDatosReales) {
+  if (esFuenteReal(mes, anio)) {
     fuente = 'real'
     const rows = (await Database.from('turnos_rtms')
       .where('estado', 'finalizado')
+      .whereRaw(FILTRO_PLACAS_PRUEBA)
       .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
       .select(Database.raw("DATE_FORMAT(fecha, '%Y-%m-%d') as fecha"), 'tipo_vehiculo')) as any[]
 
@@ -174,15 +174,20 @@ async function obtenerConteoDiarioConFallback(
  * Semáforo genérico: >=100% verde, >=90% amarillo, resto rojo.
  * Umbral no especificado por el negocio — asunción documentada en el
  * resumen de implementación.
+ *
+ * `pct === null` significa "meta no configurada" (ver calcularPct) — se
+ * retorna el estado neutro 'SIN_META' en vez de tratarlo como ROJO, para
+ * no confundir "sin meta" con "va mal".
  */
-function calcularSemaforo(pct: number): 'VERDE' | 'AMARILLO' | 'ROJO' {
+function calcularSemaforo(pct: number | null): 'VERDE' | 'AMARILLO' | 'ROJO' | 'SIN_META' {
+  if (pct === null) return 'SIN_META'
   if (pct >= 100) return 'VERDE'
   if (pct >= 90) return 'AMARILLO'
   return 'ROJO'
 }
 
-function calcularPct(avance: number, meta: number): number {
-  return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : 0
+function calcularPct(avance: number, meta: number): number | null {
+  return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : null
 }
 
 /**

@@ -1,3 +1,4 @@
+
 // app/controllers/captacion_dateos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
