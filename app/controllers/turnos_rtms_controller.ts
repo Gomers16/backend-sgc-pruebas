@@ -576,7 +576,7 @@ export default class TurnosRtmController {
       let nextGlobal: number
       let reasignadoDeTurnoId: number | null = null
 
-      if (huecoGlobal?.slot_libre !== null) {
+      if (huecoGlobal?.slot_libre != null) {
         nextGlobal = Number(huecoGlobal.slot_libre)
         reasignadoDeTurnoId = Number(huecoGlobal.id)
       } else {
@@ -594,7 +594,7 @@ export default class TurnosRtmController {
 
       let nextPorServicio: number
 
-      if (huecoServicio?.slot_svc_libre !== null) {
+      if (huecoServicio?.slot_svc_libre != null) {
         nextPorServicio = Number(huecoServicio.slot_svc_libre)
       } else {
         const rowSvc = await trx
@@ -1373,7 +1373,7 @@ export default class TurnosRtmController {
         .first()
 
       let siguiente: number
-      if (huecoGlobalSig?.slot_libre !== null) {
+      if (huecoGlobalSig?.slot_libre != null) {
         siguiente = Number(huecoGlobalSig.slot_libre)
       } else {
         const rowGlobal = await Database.from('turnos_rtms')
@@ -1413,7 +1413,7 @@ export default class TurnosRtmController {
           .limit(1)
           .first()
 
-        if (huecoSvcSig?.slot_svc_libre !== null) {
+        if (huecoSvcSig?.slot_svc_libre != null) {
           siguientePorServicio = Number(huecoSvcSig.slot_svc_libre)
         } else {
           const rowSvc = await Database.from('turnos_rtms')
