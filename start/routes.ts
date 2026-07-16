@@ -2113,6 +2113,42 @@ router
           )
           return new ReportesAdministrativosController().detalleComisiones(ctx)
         })
+        router.get('/meta-mensual/config', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualConfigGet(ctx)
+        })
+        router.post('/meta-mensual/config', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualConfigUpsert(ctx)
+        })
+        router.get('/meta-mensual/resumen', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualResumen(ctx)
+        })
+        router.get('/meta-mensual/diario', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualDiario(ctx)
+        })
+        router.get('/meta-mensual/semanal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualSemanal(ctx)
+        })
+        router.get('/meta-mensual/proyectado', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualProyectado(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([

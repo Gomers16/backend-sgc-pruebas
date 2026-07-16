@@ -6,6 +6,7 @@ import { DateTime } from 'luxon'
 import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
+import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -37,6 +38,179 @@ function parseRangoFechas(request: HttpContext['request']): {
   }
 
   return { fechaInicio, fechaFin }
+}
+
+/* ======================== META MENSUAL — HELPERS ======================== */
+
+/**
+ * Clasifica turnos_rtms.tipo_vehiculo en las 2 categorías del reporte
+ * Meta Mensual. Catálogo actual: 'Liviano Particular' | 'Liviano Taxi' |
+ * 'Liviano Público' → LIVIANO; 'Motocicleta' → MOTO. Cualquier otro valor
+ * no cuenta hacia ninguna meta.
+ *
+ * Los fragmentos SQL usados en las consultas agregadas (SQL_CASE_LIVIANOS /
+ * SQL_CASE_MOTOS) deben reflejar exactamente esta misma regla.
+ */
+function bucketTipoVehiculo(tipoVehiculo: string | null | undefined): 'LIVIANO' | 'MOTO' | null {
+  if (!tipoVehiculo) return null
+  const t = tipoVehiculo.trim().toUpperCase()
+  if (t.startsWith('LIVIANO')) return 'LIVIANO'
+  if (t === 'MOTOCICLETA') return 'MOTO'
+  return null
+}
+
+/**
+ * Dado un día cualquiera, retorna el inicio (sábado) y fin (viernes
+ * siguiente) de su semana comercial sábado→viernes (NO es semana ISO).
+ */
+function semanaSabadoViernes(fecha: DateTime): { inicio: DateTime; fin: DateTime } {
+  // Luxon: weekday 1=lunes...7=domingo. Offset en días desde el sábado
+  // anterior (0 si `fecha` ya es sábado).
+  const offsetDesdeSabado = (((fecha.weekday - 6) % 7) + 7) % 7
+  const inicio = fecha.startOf('day').minus({ days: offsetDesdeSabado })
+  const fin = inicio.plus({ days: 6 })
+  return { inicio, fin }
+}
+
+interface ConteoDiarioMeta {
+  fecha: string // YYYY-MM-DD
+  livianos: number
+  motos: number
+  total: number
+}
+
+/**
+ * Conteo diario (zero-filled, un registro por cada día del mes, sin huecos)
+ * de turnos RTM finalizados para un mes/año, separado en livianos/motos.
+ *
+ * Regla de fuente — se auto-resuelve con el tiempo, no requiere tocar
+ * código a futuro:
+ *   1. Si turnos_rtms tiene AL MENOS un registro finalizado ese mes/año,
+ *      se usa turnos_rtms (dato real).
+ *   2. Si no tiene ninguno, se usa historico_meta_diario como respaldo.
+ *   3. Si NINGUNA de las dos fuentes tiene datos para ese mes/año (ej.
+ *      mayo/2025, que no se cargó), se retorna `dias: []` y
+ *      `fuente: 'sin_datos'` — el llamador NO debe fabricar ceros ahí,
+ *      ya que "sin datos" y "cero turnos" son cosas distintas.
+ */
+async function obtenerConteoDiarioConFallback(
+  mes: number,
+  anio: number
+): Promise<{ dias: ConteoDiarioMeta[]; fuente: 'real' | 'historico' | 'sin_datos' }> {
+  const conteoReal = await Database.from('turnos_rtms')
+    .where('estado', 'finalizado')
+    .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
+    .count('* as total')
+    .first()
+
+  const hayDatosReales = Number((conteoReal as any)?.total ?? 0) > 0
+
+  let rowsRaw: any[] = []
+  let fuente: 'real' | 'historico' | 'sin_datos' = 'sin_datos'
+
+  if (hayDatosReales) {
+    fuente = 'real'
+    const rows = (await Database.from('turnos_rtms')
+      .where('estado', 'finalizado')
+      .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
+      .select(Database.raw("DATE_FORMAT(fecha, '%Y-%m-%d') as fecha"), 'tipo_vehiculo')) as any[]
+
+    const agregados = new Map<string, ConteoDiarioMeta>()
+    for (const r of rows) {
+      const bucket = bucketTipoVehiculo(r.tipo_vehiculo)
+      if (!bucket) continue // valor de tipo_vehiculo fuera del catálogo esperado, no cuenta
+      const entry = agregados.get(r.fecha) ?? {
+        fecha: r.fecha,
+        livianos: 0,
+        motos: 0,
+        total: 0,
+      }
+      if (bucket === 'LIVIANO') entry.livianos += 1
+      else entry.motos += 1
+      entry.total += 1
+      agregados.set(r.fecha, entry)
+    }
+    rowsRaw = Array.from(agregados.values())
+  } else {
+    const rowsHistorico = (await Database.from('historico_meta_diario')
+      .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
+      .select(
+        Database.raw("DATE_FORMAT(fecha, '%Y-%m-%d') as fecha"),
+        'livianos',
+        'motos',
+        'total'
+      )) as any[]
+    if (rowsHistorico.length > 0) {
+      fuente = 'historico'
+      rowsRaw = rowsHistorico
+    }
+  }
+
+  if (fuente === 'sin_datos') {
+    return { dias: [], fuente }
+  }
+
+  const mapa = new Map<string, ConteoDiarioMeta>()
+  for (const r of rowsRaw) {
+    mapa.set(r.fecha, {
+      fecha: r.fecha,
+      livianos: Number(r.livianos) || 0,
+      motos: Number(r.motos) || 0,
+      total: Number(r.total) || 0,
+    })
+  }
+
+  const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
+  const dias: ConteoDiarioMeta[] = []
+  for (let d = 1; d <= diasDelMes; d++) {
+    const fechaStr = DateTime.fromObject({ year: anio, month: mes, day: d }).toISODate() as string
+    dias.push(mapa.get(fechaStr) ?? { fecha: fechaStr, livianos: 0, motos: 0, total: 0 })
+  }
+
+  return { dias, fuente }
+}
+
+/**
+ * Semáforo genérico: >=100% verde, >=90% amarillo, resto rojo.
+ * Umbral no especificado por el negocio — asunción documentada en el
+ * resumen de implementación.
+ */
+function calcularSemaforo(pct: number): 'VERDE' | 'AMARILLO' | 'ROJO' {
+  if (pct >= 100) return 'VERDE'
+  if (pct >= 90) return 'AMARILLO'
+  return 'ROJO'
+}
+
+function calcularPct(avance: number, meta: number): number {
+  return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : 0
+}
+
+/**
+ * Obtiene la fila de configuración de un mes/año, creándola con metas en 0
+ * si no existe. Usa INSERT ... ON DUPLICATE KEY UPDATE (atómico a nivel de
+ * fila en MySQL) en vez de "SELECT, si no existe INSERT", porque el
+ * frontend dispara resumen/diario/semanal/proyectado en paralelo para el
+ * mismo mes/año — un "buscar y crear" ingenuo pierde la carrera: dos
+ * peticiones concurrentes pueden ver ambas "no existe" y chocar contra el
+ * índice único (mes, anio) con "Duplicate entry".
+ */
+async function obtenerOCrearConfigMensual(
+  mes: number,
+  anio: number
+): Promise<ConfiguracionMetaMensual> {
+  await Database.rawQuery(
+    `INSERT INTO configuracion_meta_mensual
+       (mes, anio, meta_livianos, meta_motos, pct_crecimiento_referencia, created_at, updated_at)
+     VALUES (?, ?, 0, 0, 0, NOW(), NOW())
+     ON DUPLICATE KEY UPDATE id = id`,
+    [mes, anio]
+  )
+
+  const config = await ConfiguracionMetaMensual.query().where('mes', mes).where('anio', anio).first()
+  if (!config) {
+    throw new Error(`No se pudo obtener/crear configuracion_meta_mensual para ${mes}/${anio}`)
+  }
+  return config
 }
 
 export default class ReportesAdministrativosController {
@@ -1157,5 +1331,380 @@ export default class ReportesAdministrativosController {
       total_comision: totales.total_comision,
       detalle,
     }
+  }
+
+  /* ======================== META MENSUAL ======================== */
+
+  private parseMesAnio(request: HttpContext['request']): {
+    mes: number
+    anio: number
+    error?: string
+  } {
+    const now = DateTime.now()
+    const mes = Number(request.input('mes', now.month))
+    const anio = Number(request.input('anio', now.year))
+
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) {
+      return { mes: 0, anio: 0, error: 'mes inválido (1-12)' }
+    }
+    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) {
+      return { mes: 0, anio: 0, error: 'anio inválido' }
+    }
+    return { mes, anio }
+  }
+
+  /**
+   * GET /reportes-admin/meta-mensual/config?mes=&anio=
+   * Config del mes consultado (default: mes/año actual). Crea la fila con
+   * metas en 0 si aún no existe (mismo patrón que las config singleton).
+   */
+  public async metaMensualConfigGet({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const config = await obtenerOCrearConfigMensual(mes, anio)
+
+    return response.ok({
+      mes: config.mes,
+      anio: config.anio,
+      meta_livianos: config.metaLivianos,
+      meta_motos: config.metaMotos,
+      meta_total: config.metaLivianos + config.metaMotos,
+      pct_crecimiento_referencia: Number(config.pctCrecimientoReferencia),
+    })
+  }
+
+  /**
+   * POST /reportes-admin/meta-mensual/config
+   * body: { mes, anio, meta_livianos, meta_motos, pct_crecimiento_referencia }
+   * Upsert por (mes, anio) — crea o actualiza la fila de ese mes.
+   */
+  public async metaMensualConfigUpsert({ request, response }: HttpContext) {
+    const payload = request.only([
+      'mes',
+      'anio',
+      'meta_livianos',
+      'meta_motos',
+      'pct_crecimiento_referencia',
+    ])
+
+    const mes = Number(payload.mes)
+    const anio = Number(payload.anio)
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) {
+      return response.badRequest({ message: 'mes inválido (1-12)' })
+    }
+    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) {
+      return response.badRequest({ message: 'anio inválido' })
+    }
+
+    const metaLivianos = Math.max(0, Math.trunc(Number(payload.meta_livianos) || 0))
+    const metaMotos = Math.max(0, Math.trunc(Number(payload.meta_motos) || 0))
+    const pctCrecimientoReferencia = Number(payload.pct_crecimiento_referencia) || 0
+
+    let config = await ConfiguracionMetaMensual.query()
+      .where('mes', mes)
+      .where('anio', anio)
+      .first()
+
+    if (!config) {
+      config = new ConfiguracionMetaMensual()
+      config.mes = mes
+      config.anio = anio
+    }
+    config.metaLivianos = metaLivianos
+    config.metaMotos = metaMotos
+    config.pctCrecimientoReferencia = pctCrecimientoReferencia
+    await config.save()
+
+    return response.ok({
+      mes: config.mes,
+      anio: config.anio,
+      meta_livianos: config.metaLivianos,
+      meta_motos: config.metaMotos,
+      meta_total: config.metaLivianos + config.metaMotos,
+      pct_crecimiento_referencia: Number(config.pctCrecimientoReferencia),
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-mensual/resumen?mes=&anio=
+   * KPIs (Total General, Livianos, Motos, Proyección de cierre) + semáforo
+   * general y por pestaña.
+   *
+   * Semáforos — regla no especificada por negocio, asunción documentada:
+   *   - "meta" usa avance acumulado / meta total (cuánto se lleva vs falta,
+   *     tal como se muestra en la pestaña Meta).
+   *   - "diario" y "semanal" usan el RITMO: avance acumulado / meta
+   *     prorateada a la fecha (avance vs. donde deberíamos ir hoy si el
+   *     ritmo fuera lineal) — así no marcan rojo todo el mes por defecto.
+   *   - "general" y "proyectado" usan la proyección de cierre completa vs.
+   *     la meta del mes.
+   */
+  public async metaMensualResumen({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const config = await obtenerOCrearConfigMensual(mes, anio)
+    const metaLivianos = config.metaLivianos
+    const metaMotos = config.metaMotos
+    const metaTotal = metaLivianos + metaMotos
+
+    const { dias, fuente } = await obtenerConteoDiarioConFallback(mes, anio)
+
+    const now = DateTime.now()
+    const esMesActual = mes === now.month && anio === now.year
+    const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
+    const diasTranscurridos = esMesActual ? now.day : diasDelMes
+    const diasElapsed = dias.slice(0, Math.min(diasTranscurridos, dias.length))
+
+    const avanceLivianos = diasElapsed.reduce((acc, d) => acc + d.livianos, 0)
+    const avanceMotos = diasElapsed.reduce((acc, d) => acc + d.motos, 0)
+    const avanceTotal = avanceLivianos + avanceMotos
+
+    const promedioDiarioLivianos = diasTranscurridos > 0 ? avanceLivianos / diasTranscurridos : 0
+    const promedioDiarioMotos = diasTranscurridos > 0 ? avanceMotos / diasTranscurridos : 0
+    const proyeccionLivianos = Math.round(promedioDiarioLivianos * diasDelMes)
+    const proyeccionMotos = Math.round(promedioDiarioMotos * diasDelMes)
+    const proyeccionTotal = proyeccionLivianos + proyeccionMotos
+
+    const pctProyeccionTotal = calcularPct(proyeccionTotal, metaTotal)
+    const metaTotalProrateada = metaTotal * (diasTranscurridos / Math.max(1, diasDelMes))
+    const pctRitmo = calcularPct(avanceTotal, Math.round(metaTotalProrateada))
+
+    return response.ok({
+      mes,
+      anio,
+      fuente_datos: fuente,
+      dias_transcurridos: diasTranscurridos,
+      dias_del_mes: diasDelMes,
+      kpis: {
+        total_general: {
+          meta: metaTotal,
+          avance: avanceTotal,
+          pct_avance: calcularPct(avanceTotal, metaTotal),
+          proyeccion_cierre: proyeccionTotal,
+          pct_proyeccion: pctProyeccionTotal,
+        },
+        livianos: {
+          meta: metaLivianos,
+          avance: avanceLivianos,
+          pct_avance: calcularPct(avanceLivianos, metaLivianos),
+          proyeccion_cierre: proyeccionLivianos,
+          pct_proyeccion: calcularPct(proyeccionLivianos, metaLivianos),
+        },
+        motos: {
+          meta: metaMotos,
+          avance: avanceMotos,
+          pct_avance: calcularPct(avanceMotos, metaMotos),
+          proyeccion_cierre: proyeccionMotos,
+          pct_proyeccion: calcularPct(proyeccionMotos, metaMotos),
+        },
+      },
+      semaforo: {
+        general: calcularSemaforo(pctProyeccionTotal),
+        diario: calcularSemaforo(pctRitmo),
+        semanal: calcularSemaforo(pctRitmo),
+        meta: calcularSemaforo(calcularPct(avanceTotal, metaTotal)),
+        proyectado: calcularSemaforo(pctProyeccionTotal),
+      },
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-mensual/diario?mes=&anio=
+   * Día a día del mes consultado: cantidad, acumulado, % vs meta, y
+   * diferencia contra el mismo día del año anterior (real u histórico).
+   */
+  public async metaMensualDiario({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const config = await ConfiguracionMetaMensual.query()
+      .where('mes', mes)
+      .where('anio', anio)
+      .first()
+    const metaTotal = config ? config.metaLivianos + config.metaMotos : 0
+
+    const { dias, fuente } = await obtenerConteoDiarioConFallback(mes, anio)
+    const { dias: diasAnioAnterior, fuente: fuenteAnioAnterior } =
+      await obtenerConteoDiarioConFallback(mes, anio - 1)
+
+    const mapaAnioAnterior = new Map(diasAnioAnterior.map((d) => [d.fecha.slice(8, 10), d]))
+
+    let acumuladoLivianos = 0
+    let acumuladoMotos = 0
+
+    const detalle = dias.map((d) => {
+      acumuladoLivianos += d.livianos
+      acumuladoMotos += d.motos
+      const acumuladoTotal = acumuladoLivianos + acumuladoMotos
+
+      const diaNum = d.fecha.slice(8, 10)
+      const diaAnioAnterior = mapaAnioAnterior.get(diaNum)
+      const totalAnioAnterior = diaAnioAnterior ? diaAnioAnterior.total : null
+
+      return {
+        fecha: d.fecha,
+        livianos: d.livianos,
+        motos: d.motos,
+        total: d.total,
+        acumulado_livianos: acumuladoLivianos,
+        acumulado_motos: acumuladoMotos,
+        acumulado_total: acumuladoTotal,
+        pct_vs_meta: calcularPct(acumuladoTotal, metaTotal),
+        total_anio_anterior: totalAnioAnterior,
+        diferencia_vs_anio_anterior: totalAnioAnterior === null ? null : d.total - totalAnioAnterior,
+      }
+    })
+
+    return response.ok({
+      mes,
+      anio,
+      fuente_datos: fuente,
+      fuente_datos_anio_anterior: fuenteAnioAnterior,
+      meta_total: metaTotal,
+      dias: detalle,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-mensual/semanal?mes=&anio=
+   * Agrupa el mes en semanas sábado→viernes. Cada semana se compara
+   * contra la meta TOTAL del mes (sin prorratear entre semanas), tanto
+   * para livianos como para motos — igual que el Excel de referencia.
+   * Las semanas que cruzan el límite del mes solo suman los días que
+   * caen dentro del mes consultado.
+   */
+  public async metaMensualSemanal({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const config = await ConfiguracionMetaMensual.query()
+      .where('mes', mes)
+      .where('anio', anio)
+      .first()
+    const metaLivianos = config?.metaLivianos ?? 0
+    const metaMotos = config?.metaMotos ?? 0
+
+    const { dias, fuente } = await obtenerConteoDiarioConFallback(mes, anio)
+
+    const semanasMap = new Map<
+      string,
+      { inicio: string; fin: string; livianos: number; motos: number; total: number }
+    >()
+
+    for (const d of dias) {
+      const fechaDt = DateTime.fromISO(d.fecha)
+      const { inicio, fin } = semanaSabadoViernes(fechaDt)
+      const key = inicio.toISODate() as string
+      if (!semanasMap.has(key)) {
+        semanasMap.set(key, {
+          inicio: key,
+          fin: fin.toISODate() as string,
+          livianos: 0,
+          motos: 0,
+          total: 0,
+        })
+      }
+      const semana = semanasMap.get(key)!
+      semana.livianos += d.livianos
+      semana.motos += d.motos
+      semana.total += d.total
+    }
+
+    const semanas = Array.from(semanasMap.values())
+      .sort((a, b) => a.inicio.localeCompare(b.inicio))
+      .map((s) => ({
+        ...s,
+        pct_livianos: calcularPct(s.livianos, metaLivianos),
+        pct_motos: calcularPct(s.motos, metaMotos),
+      }))
+
+    return response.ok({
+      mes,
+      anio,
+      fuente_datos: fuente,
+      meta_livianos: metaLivianos,
+      meta_motos: metaMotos,
+      meta_total: metaLivianos + metaMotos,
+      semanas,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-mensual/proyectado?mes=&anio=
+   * Promedio diario acumulado y proyección de cierre, día a día, solo
+   * para los días ya transcurridos del mes (no incluye días futuros del
+   * mes en curso, para no diluir el promedio con ceros que aún no
+   * ocurrieron).
+   */
+  public async metaMensualProyectado({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const config = await ConfiguracionMetaMensual.query()
+      .where('mes', mes)
+      .where('anio', anio)
+      .first()
+    const metaLivianos = config?.metaLivianos ?? 0
+    const metaMotos = config?.metaMotos ?? 0
+    const metaTotal = metaLivianos + metaMotos
+
+    const { dias, fuente } = await obtenerConteoDiarioConFallback(mes, anio)
+
+    const now = DateTime.now()
+    const esMesActual = mes === now.month && anio === now.year
+    const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
+    const diasTranscurridos = esMesActual ? now.day : diasDelMes
+    const diasElapsed = dias.slice(0, Math.min(diasTranscurridos, dias.length))
+
+    let acumuladoLivianos = 0
+    let acumuladoMotos = 0
+
+    const detalle = diasElapsed.map((d, idx) => {
+      acumuladoLivianos += d.livianos
+      acumuladoMotos += d.motos
+      const n = idx + 1
+
+      const promedioDiarioLivianos = acumuladoLivianos / n
+      const promedioDiarioMotos = acumuladoMotos / n
+      const proyeccionLivianos = Math.round(promedioDiarioLivianos * diasDelMes)
+      const proyeccionMotos = Math.round(promedioDiarioMotos * diasDelMes)
+
+      return {
+        fecha: d.fecha,
+        acumulado_livianos: acumuladoLivianos,
+        acumulado_motos: acumuladoMotos,
+        promedio_diario_livianos: Math.round(promedioDiarioLivianos * 100) / 100,
+        promedio_diario_motos: Math.round(promedioDiarioMotos * 100) / 100,
+        proyeccion_cierre_livianos: proyeccionLivianos,
+        proyeccion_cierre_motos: proyeccionMotos,
+        proyeccion_cierre_total: proyeccionLivianos + proyeccionMotos,
+      }
+    })
+
+    const ultimo = detalle[detalle.length - 1] ?? null
+
+    return response.ok({
+      mes,
+      anio,
+      fuente_datos: fuente,
+      dias_transcurridos: diasTranscurridos,
+      dias_del_mes: diasDelMes,
+      meta_livianos: metaLivianos,
+      meta_motos: metaMotos,
+      meta_total: metaTotal,
+      resumen: ultimo
+        ? {
+            promedio_diario_livianos: ultimo.promedio_diario_livianos,
+            promedio_diario_motos: ultimo.promedio_diario_motos,
+            proyeccion_cierre_livianos: ultimo.proyeccion_cierre_livianos,
+            proyeccion_cierre_motos: ultimo.proyeccion_cierre_motos,
+            proyeccion_cierre_total: ultimo.proyeccion_cierre_total,
+            pct_proyeccion_total: calcularPct(ultimo.proyeccion_cierre_total, metaTotal),
+          }
+        : null,
+      dias: detalle,
+    })
   }
 }
