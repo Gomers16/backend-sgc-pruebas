@@ -100,6 +100,31 @@ function esFuenteReal(mes: number, anio: number): boolean {
   return anio > FUENTE_CORTE_ANIO || (anio === FUENTE_CORTE_ANIO && mes >= FUENTE_CORTE_MES)
 }
 
+/**
+ * Corte de Meta Comercial por Asesor — INDEPENDIENTE del corte de Meta
+ * Mensual RTM (FUENTE_CORTE_MES/ANIO arriba). Julio/2026 completo cae del
+ * lado histórico aquí porque en este entorno no hay comisiones reales
+ * enlazadas todavía para ningún asesor (ver diagnóstico previo).
+ */
+const META_COMERCIAL_CORTE_MES = 8
+const META_COMERCIAL_CORTE_ANIO = 2026
+
+/**
+ * Tarifa PLANA usada solo para convertir cantidad histórica → pesos
+ * ESTIMADOS en este reporte (comparación contra meta, no cálculo de nómina).
+ * NO tiene relación con comisiones.es_config ni con el motor real de
+ * comisiones — ese sigue funcionando exactamente igual.
+ */
+const VALOR_ESTIMADO_ASESOR_COMERCIAL = 17280
+const VALOR_ESTIMADO_ASESOR_CONVENIO = 8640
+
+function esFuenteRealComercial(mes: number, anio: number): boolean {
+  return (
+    anio > META_COMERCIAL_CORTE_ANIO ||
+    (anio === META_COMERCIAL_CORTE_ANIO && mes >= META_COMERCIAL_CORTE_MES)
+  )
+}
+
 async function obtenerConteoDiarioConFallback(
   mes: number,
   anio: number
@@ -1711,5 +1736,558 @@ export default class ReportesAdministrativosController {
         : null,
       dias: detalle,
     })
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/resumen?mes=&anio=
+   * Meta Comercial por Asesor: cantidad/pesos por asesor para el mes
+   * consultado, con el mismo patrón de corte real/histórico que Meta
+   * Mensual RTM (obtenerConteoDiarioConFallback), pero con su propio corte
+   * (META_COMERCIAL_CORTE_MES/ANIO) e independiente del motor real de
+   * comisiones:
+   *  - mes >= corte → SUM(comisiones.monto_asesor) real, agrupado por
+   *    agentes_captacions.tipo (ASESOR_COMERCIAL/ASESOR_CONVENIO).
+   *  - mes < corte → SUM(historico_comercial_asesor.cantidad) convertido a
+   *    pesos ESTIMADOS con tarifa plana (VALOR_ESTIMADO_ASESOR_*), marcado
+   *    es_estimado=true para que el frontend lo distinga visualmente.
+   */
+  public async metaComercialResumen({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const esReal = esFuenteRealComercial(mes, anio)
+
+    const metaRows = (await Database.from('meta_comercial_asesor')
+      .where({ mes, anio })
+      .select('asesor_id', 'meta_pesos')) as { asesor_id: number; meta_pesos: string }[]
+
+    const metaMap = new Map(metaRows.map((r) => [Number(r.asesor_id), Number(r.meta_pesos)]))
+    const idsConMeta = metaRows.map((r) => Number(r.asesor_id))
+
+    let idsConDatos: number[] = []
+    if (esReal) {
+      const rows = (await Database.from('comisiones')
+        .where('es_config', false)
+        .where('tipo_servicio', 'RTM')
+        .whereIn('estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+        .whereRaw('MONTH(fecha_calculo) = ? AND YEAR(fecha_calculo) = ?', [mes, anio])
+        .whereNotNull('asesor_id')
+        .distinct('asesor_id')
+        .select('asesor_id')) as { asesor_id: number }[]
+      idsConDatos = rows.map((r) => Number(r.asesor_id))
+    } else {
+      const rows = (await Database.from('historico_comercial_asesor')
+        .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
+        .distinct('asesor_id')
+        .select('asesor_id')) as { asesor_id: number }[]
+      idsConDatos = rows.map((r) => Number(r.asesor_id))
+    }
+
+    const asesorIds = Array.from(new Set([...idsConMeta, ...idsConDatos]))
+
+    if (asesorIds.length === 0) {
+      return response.ok({ mes, anio, fuente: esReal ? 'real' : 'historico', asesores: [] })
+    }
+
+    const asesores = await AgenteCaptacion.query().whereIn('id', asesorIds).select('id', 'nombre')
+    const nombreMap = new Map(asesores.map((a) => [a.id, a.nombre]))
+
+    const porAsesor = new Map<number, { convenio: number; comercial: number }>()
+
+    if (esReal) {
+      const agregados = (await Database.from('comisiones as c')
+        .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
+        .whereIn('c.asesor_id', asesorIds)
+        .where('c.es_config', false)
+        .where('c.tipo_servicio', 'RTM')
+        .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+        .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
+        .select('c.asesor_id', 'a.tipo')
+        .sum('c.monto_asesor as total')
+        .groupBy('c.asesor_id', 'a.tipo')) as { asesor_id: number; tipo: string; total: string }[]
+
+      for (const r of agregados) {
+        const id = Number(r.asesor_id)
+        const cur = porAsesor.get(id) ?? { convenio: 0, comercial: 0 }
+        if (r.tipo === 'ASESOR_CONVENIO') cur.convenio += Number(r.total)
+        else cur.comercial += Number(r.total)
+        porAsesor.set(id, cur)
+      }
+    } else {
+      const agregados = (await Database.from('historico_comercial_asesor')
+        .whereIn('asesor_id', asesorIds)
+        .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
+        .select('asesor_id', 'tipo')
+        .sum('cantidad as total')
+        .groupBy('asesor_id', 'tipo')) as { asesor_id: number; tipo: string; total: string }[]
+
+      for (const r of agregados) {
+        const id = Number(r.asesor_id)
+        const cur = porAsesor.get(id) ?? { convenio: 0, comercial: 0 }
+        const cantidad = Number(r.total)
+        if (r.tipo === 'ASESOR_CONVENIO') cur.convenio += cantidad
+        else cur.comercial += cantidad
+        porAsesor.set(id, cur)
+      }
+    }
+
+    const asesoresOut = asesorIds.map((id) => {
+      const v = porAsesor.get(id) ?? { convenio: 0, comercial: 0 }
+      const meta = metaMap.has(id) ? metaMap.get(id)! : null
+
+      let pesosConvenio: number
+      let pesosComercial: number
+      let cantidadConvenio: number | null
+      let cantidadComercial: number | null
+
+      if (esReal) {
+        // v.convenio/v.comercial ya están en pesos reales (SUM monto_asesor)
+        pesosConvenio = v.convenio
+        pesosComercial = v.comercial
+        cantidadConvenio = null
+        cantidadComercial = null
+      } else {
+        // v.convenio/v.comercial son CANTIDADES → convertir a pesos estimados
+        cantidadConvenio = v.convenio
+        cantidadComercial = v.comercial
+        pesosConvenio = v.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
+        pesosComercial = v.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
+      }
+
+      const pesosTotal = pesosConvenio + pesosComercial
+      const pct = meta !== null ? calcularPct(pesosTotal, meta) : null
+
+      return {
+        asesor_id: id,
+        asesor_nombre: nombreMap.get(id) ?? '—',
+        fuente: esReal ? 'real' : 'historico',
+        es_estimado: !esReal,
+        cantidad_convenio: cantidadConvenio,
+        cantidad_comercial: cantidadComercial,
+        pesos_convenio: pesosConvenio,
+        pesos_comercial: pesosComercial,
+        pesos_total: pesosTotal,
+        meta_pesos: meta,
+        pct_avance: pct,
+        semaforo: calcularSemaforo(pct),
+      }
+    })
+
+    asesoresOut.sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
+
+    return response.ok({
+      mes,
+      anio,
+      fuente: esReal ? 'real' : 'historico',
+      nota: esReal
+        ? null
+        : `Pesos estimados con tarifa plana ($${VALOR_ESTIMADO_ASESOR_COMERCIAL.toLocaleString('es-CO')} propio / $${VALOR_ESTIMADO_ASESOR_CONVENIO.toLocaleString('es-CO')} convenio por captación) — no es cálculo de nómina.`,
+      asesores: asesoresOut,
+    })
+  }
+
+  /**
+   * Helper compartido: resuelve asesor_id opcional del query string y, si
+   * viene, valida que exista. Si no viene, los métodos de abajo agregan
+   * TODOS los asesores con datos ese mes (comportamiento "todos").
+   */
+  private async resolveAsesorFiltro(
+    request: HttpContext['request']
+  ): Promise<{ asesorId: number | null; asesorNombre: string | null; error?: string }> {
+    const raw = request.input('asesor_id')
+    if (raw === undefined || raw === null || raw === '') {
+      return { asesorId: null, asesorNombre: null }
+    }
+    const asesorId = Number(raw)
+    if (!Number.isInteger(asesorId) || asesorId <= 0) {
+      return { asesorId: null, asesorNombre: null, error: 'asesor_id inválido' }
+    }
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return { asesorId: null, asesorNombre: null, error: 'asesor_id no existe' }
+    return { asesorId, asesorNombre: asesor.nombre }
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/diario?mes=&anio=&asesor_id=
+   * SOLO tiene sentido para meses reales (mes >= META_COMERCIAL_CORTE) —
+   * el histórico del Excel es semanal, no diario. Para meses históricos
+   * devuelve fuente='historico_sin_detalle_diario' y dias=[].
+   * asesor_id opcional: si no viene, agrega TODOS los asesores con
+   * comisiones ese mes.
+   */
+  public async metaComercialDiario({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const { asesorId, asesorNombre, error: asesorError } = await this.resolveAsesorFiltro(request)
+    if (asesorError) return response.badRequest({ message: asesorError })
+
+    const esReal = esFuenteRealComercial(mes, anio)
+
+    const metaPesos = await this.metaPesosDelMes(asesorId, mes, anio)
+
+    if (!esReal) {
+      return response.ok({
+        mes,
+        anio,
+        asesor_id: asesorId,
+        asesor_nombre: asesorNombre,
+        fuente: 'historico_sin_detalle_diario',
+        nota: `El histórico cargado desde Excel es semanal, no diario — no existe detalle día a día antes de ${META_COMERCIAL_CORTE_MES}/${META_COMERCIAL_CORTE_ANIO}. Usa la pestaña Semanal para este mes.`,
+        meta_pesos: metaPesos,
+        dias: [],
+      })
+    }
+
+    const query = Database.from('comisiones as c')
+      .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .where('c.es_config', false)
+      .where('c.tipo_servicio', 'RTM')
+      .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+      .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
+      .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo')
+      .sum('c.monto_asesor as total')
+      .groupBy('fecha', 'a.tipo')
+
+    if (asesorId) query.andWhere('c.asesor_id', asesorId)
+
+    const rows = (await query) as { fecha: string; tipo: string; total: string }[]
+
+    const porDia = new Map<string, { convenio: number; comercial: number }>()
+    for (const r of rows) {
+      const cur = porDia.get(r.fecha) ?? { convenio: 0, comercial: 0 }
+      if (r.tipo === 'ASESOR_CONVENIO') cur.convenio += Number(r.total)
+      else cur.comercial += Number(r.total)
+      porDia.set(r.fecha, cur)
+    }
+
+    const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
+    let acumConvenio = 0
+    let acumComercial = 0
+    const dias = []
+    for (let d = 1; d <= diasDelMes; d++) {
+      const fechaStr = DateTime.fromObject({ year: anio, month: mes, day: d }).toISODate() as string
+      const v = porDia.get(fechaStr) ?? { convenio: 0, comercial: 0 }
+      acumConvenio += v.convenio
+      acumComercial += v.comercial
+      const acumuladoTotal = acumConvenio + acumComercial
+      dias.push({
+        fecha: fechaStr,
+        pesos_convenio: v.convenio,
+        pesos_comercial: v.comercial,
+        pesos_total: v.convenio + v.comercial,
+        acumulado_convenio: acumConvenio,
+        acumulado_comercial: acumComercial,
+        acumulado_total: acumuladoTotal,
+        pct_vs_meta: calcularPct(acumuladoTotal, metaPesos ?? 0),
+      })
+    }
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesorNombre,
+      fuente: 'real',
+      nota: null,
+      meta_pesos: metaPesos,
+      dias,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/semanal?mes=&anio=&asesor_id=
+   * Funciona para AMBAS fuentes:
+   *  - histórico: lee directo historico_comercial_asesor (ya viene semanal
+   *    sábado→viernes) y convierte cantidad→pesos con la misma tarifa plana
+   *    de metaComercialResumen.
+   *  - real: agrupa comisiones por semana con semanaSabadoViernes().
+   */
+  public async metaComercialSemanal({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const { asesorId, asesorNombre, error: asesorError } = await this.resolveAsesorFiltro(request)
+    if (asesorError) return response.badRequest({ message: asesorError })
+
+    const esReal = esFuenteRealComercial(mes, anio)
+    const metaPesos = await this.metaPesosDelMes(asesorId, mes, anio)
+
+    const semanas: {
+      inicio: string
+      fin: string
+      cantidad_convenio: number | null
+      cantidad_comercial: number | null
+      pesos_convenio: number
+      pesos_comercial: number
+      pesos_total: number
+      pct_vs_meta: number | null
+    }[] = []
+
+    if (esReal) {
+      const query = Database.from('comisiones as c')
+        .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
+        .where('c.es_config', false)
+        .where('c.tipo_servicio', 'RTM')
+        .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+        .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
+        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo')
+        .select('c.monto_asesor')
+      if (asesorId) query.andWhere('c.asesor_id', asesorId)
+
+      const rows = (await query) as { fecha: string; tipo: string; monto_asesor: string }[]
+
+      const semanasMap = new Map<
+        string,
+        { inicio: string; fin: string; convenio: number; comercial: number }
+      >()
+      for (const r of rows) {
+        const { inicio, fin } = semanaSabadoViernes(DateTime.fromISO(r.fecha))
+        const key = inicio.toISODate() as string
+        if (!semanasMap.has(key)) {
+          semanasMap.set(key, { inicio: key, fin: fin.toISODate() as string, convenio: 0, comercial: 0 })
+        }
+        const s = semanasMap.get(key)!
+        if (r.tipo === 'ASESOR_CONVENIO') s.convenio += Number(r.monto_asesor)
+        else s.comercial += Number(r.monto_asesor)
+      }
+
+      for (const s of Array.from(semanasMap.values()).sort((a, b) => a.inicio.localeCompare(b.inicio))) {
+        const total = s.convenio + s.comercial
+        semanas.push({
+          inicio: s.inicio,
+          fin: s.fin,
+          cantidad_convenio: null,
+          cantidad_comercial: null,
+          pesos_convenio: s.convenio,
+          pesos_comercial: s.comercial,
+          pesos_total: total,
+          pct_vs_meta: calcularPct(total, metaPesos ?? 0),
+        })
+      }
+    } else {
+      const query = Database.from('historico_comercial_asesor')
+        .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
+        .select(
+          Database.raw("DATE_FORMAT(fecha_inicio, '%Y-%m-%d') as fecha_inicio"),
+          Database.raw("DATE_FORMAT(fecha_fin, '%Y-%m-%d') as fecha_fin"),
+          'tipo',
+          'cantidad'
+        )
+      if (asesorId) query.andWhere('asesor_id', asesorId)
+
+      const rows = (await query) as {
+        fecha_inicio: string
+        fecha_fin: string
+        tipo: string
+        cantidad: number
+      }[]
+
+      const semanasMap = new Map<
+        string,
+        { inicio: string; fin: string; convenio: number; comercial: number }
+      >()
+      for (const r of rows) {
+        const key = r.fecha_inicio
+        if (!semanasMap.has(key)) {
+          semanasMap.set(key, {
+            inicio: key,
+            fin: r.fecha_fin,
+            convenio: 0,
+            comercial: 0,
+          })
+        }
+        const s = semanasMap.get(key)!
+        if (r.tipo === 'ASESOR_CONVENIO') s.convenio += Number(r.cantidad)
+        else s.comercial += Number(r.cantidad)
+      }
+
+      for (const s of Array.from(semanasMap.values()).sort((a, b) => a.inicio.localeCompare(b.inicio))) {
+        const pesosConvenio = s.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
+        const pesosComercial = s.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
+        const total = pesosConvenio + pesosComercial
+        semanas.push({
+          inicio: s.inicio,
+          fin: s.fin,
+          cantidad_convenio: s.convenio,
+          cantidad_comercial: s.comercial,
+          pesos_convenio: pesosConvenio,
+          pesos_comercial: pesosComercial,
+          pesos_total: total,
+          pct_vs_meta: calcularPct(total, metaPesos ?? 0),
+        })
+      }
+    }
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesorNombre,
+      fuente: esReal ? 'real' : 'historico',
+      es_estimado: !esReal,
+      meta_pesos: metaPesos,
+      semanas,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/proyectado?mes=&anio=&asesor_id=
+   * Mismo patrón que metaMensualProyectado: promedio de lo transcurrido,
+   * proyección a fin de mes. Granularidad depende de la fuente — diaria
+   * para meses reales (reutiliza la misma agregación de metaComercialDiario),
+   * semanal para meses históricos (no hay detalle diario, ver arriba).
+   */
+  public async metaComercialProyectado({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const { asesorId, asesorNombre, error: asesorError } = await this.resolveAsesorFiltro(request)
+    if (asesorError) return response.badRequest({ message: asesorError })
+
+    const esReal = esFuenteRealComercial(mes, anio)
+    const metaPesos = await this.metaPesosDelMes(asesorId, mes, anio)
+    const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
+
+    if (esReal) {
+      const query = Database.from('comisiones as c')
+        .where('c.es_config', false)
+        .where('c.tipo_servicio', 'RTM')
+        .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+        .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
+        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"))
+        .sum('c.monto_asesor as total')
+        .groupBy('fecha')
+      if (asesorId) query.andWhere('c.asesor_id', asesorId)
+
+      const rows = (await query) as { fecha: string; total: string }[]
+      const porDia = new Map(rows.map((r) => [r.fecha, Number(r.total)]))
+
+      const now = DateTime.now()
+      const esMesActual = mes === now.month && anio === now.year
+      const diasTranscurridos = esMesActual ? now.day : diasDelMes
+
+      let acumulado = 0
+      const periodos = []
+      for (let d = 1; d <= diasTranscurridos; d++) {
+        const fechaStr = DateTime.fromObject({ year: anio, month: mes, day: d }).toISODate() as string
+        acumulado += porDia.get(fechaStr) ?? 0
+        periodos.push({
+          etiqueta: fechaStr,
+          acumulado,
+          promedio: Math.round((acumulado / d) * 100) / 100,
+          proyeccion: Math.round((acumulado / d) * diasDelMes),
+        })
+      }
+
+      const ultimo = periodos[periodos.length - 1] ?? null
+      const proyeccionCierre = ultimo?.proyeccion ?? 0
+
+      return response.ok({
+        mes,
+        anio,
+        asesor_id: asesorId,
+        asesor_nombre: asesorNombre,
+        fuente: 'real',
+        granularidad: 'diaria',
+        meta_pesos: metaPesos,
+        periodos_transcurridos: diasTranscurridos,
+        periodos_totales: diasDelMes,
+        resumen: ultimo
+          ? {
+              promedio_por_periodo: ultimo.promedio,
+              proyeccion_cierre: proyeccionCierre,
+              pct_proyeccion: calcularPct(proyeccionCierre, metaPesos ?? 0),
+            }
+          : null,
+        periodos,
+      })
+    }
+
+    // ── Histórico: granularidad semanal (no hay detalle diario) ──
+    const query = Database.from('historico_comercial_asesor')
+      .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
+      .select(
+        Database.raw("DATE_FORMAT(fecha_inicio, '%Y-%m-%d') as fecha_inicio"),
+        Database.raw("DATE_FORMAT(fecha_fin, '%Y-%m-%d') as fecha_fin"),
+        'tipo',
+        'cantidad'
+      )
+    if (asesorId) query.andWhere('asesor_id', asesorId)
+
+    const rows = (await query) as {
+      fecha_inicio: string
+      fecha_fin: string
+      tipo: string
+      cantidad: number
+    }[]
+
+    const semanasMap = new Map<string, { inicio: string; fin: string; pesos: number }>()
+    for (const r of rows) {
+      const key = r.fecha_inicio
+      const valorUnitario =
+        r.tipo === 'ASESOR_CONVENIO' ? VALOR_ESTIMADO_ASESOR_CONVENIO : VALOR_ESTIMADO_ASESOR_COMERCIAL
+      if (!semanasMap.has(key)) {
+        semanasMap.set(key, { inicio: key, fin: r.fecha_fin, pesos: 0 })
+      }
+      semanasMap.get(key)!.pesos += Number(r.cantidad) * valorUnitario
+    }
+
+    const semanasOrdenadas = Array.from(semanasMap.values()).sort((a, b) =>
+      a.inicio.localeCompare(b.inicio)
+    )
+    const semanasTotalesMes = Math.ceil(diasDelMes / 7)
+
+    let acumulado = 0
+    const periodos = semanasOrdenadas.map((s, idx) => {
+      acumulado += s.pesos
+      const n = idx + 1
+      return {
+        etiqueta: `${s.inicio} — ${s.fin}`,
+        acumulado,
+        promedio: Math.round(acumulado / n),
+        proyeccion: Math.round((acumulado / n) * semanasTotalesMes),
+      }
+    })
+
+    const ultimo = periodos[periodos.length - 1] ?? null
+    const proyeccionCierre = ultimo?.proyeccion ?? 0
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesorNombre,
+      fuente: 'historico',
+      granularidad: 'semanal',
+      meta_pesos: metaPesos,
+      periodos_transcurridos: semanasOrdenadas.length,
+      periodos_totales: semanasTotalesMes,
+      resumen: ultimo
+        ? {
+            promedio_por_periodo: ultimo.promedio,
+            proyeccion_cierre: proyeccionCierre,
+            pct_proyeccion: calcularPct(proyeccionCierre, metaPesos ?? 0),
+          }
+        : null,
+      periodos,
+    })
+  }
+
+  /**
+   * Meta en pesos del mes: si asesorId viene, la meta puntual de ese
+   * asesor; si no viene (modo "todos"), la SUMA de las metas de todos los
+   * asesores con fila configurada ese mes. null si no hay ninguna meta.
+   */
+  private async metaPesosDelMes(
+    asesorId: number | null,
+    mes: number,
+    anio: number
+  ): Promise<number | null> {
+    const query = Database.from('meta_comercial_asesor').where({ mes, anio })
+    if (asesorId) query.andWhere('asesor_id', asesorId)
+    const rows = (await query.select('meta_pesos')) as { meta_pesos: string }[]
+    if (rows.length === 0) return null
+    return rows.reduce((acc, r) => acc + Number(r.meta_pesos), 0)
   }
 }

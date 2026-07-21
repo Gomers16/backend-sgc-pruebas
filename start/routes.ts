@@ -2149,6 +2149,30 @@ router
           )
           return new ReportesAdministrativosController().metaMensualProyectado(ctx)
         })
+        router.get('/meta-comercial/resumen', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialResumen(ctx)
+        })
+        router.get('/meta-comercial/diario', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialDiario(ctx)
+        })
+        router.get('/meta-comercial/semanal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialSemanal(ctx)
+        })
+        router.get('/meta-comercial/proyectado', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialProyectado(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([
