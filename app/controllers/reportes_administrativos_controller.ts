@@ -101,12 +101,12 @@ function esFuenteReal(mes: number, anio: number): boolean {
 }
 
 /**
- * Corte de Meta Comercial por Asesor — INDEPENDIENTE del corte de Meta
- * Mensual RTM (FUENTE_CORTE_MES/ANIO arriba). Julio/2026 completo cae del
- * lado histórico aquí porque en este entorno no hay comisiones reales
- * enlazadas todavía para ningún asesor (ver diagnóstico previo).
+ * Corte de Meta Comercial por Asesor — mismo mes/año que el corte de Meta
+ * Mensual RTM (FUENTE_CORTE_MES/ANIO arriba), aunque se mantiene como
+ * constante independiente por si en el futuro necesitan desacoplarse de
+ * nuevo.
  */
-const META_COMERCIAL_CORTE_MES = 8
+const META_COMERCIAL_CORTE_MES = 6
 const META_COMERCIAL_CORTE_ANIO = 2026
 
 /**
@@ -1747,9 +1747,13 @@ export default class ReportesAdministrativosController {
    * comisiones:
    *  - mes >= corte → SUM(comisiones.monto_asesor) real, agrupado por
    *    agentes_captacions.tipo (ASESOR_COMERCIAL/ASESOR_CONVENIO).
-   *  - mes < corte → SUM(historico_comercial_asesor.cantidad) convertido a
-   *    pesos ESTIMADOS con tarifa plana (VALOR_ESTIMADO_ASESOR_*), marcado
-   *    es_estimado=true para que el frontend lo distinga visualmente.
+   *  - mes < corte, CON fila en historico_comercial_vehiculo_mensual →
+   *    cálculo real por tipo de vehículo con la tarifa vigente de ese mes
+   *    (feb-may/2026, reconciliado contra el Excel), es_estimado=false.
+   *  - mes < corte, SIN esa fila → SUM(historico_comercial_asesor.cantidad)
+   *    convertido a pesos ESTIMADOS con tarifa plana
+   *    (VALOR_ESTIMADO_ASESOR_*), marcado es_estimado=true para que el
+   *    frontend lo distinga visualmente.
    */
   public async metaComercialResumen({ request, response }: HttpContext) {
     const { mes, anio, error } = this.parseMesAnio(request)
@@ -1831,14 +1835,58 @@ export default class ReportesAdministrativosController {
       }
     }
 
+    // Detalle por tipo de vehículo (feb-may/2026, reconciliado contra el
+    // Excel) — cuando exista fila aquí para el asesor/mes, reemplaza la
+    // tarifa plana estimada por el cálculo real con tarifa vigente de ese
+    // mes. Meses sin fila (jul/2026 en adelante, hasta que se cargue su
+    // propio detalle) siguen usando VALOR_ESTIMADO_ASESOR_*.
+    const vehiculoDetalleMap = new Map<
+      number,
+      {
+        livianos_convenio: number
+        motos_convenio: number
+        livianos_propio: number
+        motos_propio: number
+        tarifa_carro: number
+        tarifa_moto: number
+      }
+    >()
+    if (!esReal) {
+      const detalleRows = (await Database.from('historico_comercial_vehiculo_mensual')
+        .whereIn('asesor_id', asesorIds)
+        .where({ mes, anio })
+        .select(
+          'asesor_id',
+          'livianos_convenio',
+          'motos_convenio',
+          'livianos_propio',
+          'motos_propio',
+          'tarifa_carro',
+          'tarifa_moto'
+        )) as any[]
+
+      for (const r of detalleRows) {
+        vehiculoDetalleMap.set(Number(r.asesor_id), {
+          livianos_convenio: Number(r.livianos_convenio),
+          motos_convenio: Number(r.motos_convenio),
+          livianos_propio: Number(r.livianos_propio),
+          motos_propio: Number(r.motos_propio),
+          tarifa_carro: Number(r.tarifa_carro),
+          tarifa_moto: Number(r.tarifa_moto),
+        })
+      }
+    }
+
     const asesoresOut = asesorIds.map((id) => {
       const v = porAsesor.get(id) ?? { convenio: 0, comercial: 0 }
       const meta = metaMap.has(id) ? metaMap.get(id)! : null
+      const vd = vehiculoDetalleMap.get(id)
 
       let pesosConvenio: number
       let pesosComercial: number
       let cantidadConvenio: number | null
       let cantidadComercial: number | null
+      let esEstimado: boolean
 
       if (esReal) {
         // v.convenio/v.comercial ya están en pesos reales (SUM monto_asesor)
@@ -1846,12 +1894,21 @@ export default class ReportesAdministrativosController {
         pesosComercial = v.comercial
         cantidadConvenio = null
         cantidadComercial = null
+        esEstimado = false
+      } else if (vd) {
+        // Detalle real por tipo de vehículo con tarifa vigente del mes.
+        cantidadConvenio = vd.livianos_convenio + vd.motos_convenio
+        cantidadComercial = vd.livianos_propio + vd.motos_propio
+        pesosConvenio = vd.livianos_convenio * vd.tarifa_carro + vd.motos_convenio * vd.tarifa_moto
+        pesosComercial = vd.livianos_propio * vd.tarifa_carro + vd.motos_propio * vd.tarifa_moto
+        esEstimado = false
       } else {
         // v.convenio/v.comercial son CANTIDADES → convertir a pesos estimados
         cantidadConvenio = v.convenio
         cantidadComercial = v.comercial
         pesosConvenio = v.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
         pesosComercial = v.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
+        esEstimado = true
       }
 
       const pesosTotal = pesosConvenio + pesosComercial
@@ -1861,7 +1918,7 @@ export default class ReportesAdministrativosController {
         asesor_id: id,
         asesor_nombre: nombreMap.get(id) ?? '—',
         fuente: esReal ? 'real' : 'historico',
-        es_estimado: !esReal,
+        es_estimado: esEstimado,
         cantidad_convenio: cantidadConvenio,
         cantidad_comercial: cantidadComercial,
         pesos_convenio: pesosConvenio,
@@ -1996,11 +2053,180 @@ export default class ReportesAdministrativosController {
   }
 
   /**
+   * Semanas históricas (mes < corte comercial) con pesos por tipo
+   * (convenio/comercial), prorrateando el total mensual real por tipo de
+   * vehículo (historico_comercial_vehiculo_mensual) según la proporción de
+   * cantidad semanal de cada asesor sobre su total mensual — o, si el
+   * asesor/mes no tiene fila de detalle, con la tarifa plana estimada
+   * (VALOR_ESTIMADO_ASESOR_*), igual que antes. Compartido por
+   * metaComercialSemanal y metaComercialProyectado (rama histórica) para no
+   * duplicar el prorrateo.
+   *
+   * esEstimado=true solo cuando NINGÚN asesor relevante tiene fila de
+   * detalle ese mes (todo cae a tarifa plana). Con datos mixtos (algunos
+   * asesores con detalle, otros sin) se reporta false — no ocurre hoy
+   * (feb-may tienen cobertura completa) pero queda documentado por si un
+   * asesor nuevo se agrega sin su detalle de vehículo.
+   */
+  private async calcularSemanasHistoricas(
+    asesorId: number | null,
+    mes: number,
+    anio: number
+  ): Promise<{
+    semanas: {
+      inicio: string
+      fin: string
+      cantidadConvenio: number
+      cantidadComercial: number
+      pesosConvenio: number
+      pesosComercial: number
+    }[]
+    esEstimado: boolean
+  }> {
+    const query = Database.from('historico_comercial_asesor')
+      .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
+      .select(
+        'asesor_id',
+        Database.raw("DATE_FORMAT(fecha_inicio, '%Y-%m-%d') as fecha_inicio"),
+        Database.raw("DATE_FORMAT(fecha_fin, '%Y-%m-%d') as fecha_fin"),
+        'tipo',
+        'cantidad'
+      )
+    if (asesorId) query.andWhere('asesor_id', asesorId)
+
+    const rows = (await query) as {
+      asesor_id: number
+      fecha_inicio: string
+      fecha_fin: string
+      tipo: string
+      cantidad: number
+    }[]
+
+    const perAsesorSemana = new Map<
+      number,
+      Map<string, { inicio: string; fin: string; convenio: number; comercial: number }>
+    >()
+    const perAsesorMesTotal = new Map<number, { convenio: number; comercial: number }>()
+
+    for (const r of rows) {
+      const id = Number(r.asesor_id)
+      const cantidad = Number(r.cantidad)
+
+      if (!perAsesorSemana.has(id)) perAsesorSemana.set(id, new Map())
+      const semanasAsesor = perAsesorSemana.get(id)!
+      if (!semanasAsesor.has(r.fecha_inicio)) {
+        semanasAsesor.set(r.fecha_inicio, {
+          inicio: r.fecha_inicio,
+          fin: r.fecha_fin,
+          convenio: 0,
+          comercial: 0,
+        })
+      }
+      const s = semanasAsesor.get(r.fecha_inicio)!
+      const totalAsesor = perAsesorMesTotal.get(id) ?? { convenio: 0, comercial: 0 }
+
+      if (r.tipo === 'ASESOR_CONVENIO') {
+        s.convenio += cantidad
+        totalAsesor.convenio += cantidad
+      } else {
+        s.comercial += cantidad
+        totalAsesor.comercial += cantidad
+      }
+      perAsesorMesTotal.set(id, totalAsesor)
+    }
+
+    const asesorIds = Array.from(perAsesorMesTotal.keys())
+    const vehiculoMap = new Map<number, { pesosConvenioMes: number; pesosComercialMes: number }>()
+
+    if (asesorIds.length > 0) {
+      const detalleRows = (await Database.from('historico_comercial_vehiculo_mensual')
+        .whereIn('asesor_id', asesorIds)
+        .where({ mes, anio })
+        .select(
+          'asesor_id',
+          'livianos_convenio',
+          'motos_convenio',
+          'livianos_propio',
+          'motos_propio',
+          'tarifa_carro',
+          'tarifa_moto'
+        )) as any[]
+
+      for (const r of detalleRows) {
+        const tarifaCarro = Number(r.tarifa_carro)
+        const tarifaMoto = Number(r.tarifa_moto)
+        vehiculoMap.set(Number(r.asesor_id), {
+          pesosConvenioMes: Number(r.livianos_convenio) * tarifaCarro + Number(r.motos_convenio) * tarifaMoto,
+          pesosComercialMes: Number(r.livianos_propio) * tarifaCarro + Number(r.motos_propio) * tarifaMoto,
+        })
+      }
+    }
+
+    const semanaAgregada = new Map<
+      string,
+      {
+        inicio: string
+        fin: string
+        cantidadConvenio: number
+        cantidadComercial: number
+        pesosConvenio: number
+        pesosComercial: number
+      }
+    >()
+
+    for (const [id, semanasAsesor] of perAsesorSemana) {
+      const totalAsesor = perAsesorMesTotal.get(id)!
+      const detalle = vehiculoMap.get(id)
+
+      for (const s of semanasAsesor.values()) {
+        let pesosConvenio: number
+        let pesosComercial: number
+
+        if (detalle) {
+          pesosConvenio =
+            totalAsesor.convenio > 0
+              ? (detalle.pesosConvenioMes * s.convenio) / totalAsesor.convenio
+              : 0
+          pesosComercial =
+            totalAsesor.comercial > 0
+              ? (detalle.pesosComercialMes * s.comercial) / totalAsesor.comercial
+              : 0
+        } else {
+          pesosConvenio = s.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
+          pesosComercial = s.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
+        }
+
+        if (!semanaAgregada.has(s.inicio)) {
+          semanaAgregada.set(s.inicio, {
+            inicio: s.inicio,
+            fin: s.fin,
+            cantidadConvenio: 0,
+            cantidadComercial: 0,
+            pesosConvenio: 0,
+            pesosComercial: 0,
+          })
+        }
+        const acc = semanaAgregada.get(s.inicio)!
+        acc.cantidadConvenio += s.convenio
+        acc.cantidadComercial += s.comercial
+        acc.pesosConvenio += pesosConvenio
+        acc.pesosComercial += pesosComercial
+      }
+    }
+
+    const semanas = Array.from(semanaAgregada.values()).sort((a, b) =>
+      a.inicio.localeCompare(b.inicio)
+    )
+
+    return { semanas, esEstimado: vehiculoMap.size === 0 }
+  }
+
+  /**
    * GET /reportes-admin/meta-comercial/semanal?mes=&anio=&asesor_id=
    * Funciona para AMBAS fuentes:
-   *  - histórico: lee directo historico_comercial_asesor (ya viene semanal
-   *    sábado→viernes) y convierte cantidad→pesos con la misma tarifa plana
-   *    de metaComercialResumen.
+   *  - histórico: lee historico_comercial_asesor y prorratea el total
+   *    mensual real por tipo de vehículo (calcularSemanasHistoricas) cuando
+   *    exista detalle; si no, tarifa plana estimada.
    *  - real: agrupa comisiones por semana con semanaSabadoViernes().
    */
   public async metaComercialSemanal({ request, response }: HttpContext) {
@@ -2065,54 +2291,26 @@ export default class ReportesAdministrativosController {
           pct_vs_meta: calcularPct(total, metaPesos ?? 0),
         })
       }
-    } else {
-      const query = Database.from('historico_comercial_asesor')
-        .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
-        .select(
-          Database.raw("DATE_FORMAT(fecha_inicio, '%Y-%m-%d') as fecha_inicio"),
-          Database.raw("DATE_FORMAT(fecha_fin, '%Y-%m-%d') as fecha_fin"),
-          'tipo',
-          'cantidad'
-        )
-      if (asesorId) query.andWhere('asesor_id', asesorId)
+    }
 
-      const rows = (await query) as {
-        fecha_inicio: string
-        fecha_fin: string
-        tipo: string
-        cantidad: number
-      }[]
+    let esEstimadoHistorico = true
+    if (!esReal) {
+      const { semanas: semanasCalc, esEstimado } = await this.calcularSemanasHistoricas(
+        asesorId,
+        mes,
+        anio
+      )
+      esEstimadoHistorico = esEstimado
 
-      const semanasMap = new Map<
-        string,
-        { inicio: string; fin: string; convenio: number; comercial: number }
-      >()
-      for (const r of rows) {
-        const key = r.fecha_inicio
-        if (!semanasMap.has(key)) {
-          semanasMap.set(key, {
-            inicio: key,
-            fin: r.fecha_fin,
-            convenio: 0,
-            comercial: 0,
-          })
-        }
-        const s = semanasMap.get(key)!
-        if (r.tipo === 'ASESOR_CONVENIO') s.convenio += Number(r.cantidad)
-        else s.comercial += Number(r.cantidad)
-      }
-
-      for (const s of Array.from(semanasMap.values()).sort((a, b) => a.inicio.localeCompare(b.inicio))) {
-        const pesosConvenio = s.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
-        const pesosComercial = s.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
-        const total = pesosConvenio + pesosComercial
+      for (const s of semanasCalc) {
+        const total = s.pesosConvenio + s.pesosComercial
         semanas.push({
           inicio: s.inicio,
           fin: s.fin,
-          cantidad_convenio: s.convenio,
-          cantidad_comercial: s.comercial,
-          pesos_convenio: pesosConvenio,
-          pesos_comercial: pesosComercial,
+          cantidad_convenio: s.cantidadConvenio,
+          cantidad_comercial: s.cantidadComercial,
+          pesos_convenio: s.pesosConvenio,
+          pesos_comercial: s.pesosComercial,
           pesos_total: total,
           pct_vs_meta: calcularPct(total, metaPesos ?? 0),
         })
@@ -2125,7 +2323,7 @@ export default class ReportesAdministrativosController {
       asesor_id: asesorId,
       asesor_nombre: asesorNombre,
       fuente: esReal ? 'real' : 'historico',
-      es_estimado: !esReal,
+      es_estimado: esReal ? false : esEstimadoHistorico,
       meta_pesos: metaPesos,
       semanas,
     })
@@ -2133,10 +2331,14 @@ export default class ReportesAdministrativosController {
 
   /**
    * GET /reportes-admin/meta-comercial/proyectado?mes=&anio=&asesor_id=
-   * Mismo patrón que metaMensualProyectado: promedio de lo transcurrido,
-   * proyección a fin de mes. Granularidad depende de la fuente — diaria
-   * para meses reales (reutiliza la misma agregación de metaComercialDiario),
-   * semanal para meses históricos (no hay detalle diario, ver arriba).
+   *  - mes >= corte (mes real en curso) → mismo patrón que
+   *    metaMensualProyectado: promedio de lo transcurrido, proyección a fin
+   *    de mes, granularidad diaria (reutiliza la agregación de
+   *    metaComercialDiario).
+   *  - mes < corte (histórico, ya cerrado) → NO se proyecta: el mes ya
+   *    terminó, así que "proyeccion_cierre" es simplemente el total
+   *    real/estimado ya conocido (calcularSemanasHistoricas), no una
+   *    extrapolación. Granularidad semanal (no hay detalle diario).
    */
   public async metaComercialProyectado({ request, response }: HttpContext) {
     const { mes, anio, error } = this.parseMesAnio(request)
@@ -2204,54 +2406,30 @@ export default class ReportesAdministrativosController {
       })
     }
 
-    // ── Histórico: granularidad semanal (no hay detalle diario) ──
-    const query = Database.from('historico_comercial_asesor')
-      .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
-      .select(
-        Database.raw("DATE_FORMAT(fecha_inicio, '%Y-%m-%d') as fecha_inicio"),
-        Database.raw("DATE_FORMAT(fecha_fin, '%Y-%m-%d') as fecha_fin"),
-        'tipo',
-        'cantidad'
-      )
-    if (asesorId) query.andWhere('asesor_id', asesorId)
-
-    const rows = (await query) as {
-      fecha_inicio: string
-      fecha_fin: string
-      tipo: string
-      cantidad: number
-    }[]
-
-    const semanasMap = new Map<string, { inicio: string; fin: string; pesos: number }>()
-    for (const r of rows) {
-      const key = r.fecha_inicio
-      const valorUnitario =
-        r.tipo === 'ASESOR_CONVENIO' ? VALOR_ESTIMADO_ASESOR_CONVENIO : VALOR_ESTIMADO_ASESOR_COMERCIAL
-      if (!semanasMap.has(key)) {
-        semanasMap.set(key, { inicio: key, fin: r.fecha_fin, pesos: 0 })
-      }
-      semanasMap.get(key)!.pesos += Number(r.cantidad) * valorUnitario
-    }
-
-    const semanasOrdenadas = Array.from(semanasMap.values()).sort((a, b) =>
-      a.inicio.localeCompare(b.inicio)
+    // ── Histórico: granularidad semanal, mes ya cerrado → NO se
+    // extrapola. Se muestra el total real/estimado ya conocido (mismo
+    // prorrateo real por vehículo que Semanal/Resumen cuando hay detalle).
+    const { semanas: semanasCalc, esEstimado } = await this.calcularSemanasHistoricas(
+      asesorId,
+      mes,
+      anio
     )
     const semanasTotalesMes = Math.ceil(diasDelMes / 7)
 
     let acumulado = 0
-    const periodos = semanasOrdenadas.map((s, idx) => {
-      acumulado += s.pesos
+    const periodos = semanasCalc.map((s, idx) => {
+      acumulado += s.pesosConvenio + s.pesosComercial
       const n = idx + 1
       return {
         etiqueta: `${s.inicio} — ${s.fin}`,
         acumulado,
         promedio: Math.round(acumulado / n),
-        proyeccion: Math.round((acumulado / n) * semanasTotalesMes),
+        proyeccion: acumulado,
       }
     })
 
     const ultimo = periodos[periodos.length - 1] ?? null
-    const proyeccionCierre = ultimo?.proyeccion ?? 0
+    const totalFinal = ultimo?.acumulado ?? 0
 
     return response.ok({
       mes,
@@ -2260,14 +2438,16 @@ export default class ReportesAdministrativosController {
       asesor_nombre: asesorNombre,
       fuente: 'historico',
       granularidad: 'semanal',
+      es_estimado: esEstimado,
+      nota: 'Mes histórico ya cerrado — se muestra el total real/estimado ya conocido, no una proyección.',
       meta_pesos: metaPesos,
-      periodos_transcurridos: semanasOrdenadas.length,
+      periodos_transcurridos: semanasCalc.length,
       periodos_totales: semanasTotalesMes,
       resumen: ultimo
         ? {
             promedio_por_periodo: ultimo.promedio,
-            proyeccion_cierre: proyeccionCierre,
-            pct_proyeccion: calcularPct(proyeccionCierre, metaPesos ?? 0),
+            proyeccion_cierre: totalFinal,
+            pct_proyeccion: calcularPct(totalFinal, metaPesos ?? 0),
           }
         : null,
       periodos,
