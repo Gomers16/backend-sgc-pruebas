@@ -2179,6 +2179,12 @@ router
           )
           return new ReportesAdministrativosController().metaComercialDetalleVehiculo(ctx)
         })
+        router.get('/meta-comercial/ingreso-real-dateo', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialIngresoRealDateo(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([

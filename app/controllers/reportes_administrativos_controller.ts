@@ -60,6 +60,19 @@ function bucketTipoVehiculo(tipoVehiculo: string | null | undefined): 'LIVIANO' 
 }
 
 /**
+ * Misma clasificación que bucketTipoVehiculo() pero con las etiquetas
+ * CARRO/MOTO que usa el reporte de Ingreso Real por Dateo (facturacion_tickets
+ * es un snapshot de texto libre, no un enum).
+ */
+function tipoVehiculoCarroMoto(tipoVehiculo: string | null | undefined): 'CARRO' | 'MOTO' | null {
+  if (!tipoVehiculo) return null
+  const t = tipoVehiculo.trim().toUpperCase()
+  if (t.startsWith('LIVIANO')) return 'CARRO'
+  if (t === 'MOTOCICLETA') return 'MOTO'
+  return null
+}
+
+/**
  * Dado un día cualquiera, retorna el inicio (sábado) y fin (viernes
  * siguiente) de su semana comercial sábado→viernes (NO es semana ISO).
  */
@@ -2798,6 +2811,110 @@ export default class ReportesAdministrativosController {
       categorias,
       total,
       meta_pesos: metaPesos,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/ingreso-real-dateo?mes=&anio=&asesor_id=
+   * Ingreso real de caja generado por cada dateo EXITOSO de UN asesor
+   * puntual (asesor_id es obligatorio). Cruce dateo → factura vía
+   * captacion_dateos.consumido_turno_id = facturacion_tickets.turno_id
+   * (facturacion_tickets.dateo_id casi no se usa — 1/82 casos en los datos
+   * actuales, no sirve como cruce confiable), filtrando
+   * facturacion_tickets.estado = 'CONFIRMADA'. El ingreso reportado es
+   * facturacion_tickets.total (ya neto del descuento aplicado), NO
+   * comisiones.monto_asesor (eso es el pago al asesor, otra cosa).
+   *
+   * Expone tanto el descuento de catálogo (descuento_monto_aplicado) como el
+   * verificado (total_sin_descuento - total): en este entorno de pruebas el
+   * stub de OCR nunca restó realmente el descuento, así que
+   * total_sin_descuento == total en todos los casos sembrados aunque
+   * descuento_monto_aplicado sea > 0. Se exponen ambos valores para que la
+   * discrepancia sea visible en vez de ocultarla.
+   */
+  public async metaComercialIngresoRealDateo({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const asesorIdRaw = request.input('asesor_id')
+    const asesorId = Number(asesorIdRaw)
+    if (!asesorIdRaw || !Number.isInteger(asesorId) || asesorId <= 0) {
+      return response.badRequest({ message: 'asesor_id es obligatorio para este reporte' })
+    }
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
+
+    const rows = (await Database.from('captacion_dateos as cd')
+      .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 'cd.consumido_turno_id')
+      .leftJoin('descuentos as d', 'd.id', 'ft.descuento_id')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('cd.resultado', 'EXITOSO')
+      .whereIn('cd.canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
+      .where('cd.agente_id', asesorId)
+      .whereRaw('MONTH(cd.created_at) = ? AND YEAR(cd.created_at) = ?', [mes, anio])
+      .select(
+        'cd.id as dateo_id',
+        'cd.created_at as fecha',
+        'cd.convenio_id as convenio_id',
+        'ft.tipo_vehiculo as tipo_vehiculo',
+        'ft.total as total',
+        'ft.total_sin_descuento as total_sin_descuento',
+        'ft.descuento_id as descuento_id',
+        'ft.descuento_monto_aplicado as descuento_monto_aplicado',
+        'd.nombre as descuento_nombre'
+      )
+      .orderBy('cd.created_at', 'asc')) as {
+      dateo_id: number
+      fecha: Date | string
+      convenio_id: number | null
+      tipo_vehiculo: string | null
+      total: string | null
+      total_sin_descuento: string | null
+      descuento_id: number | null
+      descuento_monto_aplicado: string | null
+      descuento_nombre: string | null
+    }[]
+
+    const detalle = rows.map((r) => {
+      const ingresoReal = Number(r.total) || 0
+      const totalSinDescuento =
+        r.total_sin_descuento === null ? ingresoReal : Number(r.total_sin_descuento)
+
+      return {
+        dateo_id: r.dateo_id,
+        fecha: DateTime.fromJSDate(new Date(r.fecha)).toISODate(),
+        tipo_captacion: (r.convenio_id === null ? 'NUEVO_DIRECTO' : 'CONVENIO') as
+          | 'NUEVO_DIRECTO'
+          | 'CONVENIO',
+        tipo_vehiculo: tipoVehiculoCarroMoto(r.tipo_vehiculo),
+        ingreso_real: ingresoReal,
+        tuvo_descuento: r.descuento_id !== null,
+        descuento_nombre: r.descuento_nombre,
+        descuento_monto: r.descuento_monto_aplicado === null ? 0 : Number(r.descuento_monto_aplicado),
+        descuento_verificado: Math.round((totalSinDescuento - ingresoReal) * 100) / 100,
+      }
+    })
+
+    const acumulado = {
+      nuevo_directo: { cantidad: 0, ingreso_real: 0 },
+      convenio: { cantidad: 0, ingreso_real: 0 },
+      total: { cantidad: 0, ingreso_real: 0 },
+    }
+    for (const fila of detalle) {
+      const bucket = fila.tipo_captacion === 'CONVENIO' ? acumulado.convenio : acumulado.nuevo_directo
+      bucket.cantidad += 1
+      bucket.ingreso_real += fila.ingreso_real
+      acumulado.total.cantidad += 1
+      acumulado.total.ingreso_real += fila.ingreso_real
+    }
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesor.nombre,
+      detalle,
+      acumulado,
     })
   }
 
