@@ -2022,19 +2022,51 @@ export default class ReportesAdministrativosController {
       .where('c.tipo_servicio', 'RTM')
       .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
       .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
-      .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo')
+      .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo', 'c.tipo_vehiculo')
+      .count('* as cantidad')
       .sum('c.monto_asesor as total')
-      .groupBy('fecha', 'a.tipo')
+      .groupBy('fecha', 'a.tipo', 'c.tipo_vehiculo')
 
     if (asesorId) query.andWhere('c.asesor_id', asesorId)
 
-    const rows = (await query) as { fecha: string; tipo: string; total: string }[]
+    const rows = (await query) as {
+      fecha: string
+      tipo: string
+      tipo_vehiculo: string | null
+      total: string
+      cantidad: string
+    }[]
 
-    const porDia = new Map<string, { convenio: number; comercial: number }>()
+    const porDia = new Map<
+      string,
+      {
+        convenio: number
+        comercial: number
+        cantidadConvenio: number
+        cantidadComercial: number
+        motos: number
+        carros: number
+      }
+    >()
     for (const r of rows) {
-      const cur = porDia.get(r.fecha) ?? { convenio: 0, comercial: 0 }
-      if (r.tipo === 'ASESOR_CONVENIO') cur.convenio += Number(r.total)
-      else cur.comercial += Number(r.total)
+      const cur = porDia.get(r.fecha) ?? {
+        convenio: 0,
+        comercial: 0,
+        cantidadConvenio: 0,
+        cantidadComercial: 0,
+        motos: 0,
+        carros: 0,
+      }
+      const cantidad = Number(r.cantidad)
+      if (r.tipo === 'ASESOR_CONVENIO') {
+        cur.convenio += Number(r.total)
+        cur.cantidadConvenio += cantidad
+      } else {
+        cur.comercial += Number(r.total)
+        cur.cantidadComercial += cantidad
+      }
+      if (r.tipo_vehiculo === 'MOTO') cur.motos += cantidad
+      else if (r.tipo_vehiculo === 'VEHICULO') cur.carros += cantidad
       porDia.set(r.fecha, cur)
     }
 
@@ -2044,12 +2076,24 @@ export default class ReportesAdministrativosController {
     const dias = []
     for (let d = 1; d <= diasDelMes; d++) {
       const fechaStr = DateTime.fromObject({ year: anio, month: mes, day: d }).toISODate() as string
-      const v = porDia.get(fechaStr) ?? { convenio: 0, comercial: 0 }
+      const v = porDia.get(fechaStr) ?? {
+        convenio: 0,
+        comercial: 0,
+        cantidadConvenio: 0,
+        cantidadComercial: 0,
+        motos: 0,
+        carros: 0,
+      }
       acumConvenio += v.convenio
       acumComercial += v.comercial
       const acumuladoTotal = acumConvenio + acumComercial
       dias.push({
         fecha: fechaStr,
+        cantidad_total: v.motos + v.carros,
+        cantidad_motos: v.motos,
+        cantidad_carros: v.carros,
+        cantidad_convenio: v.cantidadConvenio,
+        cantidad_comercial: v.cantidadComercial,
         pesos_convenio: v.convenio,
         pesos_comercial: v.comercial,
         pesos_total: v.convenio + v.comercial,
@@ -2100,8 +2144,11 @@ export default class ReportesAdministrativosController {
       cantidadComercial: number
       pesosConvenio: number
       pesosComercial: number
+      cantidadMotos: number | null
+      cantidadCarros: number | null
     }[]
     esEstimado: boolean
+    cantidadVehiculoDisponible: boolean
   }> {
     const query = Database.from('historico_comercial_asesor')
       .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
@@ -2156,7 +2203,17 @@ export default class ReportesAdministrativosController {
     }
 
     const asesorIds = Array.from(perAsesorMesTotal.keys())
-    const vehiculoMap = new Map<number, { pesosConvenioMes: number; pesosComercialMes: number }>()
+    const vehiculoMap = new Map<
+      number,
+      {
+        livianosConvenio: number
+        motosConvenio: number
+        livianosPropio: number
+        motosPropio: number
+        tarifaCarro: number
+        tarifaMoto: number
+      }
+    >()
 
     if (asesorIds.length > 0) {
       const detalleRows = (await Database.from('historico_comercial_vehiculo_mensual')
@@ -2173,14 +2230,18 @@ export default class ReportesAdministrativosController {
         )) as any[]
 
       for (const r of detalleRows) {
-        const tarifaCarro = Number(r.tarifa_carro)
-        const tarifaMoto = Number(r.tarifa_moto)
         vehiculoMap.set(Number(r.asesor_id), {
-          pesosConvenioMes: Number(r.livianos_convenio) * tarifaCarro + Number(r.motos_convenio) * tarifaMoto,
-          pesosComercialMes: Number(r.livianos_propio) * tarifaCarro + Number(r.motos_propio) * tarifaMoto,
+          livianosConvenio: Number(r.livianos_convenio),
+          motosConvenio: Number(r.motos_convenio),
+          livianosPropio: Number(r.livianos_propio),
+          motosPropio: Number(r.motos_propio),
+          tarifaCarro: Number(r.tarifa_carro),
+          tarifaMoto: Number(r.tarifa_moto),
         })
       }
     }
+
+    const cantidadVehiculoDisponible = vehiculoMap.size > 0
 
     const semanaAgregada = new Map<
       string,
@@ -2191,6 +2252,8 @@ export default class ReportesAdministrativosController {
         cantidadComercial: number
         pesosConvenio: number
         pesosComercial: number
+        cantidadMotos: number | null
+        cantidadCarros: number | null
       }
     >()
 
@@ -2201,16 +2264,24 @@ export default class ReportesAdministrativosController {
       for (const s of semanasAsesor.values()) {
         let pesosConvenio: number
         let pesosComercial: number
+        let motos: number | null = null
+        let carros: number | null = null
+
+        // Proporción de esta semana sobre el total del mes, por tipo —
+        // misma proporción usada para prorratear pesos y para prorratear
+        // motos/carros (no hay detalle semanal de vehículo, solo mensual).
+        const ratioConvenio = totalAsesor.convenio > 0 ? s.convenio / totalAsesor.convenio : 0
+        const ratioComercial = totalAsesor.comercial > 0 ? s.comercial / totalAsesor.comercial : 0
 
         if (detalle) {
           pesosConvenio =
-            totalAsesor.convenio > 0
-              ? (detalle.pesosConvenioMes * s.convenio) / totalAsesor.convenio
-              : 0
+            (detalle.livianosConvenio * detalle.tarifaCarro + detalle.motosConvenio * detalle.tarifaMoto) *
+            ratioConvenio
           pesosComercial =
-            totalAsesor.comercial > 0
-              ? (detalle.pesosComercialMes * s.comercial) / totalAsesor.comercial
-              : 0
+            (detalle.livianosPropio * detalle.tarifaCarro + detalle.motosPropio * detalle.tarifaMoto) *
+            ratioComercial
+          motos = detalle.motosConvenio * ratioConvenio + detalle.motosPropio * ratioComercial
+          carros = detalle.livianosConvenio * ratioConvenio + detalle.livianosPropio * ratioComercial
         } else {
           pesosConvenio = s.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
           pesosComercial = s.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
@@ -2224,6 +2295,8 @@ export default class ReportesAdministrativosController {
             cantidadComercial: 0,
             pesosConvenio: 0,
             pesosComercial: 0,
+            cantidadMotos: cantidadVehiculoDisponible ? 0 : null,
+            cantidadCarros: cantidadVehiculoDisponible ? 0 : null,
           })
         }
         const acc = semanaAgregada.get(s.inicio)!
@@ -2231,14 +2304,24 @@ export default class ReportesAdministrativosController {
         acc.cantidadComercial += s.comercial
         acc.pesosConvenio += pesosConvenio
         acc.pesosComercial += pesosComercial
+        if (acc.cantidadMotos !== null) acc.cantidadMotos += motos ?? 0
+        if (acc.cantidadCarros !== null) acc.cantidadCarros += carros ?? 0
       }
     }
 
-    const semanas = Array.from(semanaAgregada.values()).sort((a, b) =>
-      a.inicio.localeCompare(b.inicio)
-    )
+    // Redondear motos/carros a ENTEROS acá, una sola vez por semana — así
+    // cantidad_total (motos + carros) en metaComercialSemanal siempre cuadra
+    // exacto contra las dos columnas ya redondeadas, sin decimales sueltos
+    // ni descuadres por redondear cada columna por separado en otro punto.
+    const semanas = Array.from(semanaAgregada.values())
+      .sort((a, b) => a.inicio.localeCompare(b.inicio))
+      .map((s) => ({
+        ...s,
+        cantidadMotos: s.cantidadMotos !== null ? Math.round(s.cantidadMotos) : null,
+        cantidadCarros: s.cantidadCarros !== null ? Math.round(s.cantidadCarros) : null,
+      }))
 
-    return { semanas, esEstimado: vehiculoMap.size === 0 }
+    return { semanas, esEstimado: vehiculoMap.size === 0, cantidadVehiculoDisponible }
   }
 
   /**
@@ -2248,6 +2331,13 @@ export default class ReportesAdministrativosController {
    *    mensual real por tipo de vehículo (calcularSemanasHistoricas) cuando
    *    exista detalle; si no, tarifa plana estimada.
    *  - real: agrupa comisiones por semana con semanaSabadoViernes().
+   *
+   * Cada semana trae DOS comparaciones contra la meta, para que la tabla no
+   * confunda "esta semana sola no llega al 100%" con "el mes va mal":
+   *  - pesos_total / pct_vs_meta: aporte de ESA semana únicamente.
+   *  - acumulado_total / pct_acumulado_vs_meta: suma corrida desde el inicio
+   *    del mes — en la última semana coincide exactamente con el total y el
+   *    % de metaComercialResumen para ese asesor/mes.
    */
   public async metaComercialSemanal({ request, response }: HttpContext) {
     const { mes, anio, error } = this.parseMesAnio(request)
@@ -2264,10 +2354,17 @@ export default class ReportesAdministrativosController {
       fin: string
       cantidad_convenio: number | null
       cantidad_comercial: number | null
+      cantidad_total: number | null
+      cantidad_motos: number | null
+      cantidad_carros: number | null
       pesos_convenio: number
       pesos_comercial: number
       pesos_total: number
       pct_vs_meta: number | null
+      acumulado_convenio: number
+      acumulado_comercial: number
+      acumulado_total: number
+      pct_acumulado_vs_meta: number | null
     }[] = []
 
     if (esReal) {
@@ -2277,62 +2374,109 @@ export default class ReportesAdministrativosController {
         .where('c.tipo_servicio', 'RTM')
         .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
         .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
-        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo')
+        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo', 'c.tipo_vehiculo')
         .select('c.monto_asesor')
       if (asesorId) query.andWhere('c.asesor_id', asesorId)
 
-      const rows = (await query) as { fecha: string; tipo: string; monto_asesor: string }[]
+      const rows = (await query) as {
+        fecha: string
+        tipo: string
+        tipo_vehiculo: string | null
+        monto_asesor: string
+      }[]
 
       const semanasMap = new Map<
         string,
-        { inicio: string; fin: string; convenio: number; comercial: number }
+        { inicio: string; fin: string; convenio: number; comercial: number; motos: number; carros: number }
       >()
       for (const r of rows) {
         const { inicio, fin } = semanaSabadoViernes(DateTime.fromISO(r.fecha))
         const key = inicio.toISODate() as string
         if (!semanasMap.has(key)) {
-          semanasMap.set(key, { inicio: key, fin: fin.toISODate() as string, convenio: 0, comercial: 0 })
+          semanasMap.set(key, {
+            inicio: key,
+            fin: fin.toISODate() as string,
+            convenio: 0,
+            comercial: 0,
+            motos: 0,
+            carros: 0,
+          })
         }
         const s = semanasMap.get(key)!
         if (r.tipo === 'ASESOR_CONVENIO') s.convenio += Number(r.monto_asesor)
         else s.comercial += Number(r.monto_asesor)
+        if (r.tipo_vehiculo === 'MOTO') s.motos += 1
+        else if (r.tipo_vehiculo === 'VEHICULO') s.carros += 1
       }
 
+      let acumConvenioReal = 0
+      let acumComercialReal = 0
       for (const s of Array.from(semanasMap.values()).sort((a, b) => a.inicio.localeCompare(b.inicio))) {
         const total = s.convenio + s.comercial
+        acumConvenioReal += s.convenio
+        acumComercialReal += s.comercial
+        const acumuladoTotal = acumConvenioReal + acumComercialReal
         semanas.push({
           inicio: s.inicio,
           fin: s.fin,
           cantidad_convenio: null,
           cantidad_comercial: null,
+          cantidad_total: s.motos + s.carros,
+          cantidad_motos: s.motos,
+          cantidad_carros: s.carros,
           pesos_convenio: s.convenio,
           pesos_comercial: s.comercial,
           pesos_total: total,
           pct_vs_meta: calcularPct(total, metaPesos ?? 0),
+          acumulado_convenio: acumConvenioReal,
+          acumulado_comercial: acumComercialReal,
+          acumulado_total: acumuladoTotal,
+          pct_acumulado_vs_meta: calcularPct(acumuladoTotal, metaPesos ?? 0),
         })
       }
     }
 
     let esEstimadoHistorico = true
+    let cantidadVehiculoEstimada = false
     if (!esReal) {
-      const { semanas: semanasCalc, esEstimado } = await this.calcularSemanasHistoricas(
-        asesorId,
-        mes,
-        anio
-      )
+      const {
+        semanas: semanasCalc,
+        esEstimado,
+        cantidadVehiculoDisponible,
+      } = await this.calcularSemanasHistoricas(asesorId, mes, anio)
       esEstimadoHistorico = esEstimado
+      // El desglose moto/carro histórico SIEMPRE es prorrateado (solo hay
+      // detalle mensual, no semanal) — a diferencia de pesos, que puede ser
+      // "real" cuando existe historico_comercial_vehiculo_mensual. Se marca
+      // aparte para no confundirlo con el conteo exacto de meses reales.
+      cantidadVehiculoEstimada = cantidadVehiculoDisponible
 
+      let acumConvenioHist = 0
+      let acumComercialHist = 0
       for (const s of semanasCalc) {
         const total = s.pesosConvenio + s.pesosComercial
+        acumConvenioHist += s.pesosConvenio
+        acumComercialHist += s.pesosComercial
+        const acumuladoTotal = acumConvenioHist + acumComercialHist
         semanas.push({
           inicio: s.inicio,
           fin: s.fin,
           cantidad_convenio: s.cantidadConvenio,
           cantidad_comercial: s.cantidadComercial,
+          cantidad_total:
+            s.cantidadMotos !== null && s.cantidadCarros !== null
+              ? s.cantidadMotos + s.cantidadCarros
+              : null,
+          cantidad_motos: s.cantidadMotos,
+          cantidad_carros: s.cantidadCarros,
           pesos_convenio: s.pesosConvenio,
           pesos_comercial: s.pesosComercial,
           pesos_total: total,
           pct_vs_meta: calcularPct(total, metaPesos ?? 0),
+          acumulado_convenio: acumConvenioHist,
+          acumulado_comercial: acumComercialHist,
+          acumulado_total: acumuladoTotal,
+          pct_acumulado_vs_meta: calcularPct(acumuladoTotal, metaPesos ?? 0),
         })
       }
     }
@@ -2344,6 +2488,7 @@ export default class ReportesAdministrativosController {
       asesor_nombre: asesorNombre,
       fuente: esReal ? 'real' : 'historico',
       es_estimado: esReal ? false : esEstimadoHistorico,
+      cantidad_vehiculo_estimada: esReal ? false : cantidadVehiculoEstimada,
       meta_pesos: metaPesos,
       semanas,
     })
@@ -2471,6 +2616,188 @@ export default class ReportesAdministrativosController {
           }
         : null,
       periodos,
+    })
+  }
+
+  /**
+   * GET /reportes-admin/meta-comercial/detalle-vehiculo?mes=&anio=&asesor_id=
+   * Desglose por tipo de vehículo (livianos/motos × convenio/propio) para UN
+   * asesor puntual. asesor_id es OBLIGATORIO: esta vista no tiene sentido
+   * agregada para "todos los asesores" (mezclaría categorías de personas
+   * distintas).
+   *
+   *  - mes >= corte (real): calculado en vivo desde `comisiones` — la tabla
+   *    ya trae `tipo_vehiculo` (MOTO/VEHICULO) por fila, y `convenio_id`
+   *    (NULL = captación propia, no NULL = referida por convenio) separa
+   *    convenio/propio sin necesidad de cruzar con turnos_rtms. `tarifa` va
+   *    null por categoría (son montos reales de comisión, no cantidad ×
+   *    tarifa plana). Siempre `disponible:true` para meses reales (aunque
+   *    algún asesor tenga 0 en todas las categorías ese mes).
+   *  - mes < corte (histórico): leído directo de
+   *    historico_comercial_vehiculo_mensual (feb-may/2026 hoy). Si el
+   *    asesor/mes no tiene fila cargada ahí, responde `disponible:false` —
+   *    el frontend debe simplemente no mostrar la sección, sin tabla vacía
+   *    ni error.
+   */
+  public async metaComercialDetalleVehiculo({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const asesorIdRaw = request.input('asesor_id')
+    const asesorId = Number(asesorIdRaw)
+    if (!asesorIdRaw || !Number.isInteger(asesorId) || asesorId <= 0) {
+      return response.badRequest({ message: 'asesor_id es obligatorio para este reporte' })
+    }
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
+
+    const metaPesos = await this.metaPesosDelMes(asesorId, mes, anio)
+
+    if (esFuenteRealComercial(mes, anio)) {
+      // Meses reales: comisiones ya trae tipo_vehiculo (MOTO/VEHICULO) por
+      // fila, y convenio_id (NULL = captación propia, no NULL = referida por
+      // convenio) — no hace falta cruzar con turnos_rtms. Verificado contra
+      // los totales ya conocidos de junio/2026 (Esteban $298.200, Henry
+      // $205.200, Steven $148.300): la suma de las 4 categorías cuadra exacto.
+      const rows = (await Database.from('comisiones')
+        .where('asesor_id', asesorId)
+        .where('es_config', false)
+        .where('tipo_servicio', 'RTM')
+        .whereIn('estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
+        .whereRaw('MONTH(fecha_calculo) = ? AND YEAR(fecha_calculo) = ?', [mes, anio])
+        .whereNotNull('tipo_vehiculo')
+        .select(
+          'tipo_vehiculo',
+          Database.raw('CASE WHEN convenio_id IS NULL THEN 0 ELSE 1 END as es_convenio')
+        )
+        .count('* as cantidad')
+        .sum('monto_asesor as total')
+        .groupBy('tipo_vehiculo', 'es_convenio')) as {
+        tipo_vehiculo: string
+        es_convenio: number
+        cantidad: string
+        total: string
+      }[]
+
+      const acumulado = {
+        livianoConvenio: { cantidad: 0, pesos: 0 },
+        motoConvenio: { cantidad: 0, pesos: 0 },
+        livianoPropio: { cantidad: 0, pesos: 0 },
+        motoPropio: { cantidad: 0, pesos: 0 },
+      }
+      for (const r of rows) {
+        const cantidad = Number(r.cantidad)
+        const pesos = Number(r.total) || 0
+        const esConvenio = Number(r.es_convenio) === 1
+        const bucket =
+          r.tipo_vehiculo === 'MOTO'
+            ? esConvenio
+              ? acumulado.motoConvenio
+              : acumulado.motoPropio
+            : esConvenio
+              ? acumulado.livianoConvenio
+              : acumulado.livianoPropio
+        bucket.cantidad += cantidad
+        bucket.pesos += pesos
+      }
+
+      const categorias = [
+        { categoria: 'Livianos Convenio', cantidad: acumulado.livianoConvenio.cantidad, tarifa: null, pesos: acumulado.livianoConvenio.pesos },
+        { categoria: 'Motos Convenio', cantidad: acumulado.motoConvenio.cantidad, tarifa: null, pesos: acumulado.motoConvenio.pesos },
+        { categoria: 'Livianos Propio', cantidad: acumulado.livianoPropio.cantidad, tarifa: null, pesos: acumulado.livianoPropio.pesos },
+        { categoria: 'Motos Propio', cantidad: acumulado.motoPropio.cantidad, tarifa: null, pesos: acumulado.motoPropio.pesos },
+      ]
+
+      const total = {
+        cantidad: categorias.reduce((acc, c) => acc + c.cantidad, 0),
+        pesos: categorias.reduce((acc, c) => acc + c.pesos, 0),
+      }
+
+      return response.ok({
+        mes,
+        anio,
+        asesor_id: asesorId,
+        asesor_nombre: asesor.nombre,
+        fuente: 'real',
+        disponible: true,
+        categorias,
+        total,
+        meta_pesos: metaPesos,
+      })
+    }
+
+    const fila = (await Database.from('historico_comercial_vehiculo_mensual')
+      .where({ asesor_id: asesorId, mes, anio })
+      .first()) as
+      | {
+          livianos_convenio: number
+          motos_convenio: number
+          livianos_propio: number
+          motos_propio: number
+          tarifa_carro: string
+          tarifa_moto: string
+        }
+      | undefined
+
+    if (!fila) {
+      return response.ok({
+        mes,
+        anio,
+        asesor_id: asesorId,
+        asesor_nombre: asesor.nombre,
+        fuente: 'historico',
+        disponible: false,
+        categorias: null,
+        total: null,
+        meta_pesos: null,
+      })
+    }
+
+    const tarifaCarro = Number(fila.tarifa_carro)
+    const tarifaMoto = Number(fila.tarifa_moto)
+
+    const categorias = [
+      {
+        categoria: 'Livianos Convenio',
+        cantidad: Number(fila.livianos_convenio),
+        tarifa: tarifaCarro,
+        pesos: Number(fila.livianos_convenio) * tarifaCarro,
+      },
+      {
+        categoria: 'Motos Convenio',
+        cantidad: Number(fila.motos_convenio),
+        tarifa: tarifaMoto,
+        pesos: Number(fila.motos_convenio) * tarifaMoto,
+      },
+      {
+        categoria: 'Livianos Propio',
+        cantidad: Number(fila.livianos_propio),
+        tarifa: tarifaCarro,
+        pesos: Number(fila.livianos_propio) * tarifaCarro,
+      },
+      {
+        categoria: 'Motos Propio',
+        cantidad: Number(fila.motos_propio),
+        tarifa: tarifaMoto,
+        pesos: Number(fila.motos_propio) * tarifaMoto,
+      },
+    ]
+
+    const total = {
+      cantidad: categorias.reduce((acc, c) => acc + c.cantidad, 0),
+      pesos: categorias.reduce((acc, c) => acc + c.pesos, 0),
+    }
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesor.nombre,
+      fuente: 'historico',
+      disponible: true,
+      categorias,
+      total,
+      meta_pesos: metaPesos,
     })
   }
 

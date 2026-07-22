@@ -2173,6 +2173,12 @@ router
           )
           return new ReportesAdministrativosController().metaComercialProyectado(ctx)
         })
+        router.get('/meta-comercial/detalle-vehiculo', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialDetalleVehiculo(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([
