@@ -1932,13 +1932,33 @@ export default class ReportesAdministrativosController {
 
     asesoresOut.sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
 
+    // La nota del conjunto refleja la MEZCLA real de es_estimado entre los
+    // asesores devueltos — antes decía "tarifa plana" siempre que el mes
+    // fuera histórico, aunque todos (o algunos) tuvieran detalle real por
+    // vehículo (feb-may/2026). Ninguno estimado → mensaje transparente de
+    // cálculo real; todos estimados → tarifa plana (mensaje original);
+    // mezcla → aviso explícito de que no es uniforme.
+    const totalAsesores = asesoresOut.length
+    const estimadosCount = asesoresOut.filter((a) => a.es_estimado).length
+    const esEstimadoGlobal = totalAsesores > 0 && estimadosCount === totalAsesores
+
+    let notaGlobal: string | null = null
+    if (!esReal && totalAsesores > 0) {
+      if (estimadosCount === 0) {
+        notaGlobal = 'Cálculo real por tipo de vehículo con la tarifa vigente de cada mes — no es cálculo de nómina.'
+      } else if (estimadosCount === totalAsesores) {
+        notaGlobal = `Pesos estimados con tarifa plana ($${VALOR_ESTIMADO_ASESOR_COMERCIAL.toLocaleString('es-CO')} propio / $${VALOR_ESTIMADO_ASESOR_CONVENIO.toLocaleString('es-CO')} convenio por captación) — no es cálculo de nómina.`
+      } else {
+        notaGlobal = 'Cálculo mixto: algunos asesores usan tarifa real por tipo de vehículo y otros tarifa plana estimada (ver detalle por asesor) — no es cálculo de nómina.'
+      }
+    }
+
     return response.ok({
       mes,
       anio,
       fuente: esReal ? 'real' : 'historico',
-      nota: esReal
-        ? null
-        : `Pesos estimados con tarifa plana ($${VALOR_ESTIMADO_ASESOR_COMERCIAL.toLocaleString('es-CO')} propio / $${VALOR_ESTIMADO_ASESOR_CONVENIO.toLocaleString('es-CO')} convenio por captación) — no es cálculo de nómina.`,
+      es_estimado: esEstimadoGlobal,
+      nota: notaGlobal,
       asesores: asesoresOut,
     })
   }
