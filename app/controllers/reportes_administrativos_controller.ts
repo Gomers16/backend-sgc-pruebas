@@ -2847,6 +2847,9 @@ export default class ReportesAdministrativosController {
     const rows = (await Database.from('captacion_dateos as cd')
       .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 'cd.consumido_turno_id')
       .leftJoin('descuentos as d', 'd.id', 'ft.descuento_id')
+      .leftJoin('comisiones as com', (q) => {
+        q.on('com.captacion_dateo_id', 'cd.id').andOnVal('com.es_config', false)
+      })
       .where('ft.estado', 'CONFIRMADA')
       .where('cd.resultado', 'EXITOSO')
       .whereIn('cd.canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
@@ -2861,7 +2864,10 @@ export default class ReportesAdministrativosController {
         'ft.total_sin_descuento as total_sin_descuento',
         'ft.descuento_id as descuento_id',
         'ft.descuento_monto_aplicado as descuento_monto_aplicado',
-        'd.nombre as descuento_nombre'
+        'd.nombre as descuento_nombre',
+        'ft.placa as placa',
+        'com.monto_asesor as monto_asesor',
+        'com.estado as comision_estado'
       )
       .orderBy('cd.created_at', 'asc')) as {
       dateo_id: number
@@ -2873,6 +2879,9 @@ export default class ReportesAdministrativosController {
       descuento_id: number | null
       descuento_monto_aplicado: string | null
       descuento_nombre: string | null
+      placa: string | null
+      monto_asesor: string | null
+      comision_estado: string | null
     }[]
 
     const detalle = rows.map((r) => {
@@ -2892,13 +2901,20 @@ export default class ReportesAdministrativosController {
         descuento_nombre: r.descuento_nombre,
         descuento_monto: r.descuento_monto_aplicado === null ? 0 : Number(r.descuento_monto_aplicado),
         descuento_verificado: Math.round((totalSinDescuento - ingresoReal) * 100) / 100,
+        placa: r.placa,
+        // Valor crudo tal como está en comisiones — incluye comisiones ANULADAS
+        // (se excluyen solo de los acumulados, no de esta columna individual).
+        comision_asesor: r.monto_asesor === null ? null : Number(r.monto_asesor),
+        // Expuesto para que el frontend pueda replicar la misma exclusión al
+        // recalcular los acumulados sobre un subconjunto filtrado en memoria.
+        comision_anulada: r.comision_estado === 'ANULADA',
       }
     })
 
     const acumulado = {
-      nuevo_directo: { cantidad: 0, ingreso_real: 0 },
-      convenio: { cantidad: 0, ingreso_real: 0 },
-      total: { cantidad: 0, ingreso_real: 0 },
+      nuevo_directo: { cantidad: 0, ingreso_real: 0, comision_asesor_total: 0 },
+      convenio: { cantidad: 0, ingreso_real: 0, comision_asesor_total: 0 },
+      total: { cantidad: 0, ingreso_real: 0, comision_asesor_total: 0 },
     }
     for (const fila of detalle) {
       const bucket = fila.tipo_captacion === 'CONVENIO' ? acumulado.convenio : acumulado.nuevo_directo
@@ -2906,7 +2922,40 @@ export default class ReportesAdministrativosController {
       bucket.ingreso_real += fila.ingreso_real
       acumulado.total.cantidad += 1
       acumulado.total.ingreso_real += fila.ingreso_real
+
+      // Comisiones ANULADAS no se le pagan al asesor: se excluyen de los acumulados.
+      if (fila.comision_asesor !== null && !fila.comision_anulada) {
+        bucket.comision_asesor_total += fila.comision_asesor
+        acumulado.total.comision_asesor_total += fila.comision_asesor
+      }
     }
+
+    const resumenDescuentosPorNombre = new Map<string, { cantidad: number; monto_total: number }>()
+    for (const fila of detalle) {
+      if (!fila.tuvo_descuento) continue
+      const nombre = fila.descuento_nombre ?? 'Sin nombre'
+      const actual = resumenDescuentosPorNombre.get(nombre) ?? { cantidad: 0, monto_total: 0 }
+      actual.cantidad += 1
+      actual.monto_total += fila.descuento_monto
+      resumenDescuentosPorNombre.set(nombre, actual)
+    }
+
+    const resumenDescuentosPorTipo = Array.from(resumenDescuentosPorNombre.entries())
+      .map(([descuento_nombre, v]) => ({
+        descuento_nombre,
+        cantidad: v.cantidad,
+        monto_total: Math.round(v.monto_total * 100) / 100,
+      }))
+      .sort((a, b) => b.monto_total - a.monto_total)
+
+    const resumenDescuentosTotal = resumenDescuentosPorTipo.reduce(
+      (acc, r) => {
+        acc.cantidad += r.cantidad
+        acc.monto_total += r.monto_total
+        return acc
+      },
+      { cantidad: 0, monto_total: 0 }
+    )
 
     return response.ok({
       mes,
@@ -2915,6 +2964,10 @@ export default class ReportesAdministrativosController {
       asesor_nombre: asesor.nombre,
       detalle,
       acumulado,
+      resumen_descuentos: {
+        por_tipo: resumenDescuentosPorTipo,
+        total: resumenDescuentosTotal,
+      },
     })
   }
 

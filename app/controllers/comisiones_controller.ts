@@ -288,6 +288,7 @@ export default class ComisionesController {
     const estado = request.input('estado') as string | undefined
     const tipoVehiculo = request.input('tipoVehiculo') as string | undefined
     const placa = request.input('placa') as string | undefined // 🆕
+    const tipoAsesor = request.input('tipoAsesor') as string | undefined // 🆕
     const sortBy = (request.input('sortBy') || 'id') as string
     const order = (request.input('order') || 'desc') as 'asc' | 'desc'
 
@@ -331,6 +332,14 @@ export default class ComisionesController {
       })
     }
 
+    // 🆕 Filtro por tipo de asesor/convenio (antes solo se aplicaba en el
+    // frontend sobre la página ya paginada, rompiendo la paginación server-side)
+    if (tipoAsesor === 'ASESOR_COMERCIAL' || tipoAsesor === 'ASESOR_CONVENIO') {
+      query.whereHas('asesor', (aq) => aq.where('tipo', tipoAsesor))
+    } else if (tipoAsesor === 'CONVENIO') {
+      query.whereNotNull('convenio_id')
+    }
+
     const SORTABLE = new Set(['id', 'estado', 'fecha_calculo', 'monto', 'asesor_id', 'convenio_id'])
     let sortCol = sortBy === 'generado_at' ? 'fecha_calculo' : sortBy
     if (!SORTABLE.has(sortCol)) sortCol = 'id'
@@ -346,6 +355,118 @@ export default class ComisionesController {
       total: meta.total,
       page: meta.currentPage,
       perPage: meta.perPage,
+    })
+  }
+
+  /**
+   * GET /api/comisiones/resumen
+   * Resumen agregado (sin paginar) por tipo de captación y por estado, con
+   * los mismos filtros que index(). Se pide en paralelo a la lista paginada
+   * para no cargar la agregación en cada página.
+   */
+  public async resumen({ request, response }: HttpContext) {
+    const desde = request.input('desde') as string | undefined
+    const hasta = request.input('hasta') as string | undefined
+    const asesorId = request.input('asesorId') as number | undefined
+    const convenioId = request.input('convenioId') as number | undefined
+    const estado = request.input('estado') as string | undefined
+    const tipoVehiculo = request.input('tipoVehiculo') as string | undefined
+    const placa = request.input('placa') as string | undefined
+    const tipoAsesor = request.input('tipoAsesor') as string | undefined
+
+    const baseQuery = () => {
+      const q = Database.from('comisiones')
+        .where((qb) => qb.where('es_config', false).orWhereNull('es_config'))
+
+      if (desde) q.where('fecha_calculo', '>=', desde + ' 00:00:00')
+      if (hasta) q.where('fecha_calculo', '<=', hasta + ' 23:59:59')
+      if (asesorId) q.where('asesor_id', asesorId)
+      if (convenioId) q.where('convenio_id', convenioId)
+      if (estado) q.where('estado', estado)
+      if (tipoVehiculo && ['MOTO', 'VEHICULO'].includes(tipoVehiculo.toUpperCase()))
+        q.where('tipo_vehiculo', tipoVehiculo.toUpperCase())
+      if (placa) {
+        const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+        q.whereIn(
+          'captacion_dateo_id',
+          Database.from('captacion_dateos as cd')
+            .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+            .whereRaw("REPLACE(REPLACE(UPPER(t.placa), '-', ''), ' ', '') = ?", [placaNorm])
+            .select('cd.id')
+        )
+      }
+      if (tipoAsesor === 'ASESOR_COMERCIAL' || tipoAsesor === 'ASESOR_CONVENIO') {
+        q.whereIn(
+          'asesor_id',
+          Database.from('agentes_captacions').where('tipo', tipoAsesor).select('id')
+        )
+      } else if (tipoAsesor === 'CONVENIO') {
+        q.whereNotNull('convenio_id')
+      }
+
+      return q
+    }
+
+    // Mismo cálculo de "monto total" que valor_total en mapComisionToDto
+    // (monto_asesor/monto_convenio si existen, si no fallback a monto/base).
+    const MONTO_SQL = 'COALESCE(monto_asesor, monto) + COALESCE(monto_convenio, base)'
+
+    const porTipoRows = (await baseQuery()
+      .select(
+        Database.raw(
+          `CASE WHEN convenio_id IS NULL THEN 'NUEVO_DIRECTO' ELSE 'CONVENIO' END as tipo_captacion`
+        )
+      )
+      .count('* as cantidad')
+      .sum(Database.raw(`(${MONTO_SQL})`) as any, 'monto')
+      .groupBy('tipo_captacion')) as any[]
+
+    const porTipoCaptacion: Record<string, { cantidad: number; monto: number }> = {
+      NUEVO_DIRECTO: { cantidad: 0, monto: 0 },
+      CONVENIO: { cantidad: 0, monto: 0 },
+    }
+    let totalTipoCantidad = 0
+    let totalTipoMonto = 0
+    for (const r of porTipoRows) {
+      const cantidad = Number(r.cantidad)
+      const monto = Number(r.monto) || 0
+      porTipoCaptacion[r.tipo_captacion] = { cantidad, monto }
+      totalTipoCantidad += cantidad
+      totalTipoMonto += monto
+    }
+
+    const porEstadoRows = (await baseQuery()
+      .select('estado')
+      .count('* as cantidad')
+      .sum(Database.raw(`(${MONTO_SQL})`) as any, 'monto')
+      .groupBy('estado')) as any[]
+
+    const porEstado: Record<string, { cantidad: number; monto: number }> = {
+      PENDIENTE: { cantidad: 0, monto: 0 },
+      APROBADA: { cantidad: 0, monto: 0 },
+      PAGADA: { cantidad: 0, monto: 0 },
+      ANULADA: { cantidad: 0, monto: 0 },
+    }
+    let totalEstadoCantidad = 0
+    let totalEstadoMonto = 0
+    for (const r of porEstadoRows) {
+      const cantidad = Number(r.cantidad)
+      const monto = Number(r.monto) || 0
+      porEstado[r.estado] = { cantidad, monto }
+      totalEstadoCantidad += cantidad
+      totalEstadoMonto += monto
+    }
+
+    return response.ok({
+      por_tipo_captacion: {
+        nuevo_directo: porTipoCaptacion.NUEVO_DIRECTO,
+        convenio: porTipoCaptacion.CONVENIO,
+        total: { cantidad: totalTipoCantidad, monto: totalTipoMonto },
+      },
+      por_estado: {
+        ...porEstado,
+        total: { cantidad: totalEstadoCantidad, monto: totalEstadoMonto },
+      },
     })
   }
 
@@ -795,6 +916,13 @@ export default class ComisionesController {
 
     const fechaInicio = request.input('fecha_inicio') as string | undefined
     const fechaFin = request.input('fecha_fin') as string | undefined
+    // 🆕 Mismos filtros que index()/resumen(), para que el acordeón por
+    // asesor no ignore lo que ya está filtrando el resto de la pantalla.
+    const estado = request.input('estado') as string | undefined
+    const tipoVehiculo = request.input('tipoVehiculo') as string | undefined
+    const placa = request.input('placa') as string | undefined
+    const asesorId = request.input('asesorId') as number | undefined
+    const convenioId = request.input('convenioId') as number | undefined
 
     const query = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
@@ -810,6 +938,21 @@ export default class ComisionesController {
     if (fechaInicio && fechaFin) {
       query.whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
     }
+    if (estado) query.where('c.estado', estado)
+    if (tipoVehiculo && ['MOTO', 'VEHICULO'].includes(tipoVehiculo.toUpperCase()))
+      query.where('c.tipo_vehiculo', tipoVehiculo.toUpperCase())
+    if (placa) {
+      const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+      query.whereIn(
+        'c.captacion_dateo_id',
+        Database.from('captacion_dateos as cd')
+          .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+          .whereRaw("REPLACE(REPLACE(UPPER(t.placa), '-', ''), ' ', '') = ?", [placaNorm])
+          .select('cd.id')
+      )
+    }
+    if (asesorId) query.where('c.asesor_id', asesorId)
+    if (convenioId) query.where('c.convenio_id', convenioId)
 
     const rows = (await query
       .select(
@@ -831,7 +974,10 @@ export default class ComisionesController {
       .select(Database.raw("SUM(CASE WHEN c.estado = 'APROBADA' THEN c.monto ELSE 0 END) as total_aprobada"))
       .groupBy('a.id', 'a.nombre', 'a.tipo', 'conv.id', 'conv.nombre')
       .havingRaw(
-        "COUNT(CASE WHEN c.estado = 'PENDIENTE' THEN 1 END) + COUNT(CASE WHEN c.estado = 'APROBADA' THEN 1 END) > 0"
+        estado
+          ? "COUNT(CASE WHEN c.estado = ? THEN 1 END) > 0"
+          : "COUNT(CASE WHEN c.estado = 'PENDIENTE' THEN 1 END) + COUNT(CASE WHEN c.estado = 'APROBADA' THEN 1 END) > 0",
+        estado ? [estado] : []
       )
       .orderBy('total_por_pagar', 'desc')) as any[]
 

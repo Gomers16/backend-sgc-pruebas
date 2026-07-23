@@ -1202,6 +1202,18 @@ router
       ])
 
     router
+      .get('/comisiones/resumen', async (ctx) => {
+        const { default: ComisionesController } = await import('#controllers/comisiones_controller')
+        return new ComisionesController().resumen(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'],
+        }),
+      ])
+
+    router
       .post('/comisiones', async (ctx) => {
         const { default: ComisionesController } = await import('#controllers/comisiones_controller')
         return new ComisionesController().store(ctx)
