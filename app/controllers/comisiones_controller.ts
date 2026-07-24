@@ -289,6 +289,7 @@ export default class ComisionesController {
     const tipoVehiculo = request.input('tipoVehiculo') as string | undefined
     const placa = request.input('placa') as string | undefined // 🆕
     const tipoAsesor = request.input('tipoAsesor') as string | undefined // 🆕
+    const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
     const sortBy = (request.input('sortBy') || 'id') as string
     const order = (request.input('order') || 'desc') as 'asc' | 'desc'
 
@@ -340,6 +341,11 @@ export default class ComisionesController {
       query.whereNotNull('convenio_id')
     }
 
+    // 🆕 Filtro por tipo de captación (independiente de tipoAsesor, para poder
+    // combinarlos: ej. un comercial + solo sus comisiones de convenio)
+    if (tipoCaptacion === 'NUEVO_DIRECTO') query.whereNull('convenio_id')
+    else if (tipoCaptacion === 'CONVENIO') query.whereNotNull('convenio_id')
+
     const SORTABLE = new Set(['id', 'estado', 'fecha_calculo', 'monto', 'asesor_id', 'convenio_id'])
     let sortCol = sortBy === 'generado_at' ? 'fecha_calculo' : sortBy
     if (!SORTABLE.has(sortCol)) sortCol = 'id'
@@ -373,6 +379,7 @@ export default class ComisionesController {
     const tipoVehiculo = request.input('tipoVehiculo') as string | undefined
     const placa = request.input('placa') as string | undefined
     const tipoAsesor = request.input('tipoAsesor') as string | undefined
+    const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
 
     const baseQuery = () => {
       const q = Database.from('comisiones')
@@ -403,6 +410,12 @@ export default class ComisionesController {
       } else if (tipoAsesor === 'CONVENIO') {
         q.whereNotNull('convenio_id')
       }
+
+      // 🆕 Igual que tipoAsesor: el backend lo soporta, pero el frontend NO lo
+      // envía en la llamada de las tarjetas de arriba (quedan estáticas ante
+      // este filtro, mismo criterio que ya aplica a `estado`).
+      if (tipoCaptacion === 'NUEVO_DIRECTO') q.whereNull('convenio_id')
+      else if (tipoCaptacion === 'CONVENIO') q.whereNotNull('convenio_id')
 
       return q
     }
@@ -457,6 +470,70 @@ export default class ComisionesController {
       totalEstadoMonto += monto
     }
 
+    // 🆕 Resumen de descuentos aplicados por tipo (nombre de catálogo).
+    // `comisiones` no tiene descuento_id propio: el descuento sale del ticket
+    // de caja o del dateo (precedencia ticket > dateo, igual que
+    // mapComisionToDto). Se reutiliza esa misma función por fila para no
+    // duplicar la lógica de resolución en SQL.
+    // Respeta TODOS los filtros activos salvo `estado` (mismo criterio que
+    // "Total Generado": no está anuladas, sin importar el filtro de estado).
+    const descuentosQuery = Comision.query()
+      .where((q) => q.where('es_config', false).orWhereNull('es_config'))
+      .whereNot('estado', 'ANULADA')
+      .preload('dateo', (dq) => {
+        dq.preload('descuento')
+        dq.preload('turno', (tq) => {
+          tq.preload('facturacionTickets', (fq) => fq.preload('descuento'))
+        })
+      })
+
+    if (desde) descuentosQuery.where('fecha_calculo', '>=', desde + ' 00:00:00')
+    if (hasta) descuentosQuery.where('fecha_calculo', '<=', hasta + ' 23:59:59')
+    if (asesorId) descuentosQuery.where('asesor_id', asesorId)
+    if (convenioId) descuentosQuery.where('convenio_id', convenioId)
+    if (tipoVehiculo && ['MOTO', 'VEHICULO'].includes(tipoVehiculo.toUpperCase()))
+      descuentosQuery.where('tipo_vehiculo', tipoVehiculo.toUpperCase())
+    if (placa) {
+      const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+      descuentosQuery.whereHas('dateo', (dq) => {
+        dq.whereHas('turno', (tq) => {
+          tq.whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placaNorm])
+        })
+      })
+    }
+    if (tipoAsesor === 'ASESOR_COMERCIAL' || tipoAsesor === 'ASESOR_CONVENIO') {
+      descuentosQuery.whereHas('asesor', (aq) => aq.where('tipo', tipoAsesor))
+    } else if (tipoAsesor === 'CONVENIO') {
+      descuentosQuery.whereNotNull('convenio_id')
+    }
+    if (tipoCaptacion === 'NUEVO_DIRECTO') descuentosQuery.whereNull('convenio_id')
+    else if (tipoCaptacion === 'CONVENIO') descuentosQuery.whereNotNull('convenio_id')
+
+    const filasDescuento = await descuentosQuery
+
+    const porDescuentoMap = new Map<
+      number,
+      { descuento_id: number; nombre: string; cantidad: number; monto: number }
+    >()
+    for (const c of filasDescuento) {
+      const dto = mapComisionToDto(c)
+      if (!dto.descuento || !dto.descuento_monto_aplicado) continue
+      const actual = porDescuentoMap.get(dto.descuento.id) ?? {
+        descuento_id: dto.descuento.id,
+        nombre: dto.descuento.nombre,
+        cantidad: 0,
+        monto: 0,
+      }
+      actual.cantidad += 1
+      actual.monto += dto.descuento_monto_aplicado
+      porDescuentoMap.set(dto.descuento.id, actual)
+    }
+    const porDescuento = Array.from(porDescuentoMap.values()).sort((a, b) => b.monto - a.monto)
+    const totalDescuentos = porDescuento.reduce(
+      (acc, r) => ({ cantidad: acc.cantidad + r.cantidad, monto: acc.monto + r.monto }),
+      { cantidad: 0, monto: 0 }
+    )
+
     return response.ok({
       por_tipo_captacion: {
         nuevo_directo: porTipoCaptacion.NUEVO_DIRECTO,
@@ -466,6 +543,10 @@ export default class ComisionesController {
       por_estado: {
         ...porEstado,
         total: { cantidad: totalEstadoCantidad, monto: totalEstadoMonto },
+      },
+      resumen_descuentos: {
+        total: totalDescuentos,
+        por_tipo: porDescuento,
       },
     })
   }
@@ -923,6 +1004,7 @@ export default class ComisionesController {
     const placa = request.input('placa') as string | undefined
     const asesorId = request.input('asesorId') as number | undefined
     const convenioId = request.input('convenioId') as number | undefined
+    const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
 
     const query = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
@@ -953,6 +1035,8 @@ export default class ComisionesController {
     }
     if (asesorId) query.where('c.asesor_id', asesorId)
     if (convenioId) query.where('c.convenio_id', convenioId)
+    if (tipoCaptacion === 'NUEVO_DIRECTO') query.whereNull('c.convenio_id')
+    else if (tipoCaptacion === 'CONVENIO') query.whereNotNull('c.convenio_id')
 
     const rows = (await query
       .select(
