@@ -7,6 +7,7 @@ import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
+import Liquidacion from '#models/liquidacion'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -38,6 +39,15 @@ function parseRangoFechas(request: HttpContext['request']): {
   }
 
   return { fechaInicio, fechaFin }
+}
+
+/** Convierte un GROUP_CONCAT(...) de MySQL ("1,2,3" | null | "") en number[]. */
+function parseIdList(raw: unknown): number[] {
+  if (!raw) return []
+  return String(raw)
+    .split(',')
+    .filter((s) => s.length > 0)
+    .map(Number)
 }
 
 /* ======================== META MENSUAL — HELPERS ======================== */
@@ -1373,6 +1383,390 @@ export default class ReportesAdministrativosController {
       total_convenio: totales.total_convenio,
       total_comision: totales.total_comision,
       detalle,
+    }
+  }
+
+  /**
+   * Construye las 3 secciones de desglose individual (Asesor Comercial,
+   * Asesor Convenio, Convenio) sobre `comisiones`. Es la misma agregación
+   * que usa reporteComisiones(), parametrizada para poder:
+   *  - filtrar por tipoServicio (ej. 'RTM' para el modal de Liquidación),
+   *    sin afectar a reporteComisiones() que sigue trayendo todos los
+   *    servicios (no se le pasa este parámetro).
+   *  - opcionalmente exponer los ids de comisión de cada fila
+   *    (comision_ids / comision_ids_pagables), necesarios para poder
+   *    seleccionar y pagar puntualmente desde el modal de Liquidación.
+   *    reporteComisiones() no pide esto (incluirIds=false) para no crecer
+   *    el payload de un reporte de solo lectura que ya se usa para exportar.
+   */
+  private async buildDesgloseComisiones(opts: {
+    fechaInicio: string
+    fechaFin: string
+    estado: string | null
+    tipoServicio?: string
+    incluirIds?: boolean
+  }) {
+    const { fechaInicio, fechaFin, estado, tipoServicio, incluirIds } = opts
+
+    const aplicarFiltrosComunes = (q: ReturnType<typeof Database.from>) => {
+      q.where('c.es_config', false).whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [
+        fechaInicio,
+        fechaFin,
+      ])
+      if (tipoServicio) q.where('c.tipo_servicio', tipoServicio)
+      if (estado) q.where('c.estado', estado)
+    }
+    const idsSelect = incluirIds
+      ? [
+          Database.raw('GROUP_CONCAT(DISTINCT c.id) as comision_ids'),
+          Database.raw(
+            `GROUP_CONCAT(DISTINCT CASE WHEN c.estado IN ('PENDIENTE','APROBADA') THEN c.id END) as comision_ids_pagables`
+          ),
+          // Monto real a pagar de esta fila: solo la porción PENDIENTE/APROBADA,
+          // NO el total_asesor/total_convenio de la fila (que incluye también
+          // lo ya PAGADA/ANULADA). Mismo criterio que calcTotalItem() en el
+          // frontend (monto_asesor + monto_convenio = monto).
+          Database.raw(
+            `SUM(CASE WHEN c.estado IN ('PENDIENTE','APROBADA') THEN c.monto ELSE 0 END) as monto_pagable`
+          ),
+        ]
+      : []
+
+    // ===== Asesor Comercial =====
+    const qComerciales = Database.from('comisiones as c').join(
+      'agentes_captacions as a',
+      'a.id',
+      'c.asesor_id'
+    )
+    aplicarFiltrosComunes(qComerciales)
+    qComerciales.where('a.tipo', 'ASESOR_COMERCIAL')
+
+    const comercialesRows = (await qComerciales
+      .select('a.id as asesor_id', 'a.nombre as asesor_nombre')
+      .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
+      .select(...idsSelect)
+      .count('* as cantidad_vehiculos')
+      .sum('c.monto_asesor as total_asesor')
+      .groupBy('a.id', 'a.nombre')
+      .orderBy('total_asesor', 'desc')) as any[]
+
+    const comerciales = comercialesRows.map((r) => ({
+      asesor_id: Number(r.asesor_id),
+      asesor_nombre: r.asesor_nombre,
+      cantidad_vehiculos: Number(r.cantidad_vehiculos),
+      total_asesor: Number(r.total_asesor) || 0,
+      estados: String(r.estados ?? ''),
+      ...(incluirIds
+        ? {
+            comision_ids: parseIdList(r.comision_ids),
+            comision_ids_pagables: parseIdList(r.comision_ids_pagables),
+            monto_pagable: Number(r.monto_pagable) || 0,
+          }
+        : {}),
+    }))
+
+    // ===== Asesor Convenio =====
+    const qAsesoresConvenio = Database.from('comisiones as c')
+      .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
+    aplicarFiltrosComunes(qAsesoresConvenio)
+    qAsesoresConvenio.where('a.tipo', 'ASESOR_CONVENIO')
+
+    const asesoresConvenioRows = (await qAsesoresConvenio
+      .select('a.id as asesor_id', 'a.nombre as asesor_nombre', 'conv.nombre as convenio_nombre')
+      .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
+      .select(...idsSelect)
+      .count('* as cantidad_vehiculos')
+      .sum('c.monto_asesor as total_asesor')
+      .sum('c.monto_convenio as total_convenio')
+      .sum('c.monto as total_comision')
+      .groupBy('a.id', 'a.nombre', 'conv.id', 'conv.nombre')
+      .orderBy('total_comision', 'desc')) as any[]
+
+    const asesoresConvenio = asesoresConvenioRows.map((r) => ({
+      asesor_id: Number(r.asesor_id),
+      asesor_nombre: r.asesor_nombre,
+      convenio_nombre: r.convenio_nombre ?? null,
+      cantidad_vehiculos: Number(r.cantidad_vehiculos),
+      total_asesor: Number(r.total_asesor) || 0,
+      total_convenio: Number(r.total_convenio) || 0,
+      total_comision: Number(r.total_comision) || 0,
+      estados: String(r.estados ?? ''),
+      ...(incluirIds
+        ? {
+            comision_ids: parseIdList(r.comision_ids),
+            comision_ids_pagables: parseIdList(r.comision_ids_pagables),
+            monto_pagable: Number(r.monto_pagable) || 0,
+          }
+        : {}),
+    }))
+
+    // ===== Convenio (solo asesor comercial referenciando un convenio —
+    // los asesores tipo ASESOR_CONVENIO ya están arriba, no se duplican) =====
+    const qConvenios = Database.from('comisiones as c')
+      .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .join('convenios as conv', 'conv.id', 'c.convenio_id')
+    aplicarFiltrosComunes(qConvenios)
+    qConvenios.where('a.tipo', 'ASESOR_COMERCIAL')
+
+    const conveniosRows = (await qConvenios
+      .select(
+        'conv.id as convenio_id',
+        'conv.nombre as convenio_nombre',
+        'a.nombre as asesor_comercial_nombre'
+      )
+      .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
+      .select(...idsSelect)
+      .count('* as cantidad_vehiculos')
+      .sum('c.monto_convenio as total_convenio')
+      .groupBy('conv.id', 'conv.nombre', 'a.id', 'a.nombre')
+      .orderBy('total_convenio', 'desc')) as any[]
+
+    const convenios = conveniosRows.map((r) => ({
+      convenio_id: Number(r.convenio_id),
+      convenio_nombre: r.convenio_nombre,
+      asesor_comercial_nombre: r.asesor_comercial_nombre,
+      cantidad_vehiculos: Number(r.cantidad_vehiculos),
+      total_convenio: Number(r.total_convenio) || 0,
+      estados: String(r.estados ?? ''),
+      ...(incluirIds
+        ? {
+            comision_ids: parseIdList(r.comision_ids),
+            comision_ids_pagables: parseIdList(r.comision_ids_pagables),
+            monto_pagable: Number(r.monto_pagable) || 0,
+          }
+        : {}),
+    }))
+
+    return { comerciales, asesoresConvenio, convenios }
+  }
+
+  /**
+   * GET /reportes-admin/liquidacion-rtm?fecha_inicio=&fecha_fin=
+   * Modal de Liquidación RTM (ComisionesList.vue → botón "Liquidar"):
+   * comisiones de tipo_servicio='RTM' únicamente, con:
+   *  - resumen general del periodo,
+   *  - desglose por canal de captación (captacion_dateos.canal: FACHADA,
+   *    ASESOR_COMERCIAL, ASESOR_CONVENIO, TELE, REDES) con cantidad/monto/%,
+   *  - las mismas 3 secciones individuales de reporteComisiones() pero
+   *    filtradas a RTM y con los ids de comisión expuestos (comision_ids /
+   *    comision_ids_pagables) para habilitar selección y pago puntual.
+   */
+  /**
+   * Facturación REAL por canal de captación para turnos RTM confirmados en
+   * un rango (facturacion_tickets, NO comisiones). A diferencia del
+   * desglose de comisiones, esto SI incluye FACHADA/TELE/REDES: turnos sin
+   * asesor comercial/convenio asociado no generan fila en `comisiones`
+   * (monto $0 ahí), pero SI generaron dinero real cobrado al cliente en
+   * facturacion_tickets. Mismo patrón/fuente que ingresosPorCanal(), acotado
+   * a servicio_codigo='RTM'. El % es sobre el total facturado del propio
+   * desglose (no sobre el resumen de comisiones, que es otra fuente).
+   */
+  private async buildPorCanalFacturacionRtm(fechaInicio: string, fechaFin: string) {
+    const rows = (await Database.from('facturacion_tickets as ft')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
+      .count('* as cantidad')
+      .sum('ft.total as monto')
+      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
+      .orderBy('monto', 'desc')) as any[]
+
+    const totalMonto = rows.reduce((acc, r) => acc + (Number(r.monto) || 0), 0)
+
+    const porCanal = rows.map((r) => {
+      const monto = Number(r.monto) || 0
+      return {
+        canal: r.canal,
+        cantidad: Number(r.cantidad),
+        monto,
+        porcentaje: totalMonto > 0 ? Number(((monto / totalMonto) * 100).toFixed(2)) : 0,
+      }
+    })
+
+    return { porCanal, totalMonto }
+  }
+
+  public async liquidacionRtm({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    // ===== Resumen general (solo RTM, basado en comisiones — sin cambios) =====
+    const resumenRows = (await Database.from('comisiones')
+      .where('es_config', false)
+      .where('tipo_servicio', 'RTM')
+      .whereRaw('DATE(fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .count('* as cantidad')
+      .sum('monto as monto')
+      .first()) as any
+
+    const totalComisiones = Number(resumenRows?.cantidad) || 0
+    const totalMonto = Number(resumenRows?.monto) || 0
+
+    // ===== Por canal de captación (facturación real, incluye FACHADA/TELE/REDES) =====
+    const { porCanal } = await this.buildPorCanalFacturacionRtm(fechaInicio, fechaFin)
+
+    // ===== 3 secciones individuales, filtradas a RTM, con ids =====
+    const { comerciales, asesoresConvenio, convenios } = await this.buildDesgloseComisiones({
+      fechaInicio,
+      fechaFin,
+      estado: null,
+      tipoServicio: 'RTM',
+      incluirIds: true,
+    })
+
+    return {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      resumen: { total_comisiones: totalComisiones, total_monto: totalMonto },
+      por_canal: porCanal,
+      comerciales,
+      asesores_convenio: asesoresConvenio,
+      convenios,
+    }
+  }
+
+  /**
+   * GET /reportes-admin/historial-liquidaciones?page=&per_page=&fecha_inicio=&fecha_fin=
+   * Lista paginada de eventos de liquidación (cabecera de cada pago
+   * ejecutado, desde cualquiera de los 3 orígenes). El filtro de fecha
+   * opcional aplica sobre la fecha en que se ejecutó el pago (created_at),
+   * no sobre el período cubierto por las comisiones pagadas.
+   */
+  public async historialLiquidaciones({ request }: HttpContext) {
+    const page = Math.max(1, Number(request.input('page', 1)) || 1)
+    const perPage = Math.min(100, Math.max(1, Number(request.input('per_page', 20)) || 20))
+    const fechaInicio = request.input('fecha_inicio') as string | undefined
+    const fechaFin = request.input('fecha_fin') as string | undefined
+
+    const query = Liquidacion.query().preload('usuario').orderBy('created_at', 'desc')
+
+    if (fechaInicio && fechaFin) {
+      query.whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+    }
+
+    const paginated = await query.paginate(page, perPage)
+    const meta = paginated.getMeta()
+    const data = paginated.all().map((l) => ({
+      id: l.id,
+      fecha_evento: l.createdAt.toISODate(),
+      fecha_inicio: l.fechaInicio.toISODate(),
+      fecha_fin: l.fechaFin.toISODate(),
+      tipo_origen: l.tipoOrigen,
+      tipo_periodo: l.tipoPeriodo,
+      monto_total: Number(l.montoTotal),
+      cantidad_comisiones: l.cantidadComisiones,
+      usuario: l.usuario ? `${l.usuario.nombres} ${l.usuario.apellidos}`.trim() : null,
+    }))
+
+    return {
+      data,
+      total: meta.total,
+      page: meta.currentPage,
+      perPage: meta.perPage,
+    }
+  }
+
+  /**
+   * GET /reportes-admin/historial-liquidaciones/:id
+   * Detalle de comisiones incluidas en un evento de liquidación puntual
+   * (para la fila expandible del historial).
+   */
+  public async historialLiquidacionDetalle({ params, response }: HttpContext) {
+    const liquidacion = await Liquidacion.query()
+      .where('id', params.id)
+      .preload('usuario')
+      .first()
+    if (!liquidacion) return response.notFound({ message: 'Liquidación no encontrada' })
+
+    const detalle = (await Database.from('liquidacion_detalle as ld')
+      .join('comisiones as c', 'c.id', 'ld.comision_id')
+      .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
+      .where('ld.liquidacion_id', params.id)
+      .select(
+        'c.id as comision_id',
+        'c.tipo_vehiculo',
+        'c.fecha_calculo',
+        'c.estado',
+        'a.nombre as asesor_nombre',
+        'conv.nombre as convenio_nombre',
+        'ld.monto'
+      )
+      .orderBy('c.fecha_calculo', 'asc')) as any[]
+
+    return {
+      liquidacion: {
+        id: liquidacion.id,
+        fecha_evento: liquidacion.createdAt.toISODate(),
+        fecha_inicio: liquidacion.fechaInicio.toISODate(),
+        fecha_fin: liquidacion.fechaFin.toISODate(),
+        tipo_origen: liquidacion.tipoOrigen,
+        tipo_periodo: liquidacion.tipoPeriodo,
+        monto_total: Number(liquidacion.montoTotal),
+        cantidad_comisiones: liquidacion.cantidadComisiones,
+        usuario: liquidacion.usuario
+          ? `${liquidacion.usuario.nombres} ${liquidacion.usuario.apellidos}`.trim()
+          : null,
+      },
+      detalle: detalle.map((d) => ({
+        comision_id: Number(d.comision_id),
+        tipo_vehiculo: d.tipo_vehiculo,
+        fecha_calculo: d.fecha_calculo,
+        estado: d.estado,
+        asesor_nombre: d.asesor_nombre ?? null,
+        convenio_nombre: d.convenio_nombre ?? null,
+        monto: Number(d.monto) || 0,
+      })),
+    }
+  }
+
+  /**
+   * GET /reportes-admin/trazabilidad-rtm?fecha_inicio=&fecha_fin=
+   * Trazabilidad histórica agregada, SOLO sobre comisiones RTM en estado
+   * PAGADA (no pendiente/aprobada), para rangos largos (3-5 meses, año en
+   * curso, o manual). Reutiliza buildDesgloseComisiones con estado fijo
+   * en 'PAGADA' — mismas 3 secciones que el modal de Liquidación RTM.
+   */
+  public async trazabilidadRtm({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const resumenRow = (await Database.from('comisiones')
+      .where('es_config', false)
+      .where('tipo_servicio', 'RTM')
+      .where('estado', 'PAGADA')
+      .whereRaw('DATE(fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .count('* as cantidad')
+      .sum('monto as monto')
+      .first()) as any
+
+    const { comerciales, asesoresConvenio, convenios } = await this.buildDesgloseComisiones({
+      fechaInicio,
+      fechaFin,
+      estado: 'PAGADA',
+      tipoServicio: 'RTM',
+      incluirIds: false,
+    })
+
+    // Por canal de captación: facturación REAL generada (facturacion_tickets),
+    // SIN filtrar por estado de comisión — a diferencia de las 3 secciones de
+    // arriba, que sí filtran solo lo PAGADA. Por eso el frontend lo etiqueta
+    // como "generado" en vez de "pagado".
+    const { porCanal } = await this.buildPorCanalFacturacionRtm(fechaInicio, fechaFin)
+
+    return {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      resumen: {
+        total_comisiones: Number(resumenRow?.cantidad) || 0,
+        total_monto: Number(resumenRow?.monto) || 0,
+      },
+      por_canal: porCanal,
+      comerciales,
+      asesores_convenio: asesoresConvenio,
+      convenios,
     }
   }
 

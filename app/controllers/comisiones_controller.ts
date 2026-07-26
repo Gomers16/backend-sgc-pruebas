@@ -6,6 +6,8 @@ import Database from '@adonisjs/lucid/services/db'
 import Comision from '#models/comision'
 import AgenteCaptacion from '#models/agente_captacion'
 import TurnoRtm from '#models/turno_rtm'
+import Liquidacion, { type LiquidacionTipoOrigen, type LiquidacionTipoPeriodo } from '#models/liquidacion'
+import LiquidacionDetalle from '#models/liquidacion_detalle'
 
 /* ========= Helpers ========= */
 function toNumber(v: any): number {
@@ -906,7 +908,23 @@ export default class ComisionesController {
    * una transacción para que sea todo-o-nada.
    */
   public async pagarMasivo({ request, response, auth }: HttpContext) {
-    const { ids, accion, fecha_pago: fechaPago } = request.only(['ids', 'accion', 'fecha_pago'])
+    const {
+      ids,
+      accion,
+      fecha_pago: fechaPago,
+      origen,
+      tipo_periodo: tipoPeriodoRaw,
+      fecha_inicio: fechaInicioRaw,
+      fecha_fin: fechaFinRaw,
+    } = request.only([
+      'ids',
+      'accion',
+      'fecha_pago',
+      'origen',
+      'tipo_periodo',
+      'fecha_inicio',
+      'fecha_fin',
+    ])
 
     if (!Array.isArray(ids) || ids.length === 0) {
       return response.badRequest({ message: 'ids es requerido y debe ser un arreglo no vacío' })
@@ -926,6 +944,23 @@ export default class ComisionesController {
 
     const usuarioId = auth.user?.id ?? null
     const ahora = DateTime.now()
+
+    // Origen del pago (modal Liquidar / tabla general / panel por asesor):
+    // lo declara el frontend, ya que el backend no puede inferirlo de los
+    // ids solos. Si no llega (llamador desconocido/futuro), se asume el
+    // caso más genérico en vez de romper el pago por un dato de trazabilidad.
+    const ORIGENES_VALIDOS: LiquidacionTipoOrigen[] = [
+      'MODAL_LIQUIDAR',
+      'TABLA_GENERAL',
+      'PANEL_ASESOR',
+    ]
+    const tipoOrigen: LiquidacionTipoOrigen = ORIGENES_VALIDOS.includes(origen)
+      ? origen
+      : 'TABLA_GENERAL'
+    const PERIODOS_VALIDOS = ['DIARIO', 'SEMANAL', 'QUINCENAL', 'MENSUAL']
+    const tipoPeriodo: LiquidacionTipoPeriodo = PERIODOS_VALIDOS.includes(tipoPeriodoRaw)
+      ? tipoPeriodoRaw
+      : null
 
     const trx = await Database.transaction()
     try {
@@ -954,6 +989,8 @@ export default class ComisionesController {
           .where('es_config', false)
           .whereIn('estado', ['PENDIENTE', 'APROBADA'])
 
+        const comisionesRtmPagadas: Comision[] = []
+
         for (const c of comisiones) {
           c.useTransaction(trx)
           if (!c.aprobadoAt) {
@@ -965,6 +1002,57 @@ export default class ComisionesController {
           c.pagadoPor = usuarioId
           await c.save()
           idsActualizadas.push(c.id)
+          if (c.tipoServicio === 'RTM') comisionesRtmPagadas.push(c)
+        }
+
+        // Historial de liquidaciones: un registro por CADA pago ejecutado
+        // (sin importar el origen), pero SOLO sobre comisiones RTM (mismo
+        // alcance que el modal de Liquidar) y SOLO para PAGAR, no APROBAR.
+        // Si el batch pagado no trae ninguna comisión RTM, no se crea evento.
+        if (comisionesRtmPagadas.length > 0) {
+          const detalle = comisionesRtmPagadas.map((c) => ({
+            comisionId: c.id,
+            monto: toNumber(c.montoAsesor) + toNumber(c.montoConvenio),
+          }))
+          const montoTotal = detalle.reduce((acc, d) => acc + d.monto, 0)
+
+          const fechasCalculo = comisionesRtmPagadas.map((c) => c.fechaCalculo)
+          const fechaInicioModal =
+            tipoOrigen === 'MODAL_LIQUIDAR' && fechaInicioRaw
+              ? DateTime.fromISO(String(fechaInicioRaw))
+              : null
+          const fechaFinModal =
+            tipoOrigen === 'MODAL_LIQUIDAR' && fechaFinRaw
+              ? DateTime.fromISO(String(fechaFinRaw))
+              : null
+          const fechaInicio =
+            fechaInicioModal && fechaInicioModal.isValid
+              ? fechaInicioModal
+              : DateTime.min(...fechasCalculo) ?? ahora
+          const fechaFin =
+            fechaFinModal && fechaFinModal.isValid
+              ? fechaFinModal
+              : DateTime.max(...fechasCalculo) ?? ahora
+
+          const liquidacion = new Liquidacion()
+          liquidacion.useTransaction(trx)
+          liquidacion.fechaInicio = fechaInicio
+          liquidacion.fechaFin = fechaFin
+          liquidacion.tipoOrigen = tipoOrigen
+          liquidacion.tipoPeriodo = tipoOrigen === 'MODAL_LIQUIDAR' ? tipoPeriodo : null
+          liquidacion.montoTotal = montoTotal
+          liquidacion.cantidadComisiones = comisionesRtmPagadas.length
+          liquidacion.usuarioId = usuarioId
+          await liquidacion.save()
+
+          await LiquidacionDetalle.createMany(
+            detalle.map((d) => ({
+              liquidacionId: liquidacion.id,
+              comisionId: d.comisionId,
+              monto: d.monto,
+            })),
+            { client: trx }
+          )
         }
       }
 
