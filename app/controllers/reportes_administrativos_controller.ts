@@ -2,6 +2,7 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
+import ExcelJS from 'exceljs'
 
 import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
@@ -1588,10 +1589,8 @@ export default class ReportesAdministrativosController {
     return { porCanal, totalMonto }
   }
 
-  public async liquidacionRtm({ request, response }: HttpContext) {
-    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
-    if (error) return response.badRequest({ message: error })
-
+  /** Cálculo compartido por liquidacionRtm() (JSON) y liquidacionRtmExcel() (.xlsx). */
+  private async computeLiquidacionRtmData(fechaInicio: string, fechaFin: string) {
     // ===== Resumen general (solo RTM, basado en comisiones — sin cambios) =====
     const resumenRows = (await Database.from('comisiones')
       .where('es_config', false)
@@ -1625,6 +1624,29 @@ export default class ReportesAdministrativosController {
       asesores_convenio: asesoresConvenio,
       convenios,
     }
+  }
+
+  public async liquidacionRtm({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+    return await this.computeLiquidacionRtmData(fechaInicio, fechaFin)
+  }
+
+  /** GET /reportes-admin/liquidacion-rtm/excel?fecha_inicio=&fecha_fin= */
+  public async liquidacionRtmExcel({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const data = await this.computeLiquidacionRtmData(fechaInicio, fechaFin)
+    const buffer = await this.buildLiquidacionWorkbookBuffer(data, 'Total generado RTM en el período')
+
+    const fileName = `Liquidacion_RTM_${fechaInicio}_${fechaFin}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
   }
 
   /**
@@ -1723,16 +1745,64 @@ export default class ReportesAdministrativosController {
   }
 
   /**
+   * GET /reportes-admin/historial-liquidaciones/excel?fecha_inicio=&fecha_fin=
+   * Exporta TODOS los eventos que cumplan el filtro (sin paginar — a
+   * diferencia de historialLiquidaciones(), que sí pagina para la tabla en
+   * pantalla).
+   */
+  public async historialLiquidacionesExcel({ request, response }: HttpContext) {
+    const fechaInicio = request.input('fecha_inicio') as string | undefined
+    const fechaFin = request.input('fecha_fin') as string | undefined
+
+    const query = Liquidacion.query().preload('usuario').orderBy('created_at', 'desc')
+    if (fechaInicio && fechaFin) {
+      query.whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+    }
+    const rows = await query
+
+    const ORIGEN_LABELS: Record<string, string> = {
+      MODAL_LIQUIDAR: 'Modal Liquidar',
+      TABLA_GENERAL: 'Tabla general',
+      PANEL_ASESOR: 'Panel por asesor',
+    }
+
+    const workbook = new ExcelJS.Workbook()
+    const ws = workbook.addWorksheet('Historial de Liquidaciones')
+    ws.columns = [{ width: 14 }, { width: 18 }, { width: 12 }, { width: 16 }, { width: 22 }, { width: 26 }]
+    ws.addRow(['Fecha', 'Origen', 'Periodo', 'Monto total', 'Cantidad de comisiones', 'Usuario']).font = {
+      bold: true,
+    }
+
+    rows.forEach((l) => {
+      ws.addRow([
+        l.createdAt.toISODate() ?? '',
+        ORIGEN_LABELS[l.tipoOrigen] ?? l.tipoOrigen,
+        l.tipoPeriodo ?? '—',
+        Number(l.montoTotal),
+        l.cantidadComisiones,
+        l.usuario ? `${l.usuario.nombres} ${l.usuario.apellidos}`.trim() : '—',
+      ])
+    })
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const fileName = `Historial_Liquidaciones_${DateTime.now().toISODate()}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
+  }
+
+  /**
    * GET /reportes-admin/trazabilidad-rtm?fecha_inicio=&fecha_fin=
    * Trazabilidad histórica agregada, SOLO sobre comisiones RTM en estado
    * PAGADA (no pendiente/aprobada), para rangos largos (3-5 meses, año en
    * curso, o manual). Reutiliza buildDesgloseComisiones con estado fijo
    * en 'PAGADA' — mismas 3 secciones que el modal de Liquidación RTM.
    */
-  public async trazabilidadRtm({ request, response }: HttpContext) {
-    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
-    if (error) return response.badRequest({ message: error })
-
+  /** Cálculo compartido por trazabilidadRtm() (JSON) y trazabilidadRtmExcel() (.xlsx). */
+  private async computeTrazabilidadRtmData(fechaInicio: string, fechaFin: string) {
     const resumenRow = (await Database.from('comisiones')
       .where('es_config', false)
       .where('tipo_servicio', 'RTM')
@@ -1768,6 +1838,123 @@ export default class ReportesAdministrativosController {
       asesores_convenio: asesoresConvenio,
       convenios,
     }
+  }
+
+  public async trazabilidadRtm({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+    return await this.computeTrazabilidadRtmData(fechaInicio, fechaFin)
+  }
+
+  /** GET /reportes-admin/trazabilidad-rtm/excel?fecha_inicio=&fecha_fin= */
+  public async trazabilidadRtmExcel({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const data = await this.computeTrazabilidadRtmData(fechaInicio, fechaFin)
+    const buffer = await this.buildLiquidacionWorkbookBuffer(data, 'Total pagado RTM en el rango')
+
+    const fileName = `Trazabilidad_RTM_${fechaInicio}_${fechaFin}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
+  }
+
+  /**
+   * Excel de una sola hoja con las secciones apiladas (título, resumen, por
+   * canal, y las 3 secciones de comisiones), compartido por liquidacionRtm y
+   * trazabilidadRtm — mismo layout que ya usan ambas vistas en pantalla.
+   * Usa exceljs (ya instalado y usado en turnos_rtms_controller.ts) porque a
+   * diferencia de 'xlsx' (SheetJS community, usado en el frontend), sí
+   * soporta escribir negrita real en las celdas.
+   */
+  private async buildLiquidacionWorkbookBuffer(
+    data: {
+      fecha_inicio: string
+      fecha_fin: string
+      resumen: { total_comisiones: number; total_monto: number }
+      por_canal: { canal: string; cantidad: number; monto: number; porcentaje: number }[]
+      comerciales: { asesor_nombre: string; cantidad_vehiculos: number; total_asesor: number; estados: string }[]
+      asesores_convenio: {
+        asesor_nombre: string
+        convenio_nombre: string | null
+        cantidad_vehiculos: number
+        total_asesor: number
+        total_convenio: number
+        estados: string
+      }[]
+      convenios: {
+        convenio_nombre: string
+        asesor_comercial_nombre: string
+        cantidad_vehiculos: number
+        total_convenio: number
+        estados: string
+      }[]
+    },
+    tituloTotal: string
+  ) {
+    const CANAL_LABELS: Record<string, string> = {
+      FACHADA: 'Fachada',
+      ASESOR_COMERCIAL: 'Asesor Comercial',
+      ASESOR_CONVENIO: 'Asesor Convenio',
+      TELE: 'Telemercadeo',
+      TELEMERCADEO: 'Telemercadeo',
+      REDES: 'Redes / Marketing Digital',
+    }
+
+    const workbook = new ExcelJS.Workbook()
+    const ws = workbook.addWorksheet('Liquidación RTM')
+    ws.columns = [{ width: 34 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 26 }]
+
+    const seccion = (titulo: string) => {
+      ws.addRow([titulo]).font = { bold: true }
+    }
+    const encabezadoFila = (valores: (string | number)[]) => {
+      ws.addRow(valores).font = { bold: true }
+    }
+
+    ws.addRow([`Liquidación RTM — ${data.fecha_inicio} a ${data.fecha_fin}`]).font = { bold: true, size: 13 }
+    ws.addRow([])
+
+    seccion('Resumen general')
+    ws.addRow([tituloTotal, data.resumen.total_monto])
+    ws.addRow(['Cantidad de comisiones', data.resumen.total_comisiones])
+    ws.addRow([])
+
+    seccion('Por canal de captación')
+    encabezadoFila(['Canal', 'Turnos', 'Monto', '%'])
+    data.por_canal.forEach((c) => ws.addRow([CANAL_LABELS[c.canal] ?? c.canal, c.cantidad, c.monto, c.porcentaje]))
+    ws.addRow([])
+
+    seccion('Asesores Comerciales')
+    encabezadoFila(['Asesor', 'Turnos', 'Monto', 'Estados'])
+    data.comerciales.forEach((r) => ws.addRow([r.asesor_nombre, r.cantidad_vehiculos, r.total_asesor, r.estados]))
+    ws.addRow([])
+
+    seccion('Asesores Convenio')
+    encabezadoFila(['Asesor', 'Convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'])
+    data.asesores_convenio.forEach((r) =>
+      ws.addRow([
+        r.asesor_nombre,
+        r.convenio_nombre ?? '—',
+        r.cantidad_vehiculos,
+        r.total_asesor,
+        r.total_convenio,
+        r.estados,
+      ])
+    )
+    ws.addRow([])
+
+    seccion('Convenios')
+    encabezadoFila(['Convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'])
+    data.convenios.forEach((r) =>
+      ws.addRow([r.convenio_nombre, r.asesor_comercial_nombre, r.cantidad_vehiculos, r.total_convenio, r.estados])
+    )
+
+    return await workbook.xlsx.writeBuffer()
   }
 
   /* ======================== META MENSUAL ======================== */

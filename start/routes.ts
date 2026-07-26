@@ -2131,6 +2131,18 @@ router
           )
           return new ReportesAdministrativosController().liquidacionRtm(ctx)
         })
+        router.get('/liquidacion-rtm/excel', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmExcel(ctx)
+        })
+        router.get('/historial-liquidaciones/excel', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().historialLiquidacionesExcel(ctx)
+        })
         router.get('/historial-liquidaciones', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
             '#controllers/reportes_administrativos_controller'
@@ -2148,6 +2160,12 @@ router
             '#controllers/reportes_administrativos_controller'
           )
           return new ReportesAdministrativosController().trazabilidadRtm(ctx)
+        })
+        router.get('/trazabilidad-rtm/excel', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().trazabilidadRtmExcel(ctx)
         })
         router.get('/meta-mensual/config', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
