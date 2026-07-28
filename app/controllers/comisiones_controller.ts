@@ -299,6 +299,7 @@ export default class ComisionesController {
       .where((q) => {
         q.where('es_config', false).orWhereNull('es_config')
       })
+      .where('tipo_servicio', 'RTM')
       .preload('asesor')
       .preload('convenio')
       .preload('asesorSecundario')
@@ -386,6 +387,7 @@ export default class ComisionesController {
     const baseQuery = () => {
       const q = Database.from('comisiones')
         .where((qb) => qb.where('es_config', false).orWhereNull('es_config'))
+        .where('tipo_servicio', 'RTM')
 
       if (desde) q.where('fecha_calculo', '>=', desde + ' 00:00:00')
       if (hasta) q.where('fecha_calculo', '<=', hasta + ' 23:59:59')
@@ -481,6 +483,7 @@ export default class ComisionesController {
     // "Total Generado": no está anuladas, sin importar el filtro de estado).
     const descuentosQuery = Comision.query()
       .where((q) => q.where('es_config', false).orWhereNull('es_config'))
+      .where('tipo_servicio', 'RTM')
       .whereNot('estado', 'ANULADA')
       .preload('dateo', (dq) => {
         dq.preload('descuento')
@@ -1098,6 +1101,7 @@ export default class ComisionesController {
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
       .where('c.es_config', false)
+      .where('c.tipo_servicio', 'RTM')
 
     if (tipo === 'CONVENIO') {
       query.whereNotNull('c.convenio_id')
