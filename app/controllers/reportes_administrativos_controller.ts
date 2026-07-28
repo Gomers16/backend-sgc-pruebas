@@ -161,11 +161,18 @@ async function obtenerConteoDiarioConFallback(
 
   if (esFuenteReal(mes, anio)) {
     fuente = 'real'
-    const rows = (await Database.from('turnos_rtms')
-      .where('estado', 'finalizado')
+    // Join a servicios + filtro codigo_servicio='RTM': turnos_rtms mezcla RTM
+    // con SOAT/PREV/PERI (mismo motivo que en computeProduccionPorLider /
+    // computeReporteServicios — SOAT/PREV/PERI no generan ticket en este
+    // entorno, pero sí generan fila en turnos_rtms, así que sin este filtro
+    // la Meta Mensual cuenta de más).
+    const rows = (await Database.from('turnos_rtms as t')
+      .join('servicios as s', 's.id', 't.servicio_id')
+      .where('t.estado', 'finalizado')
+      .where('s.codigo_servicio', 'RTM')
       .whereRaw(FILTRO_PLACAS_PRUEBA)
-      .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
-      .select(Database.raw("DATE_FORMAT(fecha, '%Y-%m-%d') as fecha"), 'tipo_vehiculo')) as any[]
+      .whereRaw('MONTH(t.fecha) = ? AND YEAR(t.fecha) = ?', [mes, anio])
+      .select(Database.raw("DATE_FORMAT(t.fecha, '%Y-%m-%d') as fecha"), 't.tipo_vehiculo')) as any[]
 
     const agregados = new Map<string, ConteoDiarioMeta>()
     for (const r of rows) {
