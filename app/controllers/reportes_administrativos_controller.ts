@@ -1059,6 +1059,7 @@ export default class ReportesAdministrativosController {
   private async computeIngresosPorCanal(fechaInicio: string, fechaFin: string) {
     const rows = (await Database.from('facturacion_tickets')
       .where('estado', 'CONFIRMADA')
+      .where('servicio_codigo', 'RTM')
       .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .select(Database.raw("COALESCE(captacion_canal, 'FACHADA') as captacion_canal"))
       .count('* as cantidad')
@@ -1211,6 +1212,7 @@ export default class ReportesAdministrativosController {
     const rows = (await Database.from('facturacion_tickets')
       .whereIn('captacion_canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
       .where('estado', 'CONFIRMADA')
+      .where('servicio_codigo', 'RTM')
       .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .whereNotNull('agente_id')
       .select('agente_id', 'captacion_canal')
@@ -1250,6 +1252,7 @@ export default class ReportesAdministrativosController {
     // ASESOR_CONVENIO ya están en el segmento "Asesor Convenio", no se duplican) =====
     const convenioRows = (await Database.from('facturacion_tickets')
       .where('estado', 'CONFIRMADA')
+      .where('servicio_codigo', 'RTM')
       .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .where('captacion_canal', 'ASESOR_COMERCIAL')
       .whereNotNull('convenio_nombre')
@@ -1300,6 +1303,7 @@ export default class ReportesAdministrativosController {
       .leftJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
       .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .where('ft.agente_id', agenteId)
       .where('ft.captacion_canal', canal)
@@ -1362,6 +1366,7 @@ export default class ReportesAdministrativosController {
       .leftJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
       .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .where((q) => {
         if (canal === 'FACHADA') {
@@ -1444,6 +1449,7 @@ export default class ReportesAdministrativosController {
       Database.from('turnos_rtms as t')
         .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 't.id')
         .where('ft.estado', 'CONFIRMADA')
+        .where('ft.servicio_codigo', 'RTM')
         .whereBetween('t.fecha', [fechaInicio, fechaFin])
 
     // ----- Resumen general (NUEVO / RECURRENTE / RECUPERACION) -----
@@ -1599,6 +1605,7 @@ export default class ReportesAdministrativosController {
       .innerJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
       .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
       .whereBetween('t.fecha', [fechaInicio, fechaFin])
 
     if (categoria === 'NUEVO') query.whereNull('t.meses_desde_ultima_visita')
