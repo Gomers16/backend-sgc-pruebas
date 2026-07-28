@@ -24,6 +24,7 @@ export default class ConfiguracionMetaMensuals extends BaseSchema {
        * % de crecimiento de referencia usado en el comparativo contra el
        * mismo mes del año anterior cuando no hay dato real/histórico
        * suficiente. Ej: 10.00 = +10%
+       *
        */
       table.decimal('pct_crecimiento_referencia', 5, 2).notNullable().defaultTo(0)
 

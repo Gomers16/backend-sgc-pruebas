@@ -2203,6 +2203,18 @@ router
           )
           return new ReportesAdministrativosController().metaMensualProyectado(ctx)
         })
+        router.get('/meta-mensual/rango', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualRango(ctx)
+        })
+        router.get('/super-informe/meta-mensual', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaMensualSuperInforme(ctx)
+        })
         router.get('/meta-comercial/resumen', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
             '#controllers/reportes_administrativos_controller'
@@ -2238,6 +2250,18 @@ router
             '#controllers/reportes_administrativos_controller'
           )
           return new ReportesAdministrativosController().metaComercialIngresoRealDateo(ctx)
+        })
+        router.get('/super-informe/meta-comercial', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialSuperInforme(ctx)
+        })
+        router.get('/super-informe/pdf', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().superInformePdf(ctx)
         })
       })
       .prefix('/reportes-admin')
