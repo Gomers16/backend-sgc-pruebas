@@ -758,6 +758,21 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
       ])
 
+    // ✅ Dateos del asesor con comisión ya calculada/unida por el backend
+    // (reemplaza el cruce manual listDateos + listComisiones del frontend)
+    router
+      .get('/agentes-captacion/:id/dateos-comisiones', async (ctx) => {
+        const { default: AgentesCaptacionController } = await import(
+          '#controllers/agentes_captacion_controller'
+        )
+        return new AgentesCaptacionController().dateosComisiones(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ])
+
     // ✅ CONTABILIDAD SÍ puede ver convenios de asesor
     router
       .get('/agentes-captacion/:id/convenios', async (ctx) => {

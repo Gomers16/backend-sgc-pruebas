@@ -12,6 +12,7 @@ import Prospecto from '#models/prospecto'
 import CaptacionDateo from '#models/captacion_dateo'
 import Comision from '#models/comision'
 import TurnoRtm from '#models/turno_rtm'
+import Convenio from '#models/convenio'
 
 /* ========= Helpers ========= */
 function normalizePhone(value?: string) {
@@ -678,5 +679,264 @@ export default class AgentesCaptacionController {
     )
 
     return { data: result }
+  }
+
+  /** ✅ NUEVO:
+   * GET /agentes-captacion/:id/dateos-comisiones?page=&perPage=&desde=&hasta=
+   *
+   * Reemplaza el cruce manual que hacía el frontend (listDateos + listComisiones
+   * con perPage=500, capado a 100 en el backend, perdiendo comisiones viejas).
+   * Pagina los dateos del asesor con LIMIT/OFFSET real (sin tope artificial) y
+   * les une la comisión ya calculada mediante 2 queries indexadas (no N+1):
+   * 1) la página de dateos, 2) las comisiones de esos dateos puntuales.
+   */
+  public async dateosComisiones({ params, request, response }: HttpContext) {
+    const asesorId = Number(params.id)
+    const page = Number(request.input('page') || 1)
+    const perPage = Math.min(Number(request.input('perPage') || 100), 500)
+    const desdeStr = request.input('desde') as string | undefined
+    const hastaStr = request.input('hasta') as string | undefined
+
+    const agente = await AgenteCaptacion.find(asesorId)
+    if (!agente) return response.notFound({ message: 'Asesor no encontrado' })
+
+    const esRolConvenio = agente.tipo === 'ASESOR_CONVENIO'
+
+    // El asesor convenio no tiene FK directa a `convenios`: se resuelve por
+    // nombre, igual que /api/convenios/buscar-por-nombre (exacto y luego LIKE).
+    let convenioId: number | null = null
+    if (esRolConvenio) {
+      const nombreNorm = agente.nombre.trim().replace(/\s+/g, ' ').toUpperCase()
+      const normalizeSql =
+        "UPPER(TRIM(REPLACE(REPLACE(REPLACE(nombre, '  ', ' '), '   ', ' '), '    ', ' ')))"
+
+      let convenio = await Convenio.query()
+        .whereRaw(`${normalizeSql} = ?`, [nombreNorm])
+        .where('activo', true)
+        .first()
+
+      if (!convenio) {
+        convenio = await Convenio.query()
+          .whereRaw(`${normalizeSql} LIKE ?`, [`${nombreNorm}%`])
+          .where('activo', true)
+          .first()
+      }
+      convenioId = convenio?.id ?? null
+    }
+
+    const q = CaptacionDateo.query()
+      .whereIn('canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
+      .where((qb) => {
+        qb.where('agente_id', asesorId)
+        if (convenioId !== null) qb.orWhere('convenio_id', convenioId)
+      })
+      .preload('agente')
+      .preload('convenio', (cq) => cq.select(['id', 'nombre']))
+      .preload('descuento')
+      .orderBy('id', 'desc')
+
+    if (desdeStr) q.where('created_at', '>=', `${desdeStr} 00:00:00`)
+    if (hastaStr) q.where('created_at', '<=', `${hastaStr} 23:59:59`)
+
+    const paginated = await q.paginate(page, perPage)
+    const rows = paginated.all()
+
+    // Info de turno (1 query indexada por página, no N+1)
+    const turnoIds = Array.from(
+      new Set(
+        rows
+          .map((d) => d.consumidoTurnoId)
+          .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+      )
+    )
+    let turnosById: Record<number, any> = {}
+    if (turnoIds.length) {
+      const turnos = await TurnoRtm.query()
+        .whereIn('id', turnoIds)
+        .preload('servicio')
+        .select([
+          'id',
+          'fecha',
+          'turnoNumero',
+          'turno_numero_servicio',
+          'estado',
+          'servicio_id',
+          'es_recurrente',
+          'es_recuperacion',
+          'meses_desde_ultima_visita',
+        ])
+      turnosById = Object.fromEntries(turnos.map((t) => [t.id, t]))
+    }
+
+    // Comisiones de ESTA página de dateos (1 query indexada, no N+1).
+    // Mismo filtro que usaba el frontend al unir listComisiones({asesorId})
+    // con listComisiones({convenioId}): comisión propia O del convenio del asesor.
+    const dateoIds = rows.map((d) => d.id)
+    const comisionesByDateo: Record<number, Comision[]> = {}
+    if (dateoIds.length) {
+      const comisiones = await Comision.query()
+        .whereIn('captacion_dateo_id', dateoIds)
+        .where('tipo_servicio', 'RTM')
+        .where((cq) => cq.where('es_config', false).orWhereNull('es_config'))
+        .where((cq) => {
+          cq.where('asesor_id', asesorId)
+          if (convenioId !== null) cq.orWhere('convenio_id', convenioId)
+        })
+        .preload('asesor')
+        .preload('convenio')
+
+      for (const c of comisiones) {
+        const key = c.captacionDateoId as number
+        if (!comisionesByDateo[key]) comisionesByDateo[key] = []
+        comisionesByDateo[key].push(c)
+      }
+    }
+
+    const toNum = (v: string | number | null) => (v === null ? 0 : Number(v) || 0)
+    const PRIORIDAD_ESTADO: Record<string, number> = {
+      PAGADA: 4,
+      APROBADA: 3,
+      PENDIENTE: 2,
+      ANULADA: 1,
+    }
+
+    const fmtBogotaAmPm = (dt: DateTime | null) =>
+      dt ? dt.setZone('America/Bogota').toFormat('dd/LL/yy hh:mm a') : null
+
+    const data = rows.map((d) => {
+      const anyD: any = d
+      const turno = d.consumidoTurnoId ? turnosById[d.consumidoTurnoId] : null
+      const comisionesDelDateo = comisionesByDateo[d.id] || []
+
+      let montoComision = 0
+      let estadoComision: string | null = null
+      const desgloseComision: { label: string; monto: number }[] = []
+      const comisionesRaw: {
+        id: number
+        estado: string
+        generado_at: string | null
+        monto: number
+      }[] = []
+
+      for (const c of comisionesDelDateo) {
+        const montoAsesor = c.montoAsesor !== null ? toNum(c.montoAsesor) : toNum(c.monto)
+        const montoConvenio = c.montoConvenio !== null ? toNum(c.montoConvenio) : toNum(c.base)
+        const nombreConvenio = (c as any).$preloaded?.convenio?.nombre ?? null
+        const nombreAsesor = (c as any).$preloaded?.asesor?.nombre ?? 'Asesor'
+
+        // montoRol = lo que le corresponde a ESTE asesor de ESTA fila de comisión
+        // (puede sumar ambas partes si el asesor convenio se dateó a sí mismo).
+        let montoRol = 0
+
+        if (esRolConvenio) {
+          const esConvenioDelAsesor = convenioId !== null && c.convenioId === convenioId
+          const esAsesorQueDateo = c.asesorId === asesorId
+
+          if (esConvenioDelAsesor) {
+            montoRol += montoConvenio
+            desgloseComision.push({
+              label: `💼 ${nombreConvenio ?? 'Convenio'} (incentivo)`,
+              monto: montoConvenio,
+            })
+          }
+          if (esAsesorQueDateo) {
+            montoRol += montoAsesor
+            desgloseComision.push({ label: `📋 ${nombreAsesor} (dateo)`, monto: montoAsesor })
+          }
+        } else {
+          const hayConvenio = c.convenioId !== null
+          if (hayConvenio) {
+            montoRol += montoAsesor
+            desgloseComision.push({ label: `📋 ${nombreAsesor} (dateo)`, monto: montoAsesor })
+          } else {
+            montoRol += montoAsesor + montoConvenio
+            desgloseComision.push({
+              label: `🌟 ${nombreAsesor} (comisión)`,
+              monto: montoAsesor + montoConvenio,
+            })
+          }
+        }
+
+        montoComision += montoRol
+        comisionesRaw.push({
+          id: c.id,
+          estado: c.estado,
+          generado_at: c.fechaCalculo ? c.fechaCalculo.toISO() : null,
+          monto: montoRol,
+        })
+
+        const prio = PRIORIDAD_ESTADO[c.estado] || 0
+        const prioActual = estadoComision ? PRIORIDAD_ESTADO[estadoComision] || 0 : -1
+        if (prio > prioActual) estadoComision = c.estado
+      }
+
+      const descuentoRaw = anyD.$preloaded?.descuento ?? null
+      const convenioRaw = anyD.$preloaded?.convenio ?? null
+      const agenteRaw = anyD.$preloaded?.agente ?? null
+
+      return {
+        id: d.id,
+        canal: 'ASESOR',
+        placa: d.placa,
+        telefono: d.telefono,
+        origen: d.origen,
+        observacion: d.observacion,
+        resultado: d.resultado,
+        liberado: d.liberado ?? false,
+
+        agente_id: d.agenteId,
+        agente: agenteRaw
+          ? { id: agenteRaw.id, nombre: agenteRaw.nombre, tipo: agenteRaw.tipo }
+          : null,
+
+        convenio_id: d.convenioId,
+        convenio: convenioRaw ? { id: convenioRaw.id, nombre: convenioRaw.nombre } : null,
+
+        descuento_id: d.descuentoId,
+        descuento: descuentoRaw
+          ? { id: descuentoRaw.id, codigo: descuentoRaw.codigo, nombre: descuentoRaw.nombre }
+          : null,
+
+        consumido_turno_id: d.consumidoTurnoId,
+        consumido_at: d.consumidoAt ? d.consumidoAt.toISO() : null,
+
+        es_avance: d.esAvance ?? false,
+        comprobante_avance_url: d.comprobanteAvanceUrl ?? null,
+
+        created_at: d.createdAt ? d.createdAt.toISO() : null,
+        created_at_fmt: fmtBogotaAmPm(d.createdAt),
+        updated_at: d.updatedAt ? d.updatedAt.toISO() : null,
+
+        turnoInfo: turno
+          ? {
+              id: turno.id ?? null,
+              fecha: turno.fecha?.toISODate ? turno.fecha.toISODate() : turno.fecha || null,
+              numeroGlobal: turno.turnoNumero ?? null,
+              numeroServicio: turno.turnoNumeroServicio ?? turno.turno_numero_servicio ?? null,
+              estado: turno.estado ?? null,
+              servicioCodigo: turno.$preloaded?.servicio?.codigoServicio ?? null,
+              es_recurrente: turno.esRecurrente ?? turno.es_recurrente ?? null,
+              es_recuperacion: turno.esRecuperacion ?? turno.es_recuperacion ?? null,
+              meses_desde_ultima_visita:
+                turno.mesesDesdeUltimaVisita ?? turno.meses_desde_ultima_visita ?? null,
+            }
+          : null,
+
+        // 🆕 comisión ya calculada y unida por el backend (sin cruce en el navegador)
+        monto_comision: montoComision,
+        estado_comision: estadoComision,
+        desglose_comision: desgloseComision,
+        // fila(s) crudas de comisión (para historial de pagos: fecha/estado individual)
+        comisiones: comisionesRaw,
+      }
+    })
+
+    return response.ok({
+      data,
+      total: paginated.total,
+      page: paginated.currentPage,
+      perPage: paginated.perPage,
+      lastPage: paginated.lastPage,
+    })
   }
 }
