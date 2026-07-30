@@ -883,6 +883,7 @@ export default class AgentesCaptacionController {
         observacion: d.observacion,
         resultado: d.resultado,
         liberado: d.liberado ?? false,
+        imagen_url: d.imagenUrl ?? null,
 
         agente_id: d.agenteId,
         agente: agenteRaw
