@@ -115,13 +115,15 @@ interface ConteoDiarioMeta {
  *      SIEMPRE historico_meta_diario. Si ese mes no tiene filas cargadas
  *      (ej. mayo/2025), se retorna `dias: []` y `fuente: 'sin_datos'`.
  *   2. Meses junio 2026 en adelante → SIEMPRE turnos_rtms (excluyendo
- *      placas de prueba TST%/FIX%/NEW%), incluso si no tiene ningún
+ *      placas de prueba TST%), incluso si no tiene ningún
  *      registro ese mes — nunca cae a historico_meta_diario.
  */
 const FUENTE_CORTE_MES = 6
 const FUENTE_CORTE_ANIO = 2026
-const FILTRO_PLACAS_PRUEBA =
-  "placa NOT LIKE 'TST%' AND placa NOT LIKE 'FIX%' AND placa NOT LIKE 'NEW%'"
+// Solo TST% corresponde a datos de prueba reales (seeders); FIX% y NEW%
+// se eliminaron porque coincidían con placas reales de producción (ej.
+// NEW11A), excluyendo turnos válidos del conteo de Meta Mensual.
+const FILTRO_PLACAS_PRUEBA = "placa NOT LIKE 'TST%'"
 
 function esFuenteReal(mes: number, anio: number): boolean {
   return anio > FUENTE_CORTE_ANIO || (anio === FUENTE_CORTE_ANIO && mes >= FUENTE_CORTE_MES)
