@@ -11,6 +11,7 @@ import Vehiculo from '#models/vehiculo'
 import Conductor from '#models/conductor'
 import TurnoRtm from '#models/turno_rtm'
 import Comision from '#models/comision'
+import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
 
 type TipoVehiculoDB = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
 
@@ -20,6 +21,7 @@ interface RecurrenciaResult {
   mesesDesdeUltimaVisita: number | null
   ultimoTurnoId: number | null
   fechaUltimaVisita: string | null
+  estadoContinuidad: EstadoContinuidad | null
 }
 
 export default class RepGeneralImportController {
@@ -349,7 +351,8 @@ export default class RepGeneralImportController {
     fechaActualISO: string,
     mesesMinimos: number,
     turnoActualId: number | null = null,
-    captacionDateoIdActual: number | null = null
+    captacionDateoIdActual: number | null = null,
+    placa: string | null = null
   ): Promise<RecurrenciaResult> {
     const vacio: RecurrenciaResult = {
       esRecurrente: false,
@@ -357,6 +360,7 @@ export default class RepGeneralImportController {
       mesesDesdeUltimaVisita: null,
       ultimoTurnoId: null,
       fechaUltimaVisita: null,
+      estadoContinuidad: null,
     }
 
     let ultimoTurno: TurnoRtm | null = null
@@ -403,26 +407,29 @@ export default class RepGeneralImportController {
     const mesesTranscurridos = Math.floor(fechaActual.diff(fechaAnterior, 'months').months)
     let esRecurrente: boolean
     let esRecuperacion: boolean
+    let estadoContinuidad: EstadoContinuidad | null = null
 
     if (captacionDateoIdActual) {
       const dateoActual = await db
         .from('captacion_dateos')
         .where('id', captacionDateoIdActual)
         .first()
-      const agenteIdActual = dateoActual?.agente_id ?? null
+      const asesorConvenioIdActual = dateoActual?.asesor_convenio_id ?? null
+      const convenioIdActual = dateoActual?.convenio_id ?? null
 
-      if (agenteIdActual) {
-        const lastDateoId = (ultimoTurno as any).captacionDateoId ?? null
-        let agenteIdUltimo: number | null = null
-
-        if (lastDateoId) {
-          const lastDateo = await db.from('captacion_dateos').where('id', lastDateoId).first()
-          agenteIdUltimo = lastDateo?.agente_id ?? null
-        }
-
-        // Si la última visita fue con el mismo asesor → Continuidad (false)
-        // Si la última visita fue sin su dateo → Recurrente (true)
-        esRecurrente = agenteIdUltimo !== agenteIdActual
+      if ((asesorConvenioIdActual || convenioIdActual) && placa) {
+        // Continuidad real: revisa TODO el historial de la placa (servicio
+        // compartido con turnos_rtms_controller.ts y facturacion_tickets_controller.ts,
+        // ver app/services/continuidad_service.ts). Antes esta función solo
+        // comparaba contra la última visita — no cumplía "una vez rota, no
+        // se recupera" de la especificación de negocio.
+        estadoContinuidad = await evaluarContinuidad({
+          placa,
+          asesorConvenioId: asesorConvenioIdActual,
+          convenioId: convenioIdActual,
+          excluirTurnoId: turnoActualId,
+        })
+        esRecurrente = estadoContinuidad === 'ROTA'
         esRecuperacion = false
       } else {
         esRecurrente = mesesTranscurridos < mesesMinimos
@@ -451,6 +458,7 @@ export default class RepGeneralImportController {
       mesesDesdeUltimaVisita: mesesTranscurridos,
       ultimoTurnoId: ultimoTurno.id,
       fechaUltimaVisita: fechaUltimaVisitaISO,
+      estadoContinuidad,
     }
   }
 
@@ -1063,13 +1071,15 @@ export default class RepGeneralImportController {
           fechaTurnoISO,
           mesesMinimos,
           turno.id,
-          turno.captacionDateoId ?? null
+          turno.captacionDateoId ?? null,
+          placa
         )
         turno.esRecurrente = recTurno.esRecurrente
         turno.esRecuperacion = recTurno.esRecuperacion
         turno.mesesDesdeUltimaVisita = recTurno.mesesDesdeUltimaVisita
         turno.ultimoTurnoId = recTurno.ultimoTurnoId
         ;(turno as any).fechaUltimaVisita = recTurno.fechaUltimaVisita
+        if (recTurno.estadoContinuidad) turno.estadoContinuidad = recTurno.estadoContinuidad
         changed = true
       }
 
@@ -1089,6 +1099,7 @@ export default class RepGeneralImportController {
                 ? turno.fechaUltimaVisita.toISODate()
                 : String(turno.fechaUltimaVisita).substring(0, 10)
               : null,
+            estadoContinuidad: turno.estadoContinuidad ?? null,
           }
           console.log(`   🔄 Recalculando comisión para dateo ${turno.captacionDateoId}`)
           await this.recalcularComisionSiExiste(
@@ -1136,27 +1147,16 @@ export default class RepGeneralImportController {
       .first()
 
     let valorRecurrente: number
-    let valorRecuperacion: number
 
     if (esMoto) {
       valorRecurrente = Number(
         configGlobal?.valor_dateo_recurrencia_moto ?? configGlobal?.valor_dateo_recurrencia ?? 4300
-      )
-      valorRecuperacion = Number(
-        configGlobal?.valor_dateo_recuperacion_moto ??
-          configGlobal?.valor_dateo_recuperacion ??
-          8600
       )
     } else {
       valorRecurrente = Number(
         configGlobal?.valor_dateo_recurrencia_vehiculo ??
           configGlobal?.valor_dateo_recurrencia ??
           4300
-      )
-      valorRecuperacion = Number(
-        configGlobal?.valor_dateo_recuperacion_vehiculo ??
-          configGlobal?.valor_dateo_recuperacion ??
-          8600
       )
     }
 
@@ -1173,15 +1173,9 @@ export default class RepGeneralImportController {
             valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia_moto)
           else if (asesorCfg.valor_dateo_recurrencia)
             valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
-          if (asesorCfg.valor_dateo_recuperacion_moto)
-            valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion_moto)
-          else if (asesorCfg.valor_dateo_recuperacion)
-            valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion)
         } else {
           if (asesorCfg.valor_dateo_recurrencia)
             valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
-          if (asesorCfg.valor_dateo_recuperacion)
-            valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion)
         }
       }
     }
@@ -1202,7 +1196,10 @@ export default class RepGeneralImportController {
     const esComercialConConvenio = tieneConvenio && !!comision.asesorSecundarioId
 
     if (rec.esRecurrente || rec.esRecuperacion) {
-      const valorAsesor = rec.esRecurrente ? valorRecurrente : valorRecuperacion
+      // Recuperación es solo una categoría informativa/de reporte — nunca
+      // paga distinto de recurrente, ni para el comercial ni para el
+      // asesor convenio.
+      const valorAsesor = valorRecurrente
       const etiqueta = rec.esRecurrente
         ? `🔄 RECURRENTE ${esMoto ? '🏍️ MOTO' : '🚗 VEHICULO'}`
         : `💛 RECUPERACIÓN ${esMoto ? '🏍️ MOTO' : '🚗 VEHICULO'}`

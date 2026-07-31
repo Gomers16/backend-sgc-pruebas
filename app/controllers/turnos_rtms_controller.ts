@@ -15,6 +15,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 import AgenteCaptacion from '#models/agente_captacion'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import { buildReserva } from '#services/reserva_dateo_service'
+import { evaluarContinuidad } from '#services/continuidad_service'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -782,6 +783,7 @@ export default class TurnosRtmController {
       let mesesDesdeUltimaVisita: number | null = null
       let ultimoTurnoId: number | null = null
       let fechaUltimaVisita: string | null = null
+      let estadoContinuidad: 'CONTINUA' | 'ROTA' | 'SIN_EVIDENCIA' | null = null
 
       if (clienteId) {
         const ultimoTurno = await TurnoRtm.query({ client: trx })
@@ -814,42 +816,15 @@ export default class TurnosRtmController {
 
             const esAsesorConvenioDateando = dateoActual?.canal === 'ASESOR_CONVENIO'
             if (esAsesorConvenioDateando && (asesorConvenioActual || convenioIdActual)) {
-              // Verificar continuidad real: TODAS las visitas históricas deben
-              // haber sido con este mismo asesor convenio
-              const todasVisitas = await Database.from('turnos_rtms') // ✅
-                .where('placa', placa)
-                .where('estado', 'finalizado')
-                .whereNotNull('captacion_dateo_id')
-                .orderBy('fecha', 'asc')
-                .select('captacion_dateo_id')
+              estadoContinuidad = await evaluarContinuidad({
+                placa,
+                asesorConvenioId: asesorConvenioActual,
+                convenioId: convenioIdActual,
+              })
 
-              let tieneContinuidad = true
-
-              for (const visita of todasVisitas) {
-                const dateoVisita = await Database.from('captacion_dateos')
-                  .where('id', visita.captacion_dateo_id)
-                  .select('convenio_id', 'asesor_convenio_id')
-                  .first()
-
-                if (!dateoVisita) {
-                  tieneContinuidad = false
-                  break
-                }
-
-                const mismoConvenio =
-                  convenioIdActual && dateoVisita.convenio_id === convenioIdActual
-                const mismoAsesor =
-                  asesorConvenioActual && dateoVisita.asesor_convenio_id === asesorConvenioActual
-
-                if (!mismoConvenio && !mismoAsesor) {
-                  tieneContinuidad = false
-                  break
-                }
-              }
-
-              // Con continuidad → no es recurrente (cobra incentivo completo)
-              // Sin continuidad → sí es recurrente (cobra valor recurrente)
-              esRecurrente = !tieneContinuidad
+              // CONTINUA o SIN_EVIDENCIA → no es recurrente (cobra incentivo completo)
+              // ROTA → sí es recurrente (cobra valor recurrente)
+              esRecurrente = estadoContinuidad === 'ROTA'
               esRecuperacion = false
             } else {
               esRecurrente = meses < mesesMinimos
@@ -885,6 +860,7 @@ export default class TurnosRtmController {
         dateoCanal,
         esAvance: esAvanceHeredado,
         esRecurrente,
+        estadoContinuidad,
         esRecuperacion,
         mesesDesdeUltimaVisita,
         ultimoTurnoId,

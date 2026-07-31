@@ -27,3 +27,6 @@ yarn-error.log
 # Runtime uploads — archivos generados por usuarios, no van en el repo
 uploads/abonos/
 uploads/pagos/
+
+# Respaldos de base de datos — nunca van en el repo
+backups/

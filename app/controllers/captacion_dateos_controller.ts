@@ -1,4 +1,3 @@
-
 // app/controllers/captacion_dateos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
@@ -466,6 +465,15 @@ export default class CaptacionDateosController {
         .first()
       if (!descuentoExiste) {
         return response.badRequest({ message: 'descuento_id no existe o está inactivo' })
+      }
+      // Comercial dateando CON convenio (CASO 3): solo puede marcar AVANCE,
+      // nunca un descuento informativo (POLICIA/EMPLEADO/OBSEQUIO/etc).
+      const esAvanceDescuento = descuentoExiste.codigo.toUpperCase().includes('AVANCE')
+      if (canal === 'ASESOR_COMERCIAL' && convenioId !== null && !esAvanceDescuento) {
+        return response.badRequest({
+          message:
+            'Un comercial que datea con convenio solo puede marcar AVANCE, no un descuento informativo.',
+        })
       }
       descuentoId = descuentoIdRaw
     }
@@ -939,6 +947,23 @@ export default class CaptacionDateosController {
       }
     }
 
+    // Comercial dateando CON convenio (CASO 3): solo puede marcar AVANCE,
+    // nunca un descuento informativo (POLICIA/EMPLEADO/OBSEQUIO/etc).
+    if (
+      item.descuentoId !== null &&
+      item.canal === 'ASESOR_COMERCIAL' &&
+      item.convenioId !== null
+    ) {
+      const descuentoFinal = await Descuento.find(item.descuentoId)
+      const esAvanceDescuento = descuentoFinal?.codigo.toUpperCase().includes('AVANCE') ?? false
+      if (!esAvanceDescuento) {
+        return response.badRequest({
+          message:
+            'Un comercial que datea con convenio solo puede marcar AVANCE, no un descuento informativo.',
+        })
+      }
+    }
+
     await item.save()
 
     // Generar comisión PENDIENTE si el dateo quedó EXITOSO y no existe ya una
@@ -1030,25 +1055,27 @@ export default class CaptacionDateosController {
                   globalCfg?.valor_dateo_recurrencia ??
                   4300)
           )
-          let valorRecuperacion = Number(
-            esMoto
-              ? (globalCfg?.valor_dateo_recuperacion_moto ??
-                  globalCfg?.valor_dateo_recuperacion ??
-                  8600)
-              : (globalCfg?.valor_dateo_recuperacion_vehiculo ??
-                  globalCfg?.valor_dateo_recuperacion ??
-                  8600)
-          )
           if (asesorId) {
-            const asesorCfg = await db
-              .from('configuracion_recurrencia_asesores')
-              .where('asesor_id', asesorId)
-              .where('recurrencia_habilitada', true)
-              .first()
+            // Preferir la fila específica del tipo de vehículo del turno;
+            // si el asesor no tiene una fila para ese tipo, usar su fila
+            // AMBOS (si existe) — antes tomaba .first() sin filtrar por
+            // tipo_vehiculo y podía traer la fila equivocada cuando el
+            // asesor tenía filas separadas para MOTO y VEHICULO.
+            const asesorCfg =
+              (await db
+                .from('configuracion_recurrencia_asesores')
+                .where('asesor_id', asesorId)
+                .where('recurrencia_habilitada', true)
+                .where('tipo_vehiculo', tipoVehiculo)
+                .first()) ??
+              (await db
+                .from('configuracion_recurrencia_asesores')
+                .where('asesor_id', asesorId)
+                .where('recurrencia_habilitada', true)
+                .where('tipo_vehiculo', 'AMBOS')
+                .first())
             if (asesorCfg?.valor_dateo_recurrencia)
               valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
-            if (asesorCfg?.valor_dateo_recuperacion)
-              valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion)
           }
 
           // ── Calcular montos según caso de negocio ───────────────────
@@ -1069,10 +1096,10 @@ export default class CaptacionDateosController {
             if (esClienteNuevo) {
               montoAsesor = valorNuevoDirecto
               valorNuevoDirectoFinal = valorNuevoDirecto
-            } else if (esRecurrente) {
-              montoAsesor = valorRecurrente
             } else {
-              montoAsesor = valorRecuperacion
+              // Recuperación es solo una categoría informativa/de reporte
+              // para el comercial — nunca paga distinto de recurrente.
+              montoAsesor = valorRecurrente
             }
           } else if (esAsesorConvenio) {
             // CASO 2: Asesor convenio se datea a sí mismo
@@ -1088,9 +1115,9 @@ export default class CaptacionDateosController {
             // CASO 3: Comercial + convenio
             base = valorIncentivoPorTipo
             montoAsesor = valorDateoNuevo
-            montoConvenio = item.esAvance
-              ? Math.max(0, valorIncentivoPorTipo - 0)
-              : valorIncentivoPorTipo
+            // Avance → el convenio no recibe nada (100% del incentivo se
+            // descuenta), no una resta que en la práctica no restaba nada.
+            montoConvenio = item.esAvance ? 0 : valorIncentivoPorTipo
           }
 
           // ── Crear la comisión ────────────────────────────────────────

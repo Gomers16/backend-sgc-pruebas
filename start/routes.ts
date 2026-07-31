@@ -1408,6 +1408,26 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
       ])
 
+    /* =============================== CONTINUIDAD ======================== */
+
+    router
+      .get('/continuidad/buscar', async (ctx) => {
+        const { default: ContinuidadOverridesController } = await import(
+          '#controllers/continuidad_overrides_controller'
+        )
+        return new ContinuidadOverridesController().buscar(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .post('/continuidad/overrides', async (ctx) => {
+        const { default: ContinuidadOverridesController } = await import(
+          '#controllers/continuidad_overrides_controller'
+        )
+        return new ContinuidadOverridesController().store(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
     /* =============================== DESCUENTOS ======================== */
 
     router

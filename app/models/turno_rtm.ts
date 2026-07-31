@@ -193,6 +193,13 @@ export default class TurnoRtm extends BaseModel {
   declare esAvance: boolean
   // ========== FIN AVANCE ==========
 
+  /**
+   * Resultado guardado de la evaluación de continuidad de asesor convenio
+   * (ver turnos_rtms_controller.ts). NULL cuando no aplica a este turno.
+   */
+  @column({ columnName: 'estado_continuidad' })
+  declare estadoContinuidad: 'CONTINUA' | 'ROTA' | 'SIN_EVIDENCIA' | null
+
   @column({ columnName: 'reasignado_de_turno_id' })
   declare reasignadoDeTurnoId: number | null
 

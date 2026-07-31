@@ -14,6 +14,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
+import { evaluarContinuidad } from '#services/continuidad_service'
 
 /** Carpeta para subir tickets (local). */
 const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
@@ -1066,16 +1067,29 @@ export default class FacturacionTicketsController {
       `💰 Cliente: ${esClienteNuevo ? '🆕 NUEVO' : esClienteRecurrente ? '🔄 RECURRENTE' : '💛 RECUPERACIÓN'}`
     )
 
-    // ── Verificar CONTINUIDAD ──
-    const tuvoContinuidad = await verificarContinuidad({
-      ultimoTurnoId:
-        (turnoActual as any)?.ultimoTurnoId ?? (turnoActual as any)?.ultimo_turno_id ?? null,
-      asesorConvenioIdActual: asesorConvenioIdReal,
-      convenioIdActual: dateo.convenioId,
-      placaTurno: (turnoActual as any)?.placa ?? ticket.placaTurno ?? null,
+    // ── Verificar CONTINUIDAD (servicio único, ver app/services/continuidad_service.ts) ──
+    const placaParaContinuidad =
+      (turnoActual as any)?.placa ?? ticket.placaTurno ?? dateo.placa ?? ''
+    const estadoContinuidad = await evaluarContinuidad({
+      placa: placaParaContinuidad,
+      asesorConvenioId: asesorConvenioIdReal,
+      convenioId: dateo.convenioId,
     })
+    // CONTINUA o SIN_EVIDENCIA → se paga como continuidad respetada (igual
+    // que "nuevo"); solo ROTA paga tarifa de recurrencia.
+    const tuvoContinuidad = estadoContinuidad !== 'ROTA'
 
-    console.log(`🔗 Continuidad asesor convenio: ${tuvoContinuidad ? '✅ SÍ' : '❌ NO'}`)
+    console.log(
+      `🔗 Continuidad asesor convenio: ${estadoContinuidad} (${tuvoContinuidad ? '✅ paga completo' : '❌ paga recurrencia'})`
+    )
+
+    // Persistir el resultado en el turno para que la pestaña Continuidad lo
+    // pueda mostrar sin recalcular (ver app/services/continuidad_service.ts).
+    if (turnoActual?.id && (asesorConvenioIdReal || dateo.convenioId)) {
+      await Database.from('turnos_rtms')
+        .where('id', turnoActual.id)
+        .update({ estado_continuidad: estadoContinuidad })
+    }
 
     // ── Verificar duplicado ──
     const startDay = now.startOf('day').toSQL()
@@ -1128,12 +1142,12 @@ export default class FacturacionTicketsController {
 
         if (esClienteNuevo) {
           if (tieneInformativo) {
-            // 🆕 Nuevo + INFORMATIVO → baja de valorNuevoDirecto a valorRecurrente
-            c.monto = String(recValues.valorRecurrente)
-            c.montoAsesor = String(recValues.valorRecurrente)
+            // Informativo (cliente propio, sin convenio) = $0 por especificación
+            c.monto = '0'
+            c.montoAsesor = '0'
             c.valorNuevoDirecto = '0'
             console.log(
-              `✅ Sin convenio 🆕 NUEVO + INFORMATIVO → $${recValues.valorRecurrente} (bajó de $${cfgValues.valorNuevoDirecto})`
+              `✅ Sin convenio 🆕 NUEVO + INFORMATIVO → $0 (bajó de $${cfgValues.valorNuevoDirecto})`
             )
           } else {
             // Nuevo directo sin descuento → valor_nuevo_directo
@@ -1142,16 +1156,14 @@ export default class FacturacionTicketsController {
             c.valorNuevoDirecto = String(cfgValues.valorNuevoDirecto)
             console.log(`✅ Sin convenio 🆕 NUEVO DIRECTO → $${cfgValues.valorNuevoDirecto}`)
           }
-        } else if (esClienteRecurrente) {
+        } else {
+          // Recuperación es solo una categoría informativa/de reporte para
+          // el comercial — nunca paga distinto de recurrente.
           c.monto = String(recValues.valorRecurrente)
           c.montoAsesor = String(recValues.valorRecurrente)
           c.valorNuevoDirecto = '0'
-          console.log(`✅ Sin convenio 🔄 RECURRENTE → $${recValues.valorRecurrente}`)
-        } else {
-          c.monto = String(recValues.valorRecuperacion)
-          c.montoAsesor = String(recValues.valorRecuperacion)
-          c.valorNuevoDirecto = '0'
-          console.log(`✅ Sin convenio 💛 RECUPERACIÓN → $${recValues.valorRecuperacion}`)
+          const etiqueta = esClienteRecurrente ? '🔄 RECURRENTE' : '💛 RECUPERACIÓN'
+          console.log(`✅ Sin convenio ${etiqueta} → $${recValues.valorRecurrente}`)
         }
 
         await c.useTransaction(trx).save()
@@ -1275,14 +1287,15 @@ export default class FacturacionTicketsController {
               `✅ Comercial con convenio 🆕 NUEVO + INFORMATIVO_POLICIA/EMPLEADO/AVANCE_PROPIETARIO/OBSEQUIO (caja) → dateo $${recValues.valorRecurrente} | convenio $0`
             )
           } else if (esAvance) {
-            // 🆕 AVANCE: montoConvenio = max(0, incentivo - montoAvance por tipo vehículo)
+            // Avance con convenio: al comercial no se le baja nada, la
+            // comisión del convenio queda en $0 completo (no una resta
+            // parcial del incentivo).
             c.monto = String(cfgValues.valorDateoNuevo)
             c.montoAsesor = String(cfgValues.valorDateoNuevo)
-            const montoConvenioFinal = Math.max(0, cfgValues.valorIncentivoPorTipo - montoAvance)
-            c.montoConvenio = String(montoConvenioFinal)
-            c.descuentoMontoAplicado = montoAvance // 🆕
+            c.montoConvenio = '0'
+            c.descuentoMontoAplicado = montoAvance
             console.log(
-              `✅ Comercial con convenio 🆕 NUEVO + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $${montoConvenioFinal} (incentivo $${cfgValues.valorIncentivoPorTipo} - avance $${montoAvance})`
+              `✅ Comercial con convenio 🆕 NUEVO + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
             )
           } else {
             c.monto = String(cfgValues.valorDateoNuevo)
@@ -1298,14 +1311,10 @@ export default class FacturacionTicketsController {
           c.montoAsesor = String(cfgValues.valorDateoNuevo)
           c.base = String(cfgValues.valorIncentivoPorTipo)
           if (esAvance) {
-            const montoConvenioConAvance = Math.max(
-              0,
-              cfgValues.valorIncentivoPorTipo - montoAvance
-            )
-            c.montoConvenio = String(montoConvenioConAvance)
+            c.montoConvenio = '0'
             c.descuentoMontoAplicado = montoAvance
             console.log(
-              `✅ Comercial+convenio 🔄 RECURRENTE + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $${montoConvenioConAvance}`
+              `✅ Comercial+convenio 🔄 RECURRENTE + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
             )
           } else {
             c.montoConvenio = String(cfgValues.valorIncentivoPorTipo)
@@ -1319,14 +1328,10 @@ export default class FacturacionTicketsController {
           c.montoAsesor = String(cfgValues.valorDateoNuevo)
           c.base = String(cfgValues.valorIncentivoPorTipo)
           if (esAvance) {
-            const montoConvenioConAvance = Math.max(
-              0,
-              cfgValues.valorIncentivoPorTipo - montoAvance
-            )
-            c.montoConvenio = String(montoConvenioConAvance)
+            c.montoConvenio = '0'
             c.descuentoMontoAplicado = montoAvance
             console.log(
-              `✅ Comercial+convenio 💛 RECUPERACIÓN + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $${montoConvenioConAvance}`
+              `✅ Comercial+convenio 💛 RECUPERACIÓN + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
             )
           } else {
             c.montoConvenio = String(cfgValues.valorIncentivoPorTipo)
@@ -2015,72 +2020,6 @@ async function resolveConfigRecurrencia(
   )
 
   return { valorRecurrente, valorRecuperacion }
-}
-
-async function verificarContinuidad(params: {
-  ultimoTurnoId: number | null
-  asesorConvenioIdActual: number | null
-  convenioIdActual: number | null
-  placaTurno?: string | null
-}): Promise<boolean> {
-  const { ultimoTurnoId, asesorConvenioIdActual, convenioIdActual, placaTurno } = params
-
-  if (!convenioIdActual && !asesorConvenioIdActual) return false
-
-  // Continuidad real: TODAS las visitas históricas del cliente deben haber
-  // sido con este mismo convenio/asesor. Una sola visita sin él rompe la continuidad.
-
-  // Obtener todos los turnos finalizados de esta placa (historia completa)
-  let todosLosTurnos: any[] = []
-  if (placaTurno) {
-    todosLosTurnos = await Database.from('turnos_rtms')
-      .where('placa', placaTurno)
-      .where('estado', 'finalizado')
-      .orderBy('fecha', 'asc')
-      .select('id', 'captacion_dateo_id')
-  } else if (ultimoTurnoId) {
-    // Si no tenemos la placa, solo revisamos el último turno (comportamiento anterior)
-    const turnoAnterior = await Database.from('turnos_rtms')
-      .where('id', ultimoTurnoId)
-      .select('captacion_dateo_id')
-      .first()
-
-    const dateoAnteriorId = turnoAnterior?.captacion_dateo_id ?? null
-    if (!dateoAnteriorId) return false
-
-    const dateoAnterior = await Database.from('captacion_dateos')
-      .where('id', dateoAnteriorId)
-      .select('convenio_id', 'agente_id')
-      .first()
-
-    if (!dateoAnterior) return false
-    if (convenioIdActual && dateoAnterior.convenio_id === convenioIdActual) return true
-    if (asesorConvenioIdActual && dateoAnterior.agente_id === asesorConvenioIdActual) return true
-    return false
-  }
-
-  if (!todosLosTurnos.length) return false
-
-  // Revisar TODOS los dateos históricos
-  // Si alguna visita NO fue con este convenio/asesor → no hay continuidad
-  for (const turno of todosLosTurnos) {
-    const dateoId = turno.captacion_dateo_id
-    if (!dateoId) return false // Visita sin dateo → rompe continuidad
-
-    const dateo = await Database.from('captacion_dateos')
-      .where('id', dateoId)
-      .select('convenio_id', 'agente_id')
-      .first()
-
-    if (!dateo) return false
-
-    const esteConvenio = convenioIdActual && dateo.convenio_id === convenioIdActual
-    const esteAsesor = asesorConvenioIdActual && dateo.agente_id === asesorConvenioIdActual
-
-    if (!esteConvenio && !esteAsesor) return false // Esta visita fue con otro → sin continuidad
-  }
-
-  return true // Todas las visitas fueron con este asesor/convenio
 }
 
 /* ======================== OCR Fake ======================== */
