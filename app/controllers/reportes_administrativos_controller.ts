@@ -866,28 +866,25 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     )
   doc.fillColor('#000000')
 
-  // ===== 2c. Meta Comercial por Asesor — Descuentos dados =====
-  const asesoresConDescuentos = mc.asesores.filter((a) => a.descuentos_total > 0)
-  if (asesoresConDescuentos.length > 0) {
+  // ===== 2c. Meta Comercial por Asesor — Descuentos dados (Comercial + Convenio) =====
+  if (mc.descuentosPorAsesor.length > 0) {
     doc.moveDown(0.8)
-    siDibujarSubtitulo(doc, 'Descuentos dados por asesor')
-    for (const a of asesoresConDescuentos) {
-      const detalle = a.descuentos
-        .map((d) => `${d.nombre} x${d.cantidad} = ${formatPesoPdf(d.total_descuentos)}`)
-        .join('; ')
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#000000').text(a.asesor_nombre, SI_MARGEN_X, doc.y, {
-        width: SI_ANCHO_UTIL,
-      })
-      doc
-        .font('Helvetica-Oblique')
-        .fontSize(7)
-        .fillColor(SI_COLOR_GRIS)
-        .text(`Descuentos dados: ${detalle} (Total: ${formatPesoPdf(a.descuentos_total)})`, SI_MARGEN_X, doc.y, {
-          width: SI_ANCHO_UTIL,
-        })
-      doc.fillColor('#000000')
-      doc.moveDown(0.3)
-    }
+    siDibujarSubtitulo(doc, 'Descuentos dados por asesor (Comercial y Convenio)')
+    await siDibujarTabla(
+      doc,
+      [
+        { label: 'Asesor', property: 'asesor', width: 200 },
+        { label: 'Tipo', property: 'tipo', width: 172 },
+        { label: 'Cantidad', property: 'cantidad', width: 70, align: 'right' },
+        { label: 'Total', property: 'total', width: 70, align: 'right' },
+      ],
+      mc.descuentosPorAsesor.map((d) => ({
+        asesor: d.asesor_nombre,
+        tipo: d.nombre,
+        cantidad: formatNumPdf(d.cantidad),
+        total: formatPesoPdf(d.total_descuentos),
+      }))
+    )
   }
 
   // ===== 3. Ingresos por Canal =====
@@ -921,17 +918,21 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   await siDibujarTabla(
     doc,
     [
-      { label: 'Canal', property: 'canal', width: 118 },
-      { label: 'Vehículos', property: 'vehiculos', width: 58, align: 'right' },
-      { label: 'Total Bruto', property: 'totalBruto', width: 82, align: 'right' },
-      { label: 'Total Neto', property: 'totalNeto', width: 82, align: 'right' },
-      { label: 'Prom. Ticket', property: 'promedio', width: 72, align: 'right' },
-      { label: 'Var. vs. Anterior', property: 'variacion', width: 100, align: 'right' },
+      { label: 'Canal', property: 'canal', width: 108 },
+      { label: 'Vehículos', property: 'vehiculos', width: 50, align: 'right' },
+      { label: 'Total Bruto', property: 'totalBruto', width: 76, align: 'right' },
+      { label: 'Total Neto', property: 'totalNeto', width: 76, align: 'right' },
+      { label: 'Prom. Ticket', property: 'promedio', width: 62, align: 'right' },
+      { label: 'Var. vs. Anterior', property: 'variacion', width: 78, align: 'right' },
+      { label: '% del Total', property: 'pctTotal', width: 62, align: 'right' },
     ],
     [
       ...filasIngresosCanal.map((c) => {
         const anterior = canalAnteriorMap.get(c.canal)
         const variacion = calcularVariacion(c.total_bruto, anterior?.total_bruto ?? 0)
+        const pctTotal = datos.ingresosCanal.totales.total_bruto > 0
+          ? Math.round((c.total_bruto / datos.ingresosCanal.totales.total_bruto) * 10000) / 100
+          : 0
         return {
           canal: siNombreCanal(c.canal),
           vehiculos: formatNumPdf(c.cantidad),
@@ -939,6 +940,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
           totalNeto: formatPesoPdf(c.total_neto),
           promedio: formatPesoPdf(c.promedio_ticket),
           variacion: `${variacion.variacion_abs >= 0 ? '+' : ''}${formatPctPdf(variacion.variacion_pct)}`,
+          pctTotal: formatPctPdf(pctTotal),
         }
       }),
       {
@@ -953,6 +955,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
             datos.ingresosCanalAnterior.totales.total_bruto
           ).variacion_pct
         ),
+        pctTotal: formatPctPdf(100),
       },
     ],
     filasIngresosCanal.length
@@ -1053,7 +1056,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     doc,
     5,
     'Retención de Clientes',
-    `Clientes Nuevos, Recurrentes y Recuperados en el rango, con detalle de los más recientes de cada categoría. Meses mínimos para recurrencia: ${datos.retencion.meses_minimos}. Fuente: turnos_rtms + facturacion_tickets + clientes.`
+    `Clientes Nuevos, Recurrentes y Recuperados en el rango, por canal y por mes. Meses mínimos para recurrencia: ${datos.retencion.meses_minimos}. Fuente: turnos_rtms + facturacion_tickets + clientes.`
   )
   siDibujarKpis(doc, [
     { label: 'Nuevos', value: `${formatNumPdf(datos.retencion.resumen.nuevos.cantidad)} (${formatPctPdf(datos.retencion.resumen.nuevos.porcentaje)}) — ${formatPesoPdf(datos.retencion.resumen.nuevos.total_bruto)}` },
@@ -1110,57 +1113,6 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       recuperaciones: formatNumPdf(m.recuperaciones),
       total: formatNumPdf(m.total),
     }))
-  )
-
-  const dibujarTopClientes = async (
-    titulo: string,
-    filas: typeof datos.retencion.top_clientes.nuevos
-  ) => {
-    doc.moveDown(0.8)
-    siDibujarSubtitulo(doc, titulo)
-    if (filas.length === 0) {
-      doc
-        .font('Helvetica-Oblique')
-        .fontSize(8)
-        .fillColor(SI_COLOR_GRIS)
-        .text('Sin registros en este rango.', SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
-      doc.fillColor('#000000')
-      return
-    }
-    await siDibujarTabla(
-      doc,
-      [
-        { label: 'Placa', property: 'placa', width: 55 },
-        { label: 'Fecha', property: 'fecha', width: 55 },
-        { label: 'Tipo Vehículo', property: 'tipoVehiculo', width: 55 },
-        { label: 'Canal', property: 'canal', width: 90 },
-        { label: 'Cliente', property: 'cliente', width: 110 },
-        { label: 'Documento', property: 'documento', width: 75 },
-        { label: 'Valor', property: 'valor', width: 72, align: 'right' },
-      ],
-      filas.map((f) => ({
-        placa: f.placa,
-        fecha: f.fecha,
-        tipoVehiculo: f.tipo_vehiculo ?? '—',
-        canal: siNombreCanal(f.captacion_canal),
-        cliente: f.cliente_nombre ?? '—',
-        documento: f.cliente_documento ?? '—',
-        valor: formatPesoPdf(f.total),
-      }))
-    )
-  }
-
-  await dibujarTopClientes(
-    `Top ${datos.retencion.top_clientes_limite} Clientes Nuevos (más recientes)`,
-    datos.retencion.top_clientes.nuevos
-  )
-  await dibujarTopClientes(
-    `Top ${datos.retencion.top_clientes_limite} Recurrentes (más recientes)`,
-    datos.retencion.top_clientes.recurrentes
-  )
-  await dibujarTopClientes(
-    `Top ${datos.retencion.top_clientes_limite} Recuperados (más recientes)`,
-    datos.retencion.top_clientes.recuperaciones
   )
 
   // ===== 6. Descuentos =====
@@ -1276,7 +1228,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     doc,
     7,
     'Producción por Líder',
-    'Producción agregada por sede/líder, más el detalle individual por funcionario (quién atendió cada turno y quién confirmó cada factura). Fuente: turnos_rtms + facturacion_tickets + usuarios.'
+    'Producción agregada por sede y líder comercial. Fuente: turnos_rtms + facturacion_tickets + usuarios.'
   )
   await siDibujarTabla(
     doc,
@@ -1309,51 +1261,6 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .fillColor(SI_COLOR_GRIS)
     .text(
       'RTM/SOAT/PREV/PERI = turnos atendidos (turnos_rtms). Vehículos/Total Bruto/Total Neto = facturación confirmada. Pueden no coincidir.',
-      SI_MARGEN_X,
-      doc.y,
-      { width: SI_ANCHO_UTIL }
-    )
-  doc.fillColor('#000000')
-  doc.moveDown(0.8)
-  siDibujarSubtitulo(doc, 'Por Funcionario (detalle individual)')
-  if (datos.produccionLider.por_funcionario.length === 0) {
-    doc
-      .font('Helvetica-Oblique')
-      .fontSize(8)
-      .fillColor(SI_COLOR_GRIS)
-      .text('Sin registros en este rango.', SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
-    doc.fillColor('#000000')
-  } else {
-    await siDibujarTabla(
-      doc,
-      [
-        { label: 'Funcionario', property: 'funcionario', width: 130 },
-        { label: 'RTM', property: 'rtm', width: 44, align: 'right' },
-        { label: 'SOAT', property: 'soat', width: 44, align: 'right' },
-        { label: 'PREV', property: 'prev', width: 44, align: 'right' },
-        { label: 'PERI', property: 'peri', width: 44, align: 'right' },
-        { label: 'Vehículos', property: 'vehiculos', width: 60, align: 'right' },
-        { label: 'Total Bruto', property: 'totalBruto', width: 73, align: 'right' },
-        { label: 'Total Neto', property: 'totalNeto', width: 73, align: 'right' },
-      ],
-      datos.produccionLider.por_funcionario.map((f) => ({
-        funcionario: f.funcionario_nombre,
-        rtm: formatNumPdf(f.turnos_rtm),
-        soat: formatNumPdf(f.turnos_soat),
-        prev: formatNumPdf(f.turnos_prev),
-        peri: formatNumPdf(f.turnos_peri),
-        vehiculos: formatNumPdf(f.vehiculos),
-        totalBruto: formatPesoPdf(f.total_bruto),
-        totalNeto: formatPesoPdf(f.total_neto),
-      }))
-    )
-  }
-  doc
-    .font('Helvetica-Oblique')
-    .fontSize(7)
-    .fillColor(SI_COLOR_GRIS)
-    .text(
-      'RTM/SOAT/PREV/PERI por funcionario = quien atendió el turno (turnos_rtms.funcionario_id). Vehículos/Total Bruto/Total Neto = quien confirmó la factura (facturacion_tickets.confirmed_by_id).',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
@@ -1564,81 +1471,10 @@ export default class ReportesAdministrativosController {
       }
     })
 
-    // ===== Desglose por funcionario individual (complementa, no reemplaza,
-    // el agregado por sede) — Vehículos/Total Bruto/Total Neto por quien
-    // CONFIRMÓ el ticket (facturacion_tickets.confirmed_by_id); RTM/SOAT/
-    // PREV/PERI por quien ATENDIÓ el turno (turnos_rtms.funcionario_id).
-    // Mismo criterio de "pueden no coincidir" que ya aplica por sede. =====
-    const rowsFacturacionPorFuncionario = (await Database.from('facturacion_tickets')
-      .where('estado', 'CONFIRMADA')
-      .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .whereNotNull('confirmed_by_id')
-      .select('confirmed_by_id')
-      .count('* as vehiculos')
-      .sum('total as total_bruto')
-      .sum('subtotal as total_neto')
-      .groupBy('confirmed_by_id')) as any[]
-
-    const turnosPorFuncionario = (await Database.from('turnos_rtms as t')
-      .join('servicios as s', 's.id', 't.servicio_id')
-      .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .whereRaw("t.placa NOT LIKE 'TST%'")
-      .select('t.funcionario_id', 's.codigo_servicio')
-      .count('* as turnos')
-      .groupBy('t.funcionario_id', 's.codigo_servicio')) as any[]
-
-    const serviciosPorFuncionario = new Map<number, Record<(typeof SERVICIOS_DESGLOSE)[number], number>>()
-    for (const r of turnosPorFuncionario) {
-      const funcId = Number(r.funcionario_id)
-      if (!serviciosPorFuncionario.has(funcId)) {
-        serviciosPorFuncionario.set(funcId, { RTM: 0, SOAT: 0, PREV: 0, PERI: 0 })
-      }
-      const codigo = String(r.codigo_servicio).toUpperCase() as (typeof SERVICIOS_DESGLOSE)[number]
-      if (SERVICIOS_DESGLOSE.includes(codigo)) {
-        serviciosPorFuncionario.get(funcId)![codigo] = Number(r.turnos)
-      }
-    }
-
-    const facturacionPorFuncionario = new Map(
-      rowsFacturacionPorFuncionario.map((r) => [Number(r.confirmed_by_id), r])
-    )
-    // Universo combinado: funcionario con facturación confirmada UNION
-    // funcionario con turnos atendidos (no se pierde a quien solo hizo una
-    // de las dos etapas en el rango).
-    const idsFuncionariosCombinados = new Set<number>([
-      ...facturacionPorFuncionario.keys(),
-      ...serviciosPorFuncionario.keys(),
-    ])
-    const usuariosFuncionarios = idsFuncionariosCombinados.size
-      ? await Usuario.query().whereIn('id', [...idsFuncionariosCombinados])
-      : []
-    const nombreFuncionarioMap = new Map(
-      usuariosFuncionarios.map((u) => [u.id, `${u.nombres} ${u.apellidos}`])
-    )
-
-    const porFuncionario = [...idsFuncionariosCombinados]
-      .map((id) => {
-        const fila = facturacionPorFuncionario.get(id)
-        const servicios = serviciosPorFuncionario.get(id) || { RTM: 0, SOAT: 0, PREV: 0, PERI: 0 }
-        return {
-          funcionario_id: id,
-          funcionario_nombre: nombreFuncionarioMap.get(id) ?? 'Usuario no encontrado',
-          vehiculos: fila ? Number(fila.vehiculos) : 0,
-          total_bruto: fila ? Number(fila.total_bruto) || 0 : 0,
-          total_neto: fila ? Number(fila.total_neto) || 0 : 0,
-          turnos_rtm: servicios.RTM,
-          turnos_soat: servicios.SOAT,
-          turnos_prev: servicios.PREV,
-          turnos_peri: servicios.PERI,
-        }
-      })
-      .sort((a, b) => b.total_bruto - a.total_bruto)
-
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       por_sede: porSede,
-      por_funcionario: porFuncionario,
     }
   }
 
@@ -2017,54 +1853,6 @@ export default class ReportesAdministrativosController {
 
     const porMes = [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes))
 
-    // ----- Top clientes por categoría (mismo patrón que detallePorRetencion(),
-    // limitado a los SI_TOP_N_CLIENTES más recientes para no disparar el
-    // número de páginas del PDF en rangos amplios) -----
-    const SI_TOP_N_CLIENTES = 20
-    const construirTopClientes = async (categoria: 'NUEVO' | 'RECURRENTE' | 'RECUPERACION') => {
-      const query = Database.from('facturacion_tickets as ft')
-        .innerJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
-        .leftJoin('clientes as c', 'c.id', 't.cliente_id')
-        .where('ft.estado', 'CONFIRMADA')
-        .where('ft.servicio_codigo', 'RTM')
-        .whereBetween('t.fecha', [fechaInicio, fechaFin])
-      if (categoria === 'NUEVO') query.whereNull('t.meses_desde_ultima_visita')
-      else if (categoria === 'RECURRENTE') query.where('t.es_recurrente', 1)
-      else query.where('t.es_recuperacion', 1)
-
-      const rows = (await query
-        .select(
-          'ft.placa',
-          // DATE_FORMAT (no DATE) para que el driver devuelva un string
-          // plano — DATE() devuelve un objeto Date de JS que pdfkit-table
-          // no serializa (imprime "undefined" en la celda).
-          Database.raw("DATE_FORMAT(t.fecha, '%Y-%m-%d') as fecha"),
-          'ft.tipo_vehiculo',
-          Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"),
-          'ft.total',
-          'c.nombre as cliente_nombre',
-          'c.doc_numero as cliente_documento'
-        )
-        .orderBy('t.fecha', 'desc')
-        .limit(SI_TOP_N_CLIENTES)) as any[]
-
-      return rows.map((r) => ({
-        placa: r.placa,
-        fecha: r.fecha,
-        tipo_vehiculo: r.tipo_vehiculo ?? null,
-        captacion_canal: r.captacion_canal,
-        total: Number(r.total) || 0,
-        cliente_nombre: r.cliente_nombre ?? null,
-        cliente_documento: r.cliente_documento ?? null,
-      }))
-    }
-
-    const topClientes = {
-      nuevos: await construirTopClientes('NUEVO'),
-      recurrentes: await construirTopClientes('RECURRENTE'),
-      recuperaciones: await construirTopClientes('RECUPERACION'),
-    }
-
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -2072,8 +1860,6 @@ export default class ReportesAdministrativosController {
       resumen,
       por_canal: porCanal,
       por_mes: porMes,
-      top_clientes: topClientes,
-      top_clientes_limite: SI_TOP_N_CLIENTES,
     }
   }
 
@@ -2182,11 +1968,11 @@ export default class ReportesAdministrativosController {
         COUNT(*) as turnos,
         MAX(ts.valor_base) as valor_base,
         MAX(ts.valor_total) as valor_total,
-        SUM(ft.total) as valor_real_bruto,
-        SUM(ft.subtotal) as valor_real_neto
+        COALESCE(SUM(ft.total), 0) as valor_real_bruto,
+        COALESCE(SUM(ft.subtotal), 0) as valor_real_neto
       FROM turnos_rtms t
       JOIN servicios s ON s.id = t.servicio_id
-      INNER JOIN facturacion_tickets ft
+      LEFT JOIN facturacion_tickets ft
         ON ft.turno_id = t.id
         AND ft.estado = 'CONFIRMADA'
       LEFT JOIN tarifas_servicios ts
@@ -2196,7 +1982,8 @@ export default class ReportesAdministrativosController {
           ELSE 'VEHICULO'
         END
         AND ts.activo = 1
-      WHERE DATE(t.fecha) BETWEEN ? AND ?
+      WHERE t.estado = 'finalizado'
+        AND DATE(t.fecha) BETWEEN ? AND ?
         AND t.placa NOT LIKE 'TST%'
       GROUP BY s.id, s.codigo_servicio, s.nombre_servicio, tipo_vehiculo_clasificado
       ORDER BY s.id ASC, tipo_vehiculo_clasificado ASC
@@ -4171,15 +3958,18 @@ export default class ReportesAdministrativosController {
 
   /** Cálculo compartido por metaComercialSuperInforme() y el PDF del Súper Informe. */
   /**
-   * Descuentos dados por cada asesor comercial en el rango, agrupados por
-   * tipo de descuento — usado solo por el Súper Informe (sección Meta
-   * Comercial por Asesor). El "autorizador" de un descuento
+   * Descuentos dados por cada asesor (Comercial y Convenio) en el rango,
+   * agrupados por tipo de descuento — usado solo por el Súper Informe
+   * (sección Meta Comercial por Asesor, bloque "Descuentos dados por
+   * asesor"). El "autorizador" de un descuento
    * (facturacion_tickets.autorizado_por_id, ver
    * computeDescuentosPorAutorizador()) es quien lo aprobó en caja, NO el
    * asesor que generó el turno/factura — ese es facturacion_tickets.agente_id
-   * (mismo campo que ya usa reporteAsesores() y el universo de
-   * computeMetaComercialSuperInforme()). Sin cambio de esquema: es una
-   * consulta nueva sobre datos ya existentes.
+   * (mismo campo que ya usa reporteAsesores()). El `idsPermitidos` que
+   * recibe puede ser un universo más amplio que el resto de esta función
+   * (que solo cubre ASESOR_COMERCIAL) — este bloque en particular incluye
+   * también ASESOR_CONVENIO. Sin cambio de esquema: es una consulta nueva
+   * sobre datos ya existentes.
    */
   private async computeDescuentosPorAsesorComercial(
     fechaInicio: string,
@@ -4250,13 +4040,47 @@ export default class ReportesAdministrativosController {
     const idsPermitidos = asesoresComerciales.map((a) => a.id)
     const nombreMap = new Map(asesoresComerciales.map((a) => [a.id, a.nombre]))
 
-    // Descuentos dados por cada asesor — rango completo, no por mes (los
-    // descuentos no distinguen fuente real/histórica como el resto de esta
-    // función, siempre salen de facturacion_tickets).
-    const descuentosPorAsesor = await this.computeDescuentosPorAsesorComercial(
+    // Descuentos dados por cada asesor — universo AMPLIADO (Comercial +
+    // Convenio, pedido explícito para este bloque), a diferencia del resto
+    // de la función que solo cubre ASESOR_COMERCIAL. Rango completo, no por
+    // mes (los descuentos no distinguen fuente real/histórica como el resto
+    // de esta función, siempre salen de facturacion_tickets).
+    const asesoresParaDescuentos = await AgenteCaptacion.query()
+      .whereIn('tipo', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
+      .select('id', 'nombre')
+    const idsParaDescuentos = asesoresParaDescuentos.map((a) => a.id)
+    const nombreMapDescuentos = new Map(asesoresParaDescuentos.map((a) => [a.id, a.nombre]))
+
+    const descuentosPorAsesorMap = await this.computeDescuentosPorAsesorComercial(
       fechaInicio,
       fechaFin,
-      idsPermitidos
+      idsParaDescuentos
+    )
+    // Aplanado listo para tabla (Asesor | Tipo | Cantidad | Total), ordenado
+    // por asesor y luego por monto descendente dentro de cada asesor.
+    const descuentosPorAsesor: {
+      asesor_id: number
+      asesor_nombre: string
+      codigo: string
+      nombre: string
+      cantidad: number
+      total_descuentos: number
+    }[] = []
+    for (const [id, entry] of descuentosPorAsesorMap) {
+      const asesorNombre = nombreMapDescuentos.get(id) ?? '—'
+      for (const d of entry.descuentos) {
+        descuentosPorAsesor.push({
+          asesor_id: id,
+          asesor_nombre: asesorNombre,
+          codigo: d.codigo,
+          nombre: d.nombre,
+          cantidad: d.cantidad,
+          total_descuentos: d.total_descuentos,
+        })
+      }
+    }
+    descuentosPorAsesor.sort(
+      (a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre) || b.total_descuentos - a.total_descuentos
     )
 
     type Acum = {
@@ -4493,7 +4317,6 @@ export default class ReportesAdministrativosController {
       .map(([id, acc]) => {
         const pesosTotal = acc.pesosConvenio + acc.pesosComercial
         const pctAvance = acc.metaPesos !== null ? calcularPct(pesosTotal, acc.metaPesos) : null
-        const descuentosAsesor = descuentosPorAsesor.get(id)
         return {
           asesor_id: id,
           asesor_nombre: nombreMap.get(id) ?? '—',
@@ -4511,8 +4334,6 @@ export default class ReportesAdministrativosController {
           logrado_vehiculos: acc.cantidadVehiculos,
           faltante_vehiculos:
             acc.metaVehiculos !== null ? Math.max(acc.metaVehiculos - acc.cantidadVehiculos, 0) : null,
-          descuentos: descuentosAsesor?.descuentos ?? [],
-          descuentos_total: descuentosAsesor?.total ?? 0,
         }
       })
       .sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
@@ -4566,6 +4387,9 @@ export default class ReportesAdministrativosController {
         pct_proyeccion: pctProyeccionTotal,
       },
       asesores: asesoresOut,
+      // Universo AMPLIADO (Comercial + Convenio) — no confundir con
+      // `asesores` arriba, que solo cubre ASESOR_COMERCIAL.
+      descuentosPorAsesor,
     }
   }
 
