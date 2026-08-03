@@ -369,6 +369,65 @@ function mesesEnRango(fechaInicio: string, fechaFin: string): { mes: number; ani
   return meses
 }
 
+/**
+ * Comparativo interanual del Súper Informe — real del mismo rango de
+ * fechas pero un año atrás (mismo día/mes, `anio - 1` en cada mes tocado),
+ * reutilizando obtenerConteoDiarioConFallback() con el mismo criterio de
+ * ventana que ya usa el cálculo del año en curso. Independiente del `caso`
+ * (un_mes_actual/cruce_con_mes_actual/solo_cerrados) — sirve para los 3.
+ */
+async function calcularRealAnioAnteriorPorRango(
+  fechaInicio: string,
+  fechaFin: string,
+  meses: { mes: number; anio: number }[]
+): Promise<{ livianos: number; motos: number; total: number }> {
+  const fechaInicioAnt = DateTime.fromISO(fechaInicio).minus({ years: 1 }).toISODate() as string
+  const fechaFinAnt = DateTime.fromISO(fechaFin).minus({ years: 1 }).toISODate() as string
+
+  let livianos = 0
+  let motos = 0
+  for (const { mes, anio } of meses) {
+    const anioAnt = anio - 1
+    const inicioMes = DateTime.fromObject({ year: anioAnt, month: mes, day: 1 }).toISODate() as string
+    const finMes = (
+      DateTime.fromObject({ year: anioAnt, month: mes, day: 1 }).endOf('month').toISODate()
+    ) as string
+    const ventanaInicio = fechaInicioAnt > inicioMes ? fechaInicioAnt : inicioMes
+    const ventanaFin = fechaFinAnt < finMes ? fechaFinAnt : finMes
+    if (ventanaFin < ventanaInicio) continue
+
+    const { dias } = await obtenerConteoDiarioConFallback(mes, anioAnt)
+    const diasVentana = dias.filter((d) => d.fecha >= ventanaInicio && d.fecha <= ventanaFin)
+    livianos += diasVentana.reduce((acc, d) => acc + d.livianos, 0)
+    motos += diasVentana.reduce((acc, d) => acc + d.motos, 0)
+  }
+  return { livianos, motos, total: livianos + motos }
+}
+
+/** Variación absoluta y % de `actual` contra `anterior` (null si no hay base). */
+function calcularVariacion(
+  actual: number,
+  anterior: number
+): { variacion_abs: number; variacion_pct: number | null } {
+  return {
+    variacion_abs: actual - anterior,
+    variacion_pct: anterior > 0 ? Math.round(((actual - anterior) / anterior) * 1000) / 10 : null,
+  }
+}
+
+/**
+ * Rango "inmediatamente anterior" a [fechaInicio, fechaFin]: mismo número de
+ * días, terminando el día antes de fechaInicio. Usado para el comparativo
+ * de Ingresos por Canal (no existía ningún comparativo temporal para este
+ * reporte antes de este cambio).
+ */
+function calcularRangoAnterior(fechaInicio: string, fechaFin: string): { inicio: string; fin: string } {
+  const dias = Math.floor(DateTime.fromISO(fechaFin).diff(DateTime.fromISO(fechaInicio), 'days').days) + 1
+  const fin = DateTime.fromISO(fechaInicio).minus({ days: 1 })
+  const inicio = fin.minus({ days: dias - 1 })
+  return { inicio: inicio.toISODate() as string, fin: fin.toISODate() as string }
+}
+
 /* ======================== SÚPER INFORME — PDF ======================== */
 // Mismo patrón visual que liquidacion_pagos_controller.ts / tramite_liquidaciones_controller.ts
 // (pdfkit + pdfkit-table, color de marca #1a3c5e).
@@ -417,7 +476,7 @@ function siDibujarTituloSeccion(doc: any, numero: number, titulo: string, subtit
 }
 
 /** Fila de KPIs en texto (label chico arriba, valor grande en color de marca abajo), 3 por fila. */
-function siDibujarKpis(doc: any, items: { label: string; value: string }[]) {
+function siDibujarKpis(doc: any, items: { label: string; value: string; color?: string }[]) {
   const porFila = 3
   const colWidth = SI_ANCHO_UTIL / porFila
   for (let i = 0; i < items.length; i += porFila) {
@@ -429,12 +488,26 @@ function siDibujarKpis(doc: any, items: { label: string; value: string }[]) {
       doc
         .font('Helvetica-Bold')
         .fontSize(12)
-        .fillColor(SI_COLOR_MARCA)
+        .fillColor(item.color ?? SI_COLOR_MARCA)
         .text(item.value, x, y + 11, { width: colWidth - 10 })
     })
     doc.y = y + 36
   }
   doc.fillColor('#000000')
+}
+
+/** Color hex asociado a cada estado de calcularSemaforo(), para KPIs con semáforo visual. */
+const SI_SEMAFORO_COLOR: Record<'VERDE' | 'AMARILLO' | 'ROJO' | 'SIN_META', string> = {
+  VERDE: '#1e7e34',
+  AMARILLO: '#b8860b',
+  ROJO: '#c0392b',
+  SIN_META: SI_COLOR_GRIS,
+}
+const SI_SEMAFORO_LABEL: Record<'VERDE' | 'AMARILLO' | 'ROJO' | 'SIN_META', string> = {
+  VERDE: 'Verde',
+  AMARILLO: 'Amarillo',
+  ROJO: 'Rojo',
+  SIN_META: 'Sin meta',
 }
 
 /** Título chico de sub-tabla dentro de una sección (ej. "Por Canal"). */
@@ -536,8 +609,8 @@ function siDibujarPortada(
     .fontSize(9)
     .fillColor('#999999')
     .text(
-      'Secciones: Meta Mensual · Servicios Global · Producción por Líder · Ingresos por Canal · ' +
-        'Retención de Clientes · Descuentos · Meta Comercial por Asesor',
+      'Secciones: Meta Mensual · Meta Comercial por Asesor · Ingresos por Canal · Servicios (RTM) · ' +
+        'Retención de Clientes · Descuentos · Producción por Líder',
       SI_MARGEN_X + 20,
       doc.y,
       { align: 'center', width: doc.page.width - 140 }
@@ -578,17 +651,20 @@ type SuperInformeDatos = {
   fechaInicio: string
   fechaFin: string
   generadoPor: string
+  // Orden nuevo del Súper Informe: Meta Mensual, Meta Comercial, Ingresos
+  // por Canal, Servicios, Retención, Descuentos, Producción por Líder.
   metaMensual: Awaited<ReturnType<ReportesAdministrativosController['computeMetaMensualSuperInforme']>>
-  servicios: Awaited<ReturnType<ReportesAdministrativosController['computeReporteServicios']>>
-  produccionLider: Awaited<ReturnType<ReportesAdministrativosController['computeProduccionPorLider']>>
+  metaComercial: Awaited<ReturnType<ReportesAdministrativosController['computeMetaComercialSuperInforme']>>
   ingresosCanal: Awaited<ReturnType<ReportesAdministrativosController['computeIngresosPorCanal']>>
+  ingresosCanalAnterior: Awaited<ReturnType<ReportesAdministrativosController['computeIngresosPorCanal']>>
+  servicios: Awaited<ReturnType<ReportesAdministrativosController['computeReporteServicios']>>
   retencion: Awaited<ReturnType<ReportesAdministrativosController['computeRetencionClientes']>>
   descuentosTipo: Awaited<ReturnType<ReportesAdministrativosController['computeDescuentosPorTipo']>>
   descuentosCanal: Awaited<ReturnType<ReportesAdministrativosController['computeDescuentosPorCanal']>>
   descuentosAutorizador: Awaited<
     ReturnType<ReportesAdministrativosController['computeDescuentosPorAutorizador']>
   >
-  metaComercial: Awaited<ReturnType<ReportesAdministrativosController['computeMetaComercialSuperInforme']>>
+  produccionLider: Awaited<ReturnType<ReportesAdministrativosController['computeProduccionPorLider']>>
 }
 
 /**
@@ -610,21 +686,51 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     fechaGeneracion,
   })
 
-  // ===== 1. Meta Mensual =====
-  doc.addPage()
-  const mm = datos.metaMensual
   const CASO_LABEL: Record<string, string> = {
     un_mes_actual: 'Rango dentro de un mismo mes en curso.',
     cruce_con_mes_actual: 'El rango cruza meses ya cerrados con el mes en curso — meta y real sumados de todos los meses tocados; la proyección aplica solo al tramo del mes en curso.',
     solo_cerrados: 'El rango cruza solo meses ya cerrados — se muestra real vs. meta combinada, sin proyección.',
   }
-  siDibujarTituloSeccion(doc, 1, 'Meta Mensual', CASO_LABEL[mm.caso])
+
+  // ===== 1. Meta Mensual =====
+  doc.addPage()
+  const mm = datos.metaMensual
+  siDibujarTituloSeccion(
+    doc,
+    1,
+    'Meta Mensual',
+    'Avance de turnos RTM (livianos + motos) contra la meta configurada del mes, con proyección de cierre y comparativo contra el mismo rango del año anterior. Fuente: turnos_rtms (o histórico en meses cerrados) vs. configuracion_meta_mensual.'
+  )
+  doc.font('Helvetica-Oblique').fontSize(8).fillColor(SI_COLOR_GRIS).text(CASO_LABEL[mm.caso], SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+  doc.fillColor('#000000')
+  doc.moveDown(0.4)
   siDibujarKpis(doc, [
     { label: 'Real del rango', value: formatNumPdf(mm.real_total.total) },
     { label: 'Meta del mes completo', value: formatNumPdf(mm.meta_total.total) },
-    { label: '% de la meta del mes', value: formatPctPdf(mm.pct_real_sobre_meta) },
-    { label: 'Proyección de cierre del mes', value: mm.proyeccion_total ? formatNumPdf(mm.proyeccion_total.total) : 'No aplica' },
+    {
+      label: '% de la meta del mes',
+      value: `${formatPctPdf(mm.pct_real_sobre_meta)} (${SI_SEMAFORO_LABEL[mm.semaforo]})`,
+      color: SI_SEMAFORO_COLOR[mm.semaforo],
+    },
+    {
+      label: 'Livianos (real / meta)',
+      value: `${formatNumPdf(mm.real_total.livianos)} / ${formatNumPdf(mm.meta_total.livianos)}`,
+    },
+    {
+      label: 'Motos (real / meta)',
+      value: `${formatNumPdf(mm.real_total.motos)} / ${formatNumPdf(mm.meta_total.motos)}`,
+    },
+    {
+      label: 'Proyección de cierre del mes',
+      value: mm.proyeccion_total ? formatNumPdf(mm.proyeccion_total.total) : 'No aplica',
+    },
     { label: '% de la meta proyectado', value: formatPctPdf(mm.pct_proyeccion_sobre_meta) },
+    { label: 'Mismo rango, año anterior', value: formatNumPdf(mm.real_anio_anterior.total) },
+    {
+      label: 'Variación interanual',
+      value: `${mm.variacion_abs >= 0 ? '+' : ''}${formatNumPdf(mm.variacion_abs)} (${formatPctPdf(mm.variacion_pct)})`,
+      color: mm.variacion_abs >= 0 ? '#1e7e34' : '#c0392b',
+    },
   ])
   doc.moveDown(0.5)
   siDibujarSubtitulo(doc, 'Detalle por mes tocado')
@@ -644,14 +750,235 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     }))
   )
 
-  // ===== 2. Servicios Global =====
+  // ===== 2. Meta Comercial por Asesor =====
   doc.addPage()
-  siDibujarTituloSeccion(doc, 2, 'Servicios Global', 'Turnos y facturación generada por servicio.')
+  const mc = datos.metaComercial
+  siDibujarTituloSeccion(
+    doc,
+    2,
+    'Meta Comercial por Asesor',
+    'Avance de meta comercial (en pesos) por asesor tipo Asesor Comercial, con proyección de cierre individual y desglose de comisión pagada vs. pendiente de pago. Fuente: comisiones (o histórico en meses cerrados) vs. meta_comercial_asesor.'
+  )
+  doc.font('Helvetica-Oblique').fontSize(8).fillColor(SI_COLOR_GRIS).text(CASO_LABEL[mc.caso], SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+  doc.fillColor('#000000')
+  doc.moveDown(0.3)
+  if (mc.nota) {
+    doc
+      .font('Helvetica-Oblique')
+      .fontSize(7)
+      .fillColor(SI_COLOR_GRIS)
+      .text(mc.nota, SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+    doc.fillColor('#000000')
+    doc.moveDown(0.4)
+  }
+  siDibujarKpis(doc, [
+    {
+      label: 'Total General',
+      value: `${formatPesoPdf(mc.kpis.pesos_total)} / ${mc.kpis.meta_pesos === null ? 'Sin meta' : formatPesoPdf(mc.kpis.meta_pesos)}`,
+    },
+    { label: 'Convenio', value: formatPesoPdf(mc.kpis.pesos_convenio) },
+    { label: 'Propio (Comercial)', value: formatPesoPdf(mc.kpis.pesos_comercial) },
+    {
+      label: 'Proyección de cierre',
+      value: mc.kpis.proyeccion_cierre === null ? '—' : formatPesoPdf(mc.kpis.proyeccion_cierre),
+    },
+  ])
+  doc.moveDown(0.5)
+  siDibujarSubtitulo(doc, 'Detalle por asesor')
+  if (!mc.comision_estado_disponible) {
+    doc
+      .font('Helvetica-Oblique')
+      .fontSize(7)
+      .fillColor(SI_COLOR_GRIS)
+      .text(
+        'El desglose Comisión Pagada / Pendiente no está disponible en meses históricos — se muestra "N/D" en esos casos.',
+        SI_MARGEN_X,
+        doc.y,
+        { width: SI_ANCHO_UTIL }
+      )
+    doc.fillColor('#000000')
+    doc.moveDown(0.3)
+  }
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Asesor', property: 'asesor', width: 78 },
+      { label: 'Total', property: 'total', width: 55, align: 'right' },
+      { label: 'Meta', property: 'meta', width: 55, align: 'right' },
+      { label: '% Avance', property: 'pctAvance', width: 40, align: 'right' },
+      { label: 'Cumplió', property: 'cumplio', width: 36, align: 'center' },
+      { label: 'Faltante', property: 'faltante', width: 55, align: 'right' },
+      { label: 'Proy. Cierre', property: 'proyeccion', width: 55, align: 'right' },
+      { label: 'Com. Pagada', property: 'comisionPagada', width: 55, align: 'right' },
+      { label: 'Com. Pendiente', property: 'comisionPendiente', width: 58, align: 'right' },
+    ],
+    mc.asesores.map((a) => ({
+      asesor: a.asesor_nombre,
+      total: formatPesoPdf(a.pesos_total),
+      meta: a.meta_pesos === null ? 'Sin meta' : formatPesoPdf(a.meta_pesos),
+      pctAvance: a.pct_avance === null ? '—' : formatPctPdf(a.pct_avance),
+      cumplio: a.cumplio === null ? '—' : a.cumplio ? 'Sí' : 'No',
+      faltante: a.faltante === null ? '—' : formatPesoPdf(a.faltante),
+      proyeccion: formatPesoPdf(a.proyeccion_cierre),
+      comisionPagada: mc.comision_estado_disponible ? formatPesoPdf(a.comision_pagada) : 'N/D',
+      comisionPendiente: mc.comision_estado_disponible ? formatPesoPdf(a.comision_pendiente) : 'N/D',
+    }))
+  )
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'Desglose Convenio vs. Propio disponible en el reporte individual "Meta Comercial por Asesor". "Faltante" se limita a 0 cuando ya se cumplió la meta.',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+
+  // ===== 2b. Meta Comercial por Asesor — Unidades (vehículos) =====
+  doc.moveDown(0.8)
+  siDibujarSubtitulo(doc, 'Unidades (vehículos)')
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Asesor', property: 'asesor', width: 200 },
+      { label: 'Meta (Veh)', property: 'meta', width: 100, align: 'right' },
+      { label: 'Logrado (Veh)', property: 'logrado', width: 106, align: 'right' },
+      { label: 'Faltante (Veh)', property: 'faltante', width: 106, align: 'right' },
+    ],
+    mc.asesores.map((a) => ({
+      asesor: a.asesor_nombre,
+      meta: a.meta_vehiculos === null ? 'Sin meta' : formatNumPdf(a.meta_vehiculos),
+      logrado: formatNumPdf(a.logrado_vehiculos),
+      faltante: a.faltante_vehiculos === null ? '—' : formatNumPdf(a.faltante_vehiculos),
+    }))
+  )
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'Logrado (vehículos) = vehículos facturados atribuidos al asesor (facturacion_tickets), no filas de comisiones — un dateo exitoso no equivale a un vehículo facturado.',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+
+  // ===== 2c. Meta Comercial por Asesor — Descuentos dados =====
+  const asesoresConDescuentos = mc.asesores.filter((a) => a.descuentos_total > 0)
+  if (asesoresConDescuentos.length > 0) {
+    doc.moveDown(0.8)
+    siDibujarSubtitulo(doc, 'Descuentos dados por asesor')
+    for (const a of asesoresConDescuentos) {
+      const detalle = a.descuentos
+        .map((d) => `${d.nombre} x${d.cantidad} = ${formatPesoPdf(d.total_descuentos)}`)
+        .join('; ')
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#000000').text(a.asesor_nombre, SI_MARGEN_X, doc.y, {
+        width: SI_ANCHO_UTIL,
+      })
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(7)
+        .fillColor(SI_COLOR_GRIS)
+        .text(`Descuentos dados: ${detalle} (Total: ${formatPesoPdf(a.descuentos_total)})`, SI_MARGEN_X, doc.y, {
+          width: SI_ANCHO_UTIL,
+        })
+      doc.fillColor('#000000')
+      doc.moveDown(0.3)
+    }
+  }
+
+  // ===== 3. Ingresos por Canal =====
+  doc.addPage()
+  siDibujarTituloSeccion(
+    doc,
+    3,
+    'Ingresos por Canal',
+    'Vehículos facturados e ingresos por canal de captación (RTM, estado CONFIRMADA), comparado contra el período inmediatamente anterior de igual duración. Fuente: facturacion_tickets.'
+  )
+  const filasIngresosCanal = siCompletarCanales(datos.ingresosCanal.por_canal, (canal) => ({
+    canal,
+    cantidad: 0,
+    total_bruto: 0,
+    total_neto: 0,
+    promedio_ticket: 0,
+  }))
+  const canalAnteriorMap = new Map(datos.ingresosCanalAnterior.por_canal.map((c) => [c.canal, c]))
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      `Período anterior comparado: ${formatFechaLargaPdf(datos.ingresosCanalAnterior.fecha_inicio)} — ${formatFechaLargaPdf(datos.ingresosCanalAnterior.fecha_fin)}.`,
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+  doc.moveDown(0.4)
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Canal', property: 'canal', width: 118 },
+      { label: 'Vehículos', property: 'vehiculos', width: 58, align: 'right' },
+      { label: 'Total Bruto', property: 'totalBruto', width: 82, align: 'right' },
+      { label: 'Total Neto', property: 'totalNeto', width: 82, align: 'right' },
+      { label: 'Prom. Ticket', property: 'promedio', width: 72, align: 'right' },
+      { label: 'Var. vs. Anterior', property: 'variacion', width: 100, align: 'right' },
+    ],
+    [
+      ...filasIngresosCanal.map((c) => {
+        const anterior = canalAnteriorMap.get(c.canal)
+        const variacion = calcularVariacion(c.total_bruto, anterior?.total_bruto ?? 0)
+        return {
+          canal: siNombreCanal(c.canal),
+          vehiculos: formatNumPdf(c.cantidad),
+          totalBruto: formatPesoPdf(c.total_bruto),
+          totalNeto: formatPesoPdf(c.total_neto),
+          promedio: formatPesoPdf(c.promedio_ticket),
+          variacion: `${variacion.variacion_abs >= 0 ? '+' : ''}${formatPctPdf(variacion.variacion_pct)}`,
+        }
+      }),
+      {
+        canal: 'Totales',
+        vehiculos: formatNumPdf(datos.ingresosCanal.totales.cantidad),
+        totalBruto: formatPesoPdf(datos.ingresosCanal.totales.total_bruto),
+        totalNeto: formatPesoPdf(datos.ingresosCanal.totales.total_neto),
+        promedio: formatPesoPdf(datos.ingresosCanal.totales.promedio_ticket),
+        variacion: formatPctPdf(
+          calcularVariacion(
+            datos.ingresosCanal.totales.total_bruto,
+            datos.ingresosCanalAnterior.totales.total_bruto
+          ).variacion_pct
+        ),
+      },
+    ],
+    filasIngresosCanal.length
+  )
+
+  // ===== 4. Servicios (RTM) =====
+  doc.addPage()
+  siDibujarTituloSeccion(
+    doc,
+    4,
+    'Servicios (RTM)',
+    'Turnos y facturación por servicio y tipo de vehículo: valor Estimado (turnos × tarifa configurada) vs. valor Real cobrado (post-descuento, directo de la factura). Fuente: turnos_rtms + facturacion_tickets + tarifas_servicios.'
+  )
 
   // Inserta una fila "TOTAL" (Moto + Vehículo) después de cada grupo de
   // filas del mismo servicio — mismo criterio que filasConSubtotal en
   // ReporteServicios.vue (el detalle ya viene ordenado por servicio).
-  const filasServicios: { servicio: string; tipo: string; turnos: string; valorUnit: string; totalGenerado: string; totalNeto: string }[] = []
+  const filasServicios: {
+    servicio: string
+    tipo: string
+    turnos: string
+    estBruto: string
+    estNeto: string
+    realBruto: string
+    realNeto: string
+  }[] = []
   let siIdx = 0
   const siDetalle = datos.servicios.detalle
   while (siIdx < siDetalle.length) {
@@ -666,9 +993,10 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
         servicio: `${d.codigo_servicio} - ${d.nombre_servicio}`,
         tipo: d.tipo_vehiculo === 'MOTO' ? 'Moto' : 'Vehículo',
         turnos: formatNumPdf(d.turnos),
-        valorUnit: formatPesoPdf(d.valor_unitario),
-        totalGenerado: formatPesoPdf(d.total_generado),
-        totalNeto: formatPesoPdf(d.total_neto),
+        estBruto: formatPesoPdf(d.total_generado),
+        estNeto: formatPesoPdf(d.total_neto),
+        realBruto: formatPesoPdf(d.valor_real_bruto),
+        realNeto: formatPesoPdf(d.valor_real_neto),
       })
     }
     if (grupo.length > 1) {
@@ -676,9 +1004,10 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
         servicio: `${grupo[0].nombre_servicio} · Total`,
         tipo: '',
         turnos: formatNumPdf(grupo.reduce((acc, r) => acc + r.turnos, 0)),
-        valorUnit: '—',
-        totalGenerado: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_generado, 0)),
-        totalNeto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_neto, 0)),
+        estBruto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_generado, 0)),
+        estNeto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_neto, 0)),
+        realBruto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.valor_real_bruto, 0)),
+        realNeto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.valor_real_neto, 0)),
       })
     }
   }
@@ -686,20 +1015,22 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     servicio: 'Totales',
     tipo: '',
     turnos: formatNumPdf(datos.servicios.totales.turnos),
-    valorUnit: '—',
-    totalGenerado: formatPesoPdf(datos.servicios.totales.total_generado),
-    totalNeto: formatPesoPdf(datos.servicios.totales.total_neto),
+    estBruto: formatPesoPdf(datos.servicios.totales.total_generado),
+    estNeto: formatPesoPdf(datos.servicios.totales.total_neto),
+    realBruto: formatPesoPdf(datos.servicios.totales.valor_real_bruto),
+    realNeto: formatPesoPdf(datos.servicios.totales.valor_real_neto),
   })
 
   await siDibujarTabla(
     doc,
     [
-      { label: 'Servicio', property: 'servicio', width: 150 },
-      { label: 'Tipo', property: 'tipo', width: 70 },
-      { label: 'Turnos', property: 'turnos', width: 60, align: 'right' },
-      { label: 'Valor Unitario', property: 'valorUnit', width: 90, align: 'right' },
-      { label: 'Total Generado', property: 'totalGenerado', width: 76, align: 'right' },
-      { label: 'Total Neto', property: 'totalNeto', width: 66, align: 'right' },
+      { label: 'Servicio', property: 'servicio', width: 110 },
+      { label: 'Tipo', property: 'tipo', width: 48 },
+      { label: 'Turnos', property: 'turnos', width: 48, align: 'right' },
+      { label: 'Est. Bruto', property: 'estBruto', width: 72, align: 'right' },
+      { label: 'Est. Neto', property: 'estNeto', width: 66, align: 'right' },
+      { label: 'Real Bruto', property: 'realBruto', width: 84, align: 'right' },
+      { label: 'Real Neto', property: 'realNeto', width: 84, align: 'right' },
     ],
     filasServicios,
     filasServicios.length - 1
@@ -708,90 +1039,22 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .font('Helvetica-Oblique')
     .fontSize(7)
     .fillColor(SI_COLOR_GRIS)
-    .text('Los servicios sin tarifa configurada muestran $0 en los totales.', SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
-  doc.fillColor('#000000')
-
-  // ===== 3. Producción por Líder =====
-  doc.addPage()
-  siDibujarTituloSeccion(doc, 3, 'Producción por Líder', 'Producción por sede y líder comercial.')
-  await siDibujarTabla(
-    doc,
-    [
-      { label: 'Sede', property: 'sede', width: 60 },
-      { label: 'Líder', property: 'lider', width: 95 },
-      { label: 'RTM', property: 'rtm', width: 40, align: 'right' },
-      { label: 'SOAT', property: 'soat', width: 40, align: 'right' },
-      { label: 'PREV', property: 'prev', width: 40, align: 'right' },
-      { label: 'PERI', property: 'peri', width: 40, align: 'right' },
-      { label: 'Vehículos', property: 'vehiculos', width: 55, align: 'right' },
-      { label: 'Total Bruto', property: 'totalBruto', width: 71, align: 'right' },
-      { label: 'Total Neto', property: 'totalNeto', width: 71, align: 'right' },
-    ],
-    datos.produccionLider.por_sede.map((s) => ({
-      sede: s.sede_nombre ?? '—',
-      lider: s.lider_nombre,
-      rtm: formatNumPdf(s.turnos_rtm),
-      soat: formatNumPdf(s.turnos_soat),
-      prev: formatNumPdf(s.turnos_prev),
-      peri: formatNumPdf(s.turnos_peri),
-      vehiculos: formatNumPdf(s.vehiculos),
-      totalBruto: formatPesoPdf(s.total_bruto),
-      totalNeto: formatPesoPdf(s.total_neto),
-    }))
-  )
-  doc
-    .font('Helvetica-Oblique')
-    .fontSize(7)
-    .fillColor(SI_COLOR_GRIS)
     .text(
-      'RTM/SOAT/PREV/PERI = turnos atendidos (turnos_rtms). Vehículos/Total Bruto/Total Neto = facturación confirmada. Pueden no coincidir.',
+      'Estimado = turnos × tarifa configurada (servicios sin tarifa muestran $0). Real = directo de la factura, ya refleja descuentos aplicados — puede diferir del Estimado.',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
     )
   doc.fillColor('#000000')
 
-  // ===== 4. Ingresos por Canal =====
-  doc.addPage()
-  siDibujarTituloSeccion(doc, 4, 'Ingresos por Canal', 'Distribución de ingresos por canal de captación.')
-  const filasIngresosCanal = siCompletarCanales(datos.ingresosCanal.por_canal, (canal) => ({
-    canal,
-    cantidad: 0,
-    total_bruto: 0,
-    total_neto: 0,
-    promedio_ticket: 0,
-  }))
-  await siDibujarTabla(
-    doc,
-    [
-      { label: 'Canal', property: 'canal', width: 150 },
-      { label: 'Vehículos', property: 'vehiculos', width: 75, align: 'right' },
-      { label: 'Total Bruto', property: 'totalBruto', width: 100, align: 'right' },
-      { label: 'Total Neto', property: 'totalNeto', width: 100, align: 'right' },
-      { label: 'Promedio Ticket', property: 'promedio', width: 87, align: 'right' },
-    ],
-    [
-      ...filasIngresosCanal.map((c) => ({
-        canal: siNombreCanal(c.canal),
-        vehiculos: formatNumPdf(c.cantidad),
-        totalBruto: formatPesoPdf(c.total_bruto),
-        totalNeto: formatPesoPdf(c.total_neto),
-        promedio: formatPesoPdf(c.promedio_ticket),
-      })),
-      {
-        canal: 'Totales',
-        vehiculos: formatNumPdf(datos.ingresosCanal.totales.cantidad),
-        totalBruto: formatPesoPdf(datos.ingresosCanal.totales.total_bruto),
-        totalNeto: formatPesoPdf(datos.ingresosCanal.totales.total_neto),
-        promedio: formatPesoPdf(datos.ingresosCanal.totales.promedio_ticket),
-      },
-    ],
-    filasIngresosCanal.length
-  )
-
   // ===== 5. Retención de Clientes =====
   doc.addPage()
-  siDibujarTituloSeccion(doc, 5, 'Retención de Clientes', `Meses mínimos para recurrencia: ${datos.retencion.meses_minimos}.`)
+  siDibujarTituloSeccion(
+    doc,
+    5,
+    'Retención de Clientes',
+    `Clientes Nuevos, Recurrentes y Recuperados en el rango, con detalle de los más recientes de cada categoría. Meses mínimos para recurrencia: ${datos.retencion.meses_minimos}. Fuente: turnos_rtms + facturacion_tickets + clientes.`
+  )
   siDibujarKpis(doc, [
     { label: 'Nuevos', value: `${formatNumPdf(datos.retencion.resumen.nuevos.cantidad)} (${formatPctPdf(datos.retencion.resumen.nuevos.porcentaje)}) — ${formatPesoPdf(datos.retencion.resumen.nuevos.total_bruto)}` },
     { label: 'Recurrentes', value: `${formatNumPdf(datos.retencion.resumen.recurrentes.cantidad)} (${formatPctPdf(datos.retencion.resumen.recurrentes.porcentaje)}) — ${formatPesoPdf(datos.retencion.resumen.recurrentes.total_bruto)}` },
@@ -849,9 +1112,65 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     }))
   )
 
+  const dibujarTopClientes = async (
+    titulo: string,
+    filas: typeof datos.retencion.top_clientes.nuevos
+  ) => {
+    doc.moveDown(0.8)
+    siDibujarSubtitulo(doc, titulo)
+    if (filas.length === 0) {
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(8)
+        .fillColor(SI_COLOR_GRIS)
+        .text('Sin registros en este rango.', SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+      doc.fillColor('#000000')
+      return
+    }
+    await siDibujarTabla(
+      doc,
+      [
+        { label: 'Placa', property: 'placa', width: 55 },
+        { label: 'Fecha', property: 'fecha', width: 55 },
+        { label: 'Tipo Vehículo', property: 'tipoVehiculo', width: 55 },
+        { label: 'Canal', property: 'canal', width: 90 },
+        { label: 'Cliente', property: 'cliente', width: 110 },
+        { label: 'Documento', property: 'documento', width: 75 },
+        { label: 'Valor', property: 'valor', width: 72, align: 'right' },
+      ],
+      filas.map((f) => ({
+        placa: f.placa,
+        fecha: f.fecha,
+        tipoVehiculo: f.tipo_vehiculo ?? '—',
+        canal: siNombreCanal(f.captacion_canal),
+        cliente: f.cliente_nombre ?? '—',
+        documento: f.cliente_documento ?? '—',
+        valor: formatPesoPdf(f.total),
+      }))
+    )
+  }
+
+  await dibujarTopClientes(
+    `Top ${datos.retencion.top_clientes_limite} Clientes Nuevos (más recientes)`,
+    datos.retencion.top_clientes.nuevos
+  )
+  await dibujarTopClientes(
+    `Top ${datos.retencion.top_clientes_limite} Recurrentes (más recientes)`,
+    datos.retencion.top_clientes.recurrentes
+  )
+  await dibujarTopClientes(
+    `Top ${datos.retencion.top_clientes_limite} Recuperados (más recientes)`,
+    datos.retencion.top_clientes.recuperaciones
+  )
+
   // ===== 6. Descuentos =====
   doc.addPage()
-  siDibujarTituloSeccion(doc, 6, 'Descuentos', 'Descuentos aplicados por tipo, canal y autorizador.')
+  siDibujarTituloSeccion(
+    doc,
+    6,
+    'Descuentos',
+    'Descuentos aplicados a facturación RTM confirmada, agrupados por tipo, canal y quién autorizó. Fuente: facturacion_tickets + descuentos + usuarios.'
+  )
   siDibujarSubtitulo(doc, 'Por Tipo')
   await siDibujarTabla(
     doc,
@@ -870,6 +1189,15 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       promedio: formatPesoPdf(t.promedio),
     }))
   )
+  const descripcionesTipo = datos.descuentosTipo.por_tipo.filter((t) => t.descripcion)
+  if (descripcionesTipo.length > 0) {
+    doc.moveDown(0.3)
+    doc.font('Helvetica-Oblique').fontSize(7).fillColor(SI_COLOR_GRIS)
+    for (const t of descripcionesTipo) {
+      doc.text(`${t.nombre}: ${t.descripcion}`, SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+    }
+    doc.fillColor('#000000')
+  }
   doc.moveDown(0.8)
   siDibujarSubtitulo(doc, 'Por Canal')
   const filasDescuentosCanal = siCompletarCanales(datos.descuentosCanal.por_canal, (canal) => ({
@@ -942,51 +1270,95 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     doc.moveDown(0.3)
   }
 
-  // ===== 7. Meta Comercial por Asesor =====
+  // ===== 7. Producción por Líder =====
   doc.addPage()
-  const mc = datos.metaComercial
-  siDibujarTituloSeccion(doc, 7, 'Meta Comercial por Asesor', CASO_LABEL[mc.caso])
-  if (mc.nota) {
-    doc
-      .font('Helvetica-Oblique')
-      .fontSize(7)
-      .fillColor(SI_COLOR_GRIS)
-      .text(mc.nota, SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
-    doc.fillColor('#000000')
-    doc.moveDown(0.4)
-  }
-  siDibujarKpis(doc, [
-    {
-      label: 'Total General',
-      value: `${formatPesoPdf(mc.kpis.pesos_total)} / ${mc.kpis.meta_pesos === null ? 'Sin meta' : formatPesoPdf(mc.kpis.meta_pesos)}`,
-    },
-    { label: 'Convenio', value: formatPesoPdf(mc.kpis.pesos_convenio) },
-    { label: 'Propio (Comercial)', value: formatPesoPdf(mc.kpis.pesos_comercial) },
-    {
-      label: 'Proyección de cierre',
-      value: mc.kpis.proyeccion_cierre === null ? '—' : formatPesoPdf(mc.kpis.proyeccion_cierre),
-    },
-  ])
-  doc.moveDown(0.5)
+  siDibujarTituloSeccion(
+    doc,
+    7,
+    'Producción por Líder',
+    'Producción agregada por sede/líder, más el detalle individual por funcionario (quién atendió cada turno y quién confirmó cada factura). Fuente: turnos_rtms + facturacion_tickets + usuarios.'
+  )
   await siDibujarTabla(
     doc,
     [
-      { label: 'Asesor', property: 'asesor', width: 140 },
-      { label: 'Convenio', property: 'convenio', width: 80, align: 'right' },
-      { label: 'Propio', property: 'propio', width: 80, align: 'right' },
-      { label: 'Total', property: 'total', width: 80, align: 'right' },
-      { label: 'Meta', property: 'meta', width: 80, align: 'right' },
-      { label: '% Avance', property: 'pctAvance', width: 52, align: 'right' },
+      { label: 'Sede', property: 'sede', width: 60 },
+      { label: 'Líder', property: 'lider', width: 95 },
+      { label: 'RTM', property: 'rtm', width: 40, align: 'right' },
+      { label: 'SOAT', property: 'soat', width: 40, align: 'right' },
+      { label: 'PREV', property: 'prev', width: 40, align: 'right' },
+      { label: 'PERI', property: 'peri', width: 40, align: 'right' },
+      { label: 'Vehículos', property: 'vehiculos', width: 55, align: 'right' },
+      { label: 'Total Bruto', property: 'totalBruto', width: 71, align: 'right' },
+      { label: 'Total Neto', property: 'totalNeto', width: 71, align: 'right' },
     ],
-    mc.asesores.map((a) => ({
-      asesor: a.asesor_nombre,
-      convenio: formatPesoPdf(a.pesos_convenio),
-      propio: formatPesoPdf(a.pesos_comercial),
-      total: formatPesoPdf(a.pesos_total),
-      meta: a.meta_pesos === null ? 'Sin meta' : formatPesoPdf(a.meta_pesos),
-      pctAvance: a.pct_avance === null ? 'Sin meta' : formatPctPdf(a.pct_avance),
+    datos.produccionLider.por_sede.map((s) => ({
+      sede: s.sede_nombre ?? '—',
+      lider: s.lider_nombre,
+      rtm: formatNumPdf(s.turnos_rtm),
+      soat: formatNumPdf(s.turnos_soat),
+      prev: formatNumPdf(s.turnos_prev),
+      peri: formatNumPdf(s.turnos_peri),
+      vehiculos: formatNumPdf(s.vehiculos),
+      totalBruto: formatPesoPdf(s.total_bruto),
+      totalNeto: formatPesoPdf(s.total_neto),
     }))
   )
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'RTM/SOAT/PREV/PERI = turnos atendidos (turnos_rtms). Vehículos/Total Bruto/Total Neto = facturación confirmada. Pueden no coincidir.',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+  doc.moveDown(0.8)
+  siDibujarSubtitulo(doc, 'Por Funcionario (detalle individual)')
+  if (datos.produccionLider.por_funcionario.length === 0) {
+    doc
+      .font('Helvetica-Oblique')
+      .fontSize(8)
+      .fillColor(SI_COLOR_GRIS)
+      .text('Sin registros en este rango.', SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+    doc.fillColor('#000000')
+  } else {
+    await siDibujarTabla(
+      doc,
+      [
+        { label: 'Funcionario', property: 'funcionario', width: 130 },
+        { label: 'RTM', property: 'rtm', width: 44, align: 'right' },
+        { label: 'SOAT', property: 'soat', width: 44, align: 'right' },
+        { label: 'PREV', property: 'prev', width: 44, align: 'right' },
+        { label: 'PERI', property: 'peri', width: 44, align: 'right' },
+        { label: 'Vehículos', property: 'vehiculos', width: 60, align: 'right' },
+        { label: 'Total Bruto', property: 'totalBruto', width: 73, align: 'right' },
+        { label: 'Total Neto', property: 'totalNeto', width: 73, align: 'right' },
+      ],
+      datos.produccionLider.por_funcionario.map((f) => ({
+        funcionario: f.funcionario_nombre,
+        rtm: formatNumPdf(f.turnos_rtm),
+        soat: formatNumPdf(f.turnos_soat),
+        prev: formatNumPdf(f.turnos_prev),
+        peri: formatNumPdf(f.turnos_peri),
+        vehiculos: formatNumPdf(f.vehiculos),
+        totalBruto: formatPesoPdf(f.total_bruto),
+        totalNeto: formatPesoPdf(f.total_neto),
+      }))
+    )
+  }
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'RTM/SOAT/PREV/PERI por funcionario = quien atendió el turno (turnos_rtms.funcionario_id). Vehículos/Total Bruto/Total Neto = quien confirmó la factura (facturacion_tickets.confirmed_by_id).',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
 }
 
 /**
@@ -1192,10 +1564,81 @@ export default class ReportesAdministrativosController {
       }
     })
 
+    // ===== Desglose por funcionario individual (complementa, no reemplaza,
+    // el agregado por sede) — Vehículos/Total Bruto/Total Neto por quien
+    // CONFIRMÓ el ticket (facturacion_tickets.confirmed_by_id); RTM/SOAT/
+    // PREV/PERI por quien ATENDIÓ el turno (turnos_rtms.funcionario_id).
+    // Mismo criterio de "pueden no coincidir" que ya aplica por sede. =====
+    const rowsFacturacionPorFuncionario = (await Database.from('facturacion_tickets')
+      .where('estado', 'CONFIRMADA')
+      .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereNotNull('confirmed_by_id')
+      .select('confirmed_by_id')
+      .count('* as vehiculos')
+      .sum('total as total_bruto')
+      .sum('subtotal as total_neto')
+      .groupBy('confirmed_by_id')) as any[]
+
+    const turnosPorFuncionario = (await Database.from('turnos_rtms as t')
+      .join('servicios as s', 's.id', 't.servicio_id')
+      .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereRaw("t.placa NOT LIKE 'TST%'")
+      .select('t.funcionario_id', 's.codigo_servicio')
+      .count('* as turnos')
+      .groupBy('t.funcionario_id', 's.codigo_servicio')) as any[]
+
+    const serviciosPorFuncionario = new Map<number, Record<(typeof SERVICIOS_DESGLOSE)[number], number>>()
+    for (const r of turnosPorFuncionario) {
+      const funcId = Number(r.funcionario_id)
+      if (!serviciosPorFuncionario.has(funcId)) {
+        serviciosPorFuncionario.set(funcId, { RTM: 0, SOAT: 0, PREV: 0, PERI: 0 })
+      }
+      const codigo = String(r.codigo_servicio).toUpperCase() as (typeof SERVICIOS_DESGLOSE)[number]
+      if (SERVICIOS_DESGLOSE.includes(codigo)) {
+        serviciosPorFuncionario.get(funcId)![codigo] = Number(r.turnos)
+      }
+    }
+
+    const facturacionPorFuncionario = new Map(
+      rowsFacturacionPorFuncionario.map((r) => [Number(r.confirmed_by_id), r])
+    )
+    // Universo combinado: funcionario con facturación confirmada UNION
+    // funcionario con turnos atendidos (no se pierde a quien solo hizo una
+    // de las dos etapas en el rango).
+    const idsFuncionariosCombinados = new Set<number>([
+      ...facturacionPorFuncionario.keys(),
+      ...serviciosPorFuncionario.keys(),
+    ])
+    const usuariosFuncionarios = idsFuncionariosCombinados.size
+      ? await Usuario.query().whereIn('id', [...idsFuncionariosCombinados])
+      : []
+    const nombreFuncionarioMap = new Map(
+      usuariosFuncionarios.map((u) => [u.id, `${u.nombres} ${u.apellidos}`])
+    )
+
+    const porFuncionario = [...idsFuncionariosCombinados]
+      .map((id) => {
+        const fila = facturacionPorFuncionario.get(id)
+        const servicios = serviciosPorFuncionario.get(id) || { RTM: 0, SOAT: 0, PREV: 0, PERI: 0 }
+        return {
+          funcionario_id: id,
+          funcionario_nombre: nombreFuncionarioMap.get(id) ?? 'Usuario no encontrado',
+          vehiculos: fila ? Number(fila.vehiculos) : 0,
+          total_bruto: fila ? Number(fila.total_bruto) || 0 : 0,
+          total_neto: fila ? Number(fila.total_neto) || 0 : 0,
+          turnos_rtm: servicios.RTM,
+          turnos_soat: servicios.SOAT,
+          turnos_prev: servicios.PREV,
+          turnos_peri: servicios.PERI,
+        }
+      })
+      .sort((a, b) => b.total_bruto - a.total_bruto)
+
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       por_sede: porSede,
+      por_funcionario: porFuncionario,
     }
   }
 
@@ -1574,6 +2017,54 @@ export default class ReportesAdministrativosController {
 
     const porMes = [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes))
 
+    // ----- Top clientes por categoría (mismo patrón que detallePorRetencion(),
+    // limitado a los SI_TOP_N_CLIENTES más recientes para no disparar el
+    // número de páginas del PDF en rangos amplios) -----
+    const SI_TOP_N_CLIENTES = 20
+    const construirTopClientes = async (categoria: 'NUEVO' | 'RECURRENTE' | 'RECUPERACION') => {
+      const query = Database.from('facturacion_tickets as ft')
+        .innerJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
+        .leftJoin('clientes as c', 'c.id', 't.cliente_id')
+        .where('ft.estado', 'CONFIRMADA')
+        .where('ft.servicio_codigo', 'RTM')
+        .whereBetween('t.fecha', [fechaInicio, fechaFin])
+      if (categoria === 'NUEVO') query.whereNull('t.meses_desde_ultima_visita')
+      else if (categoria === 'RECURRENTE') query.where('t.es_recurrente', 1)
+      else query.where('t.es_recuperacion', 1)
+
+      const rows = (await query
+        .select(
+          'ft.placa',
+          // DATE_FORMAT (no DATE) para que el driver devuelva un string
+          // plano — DATE() devuelve un objeto Date de JS que pdfkit-table
+          // no serializa (imprime "undefined" en la celda).
+          Database.raw("DATE_FORMAT(t.fecha, '%Y-%m-%d') as fecha"),
+          'ft.tipo_vehiculo',
+          Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"),
+          'ft.total',
+          'c.nombre as cliente_nombre',
+          'c.doc_numero as cliente_documento'
+        )
+        .orderBy('t.fecha', 'desc')
+        .limit(SI_TOP_N_CLIENTES)) as any[]
+
+      return rows.map((r) => ({
+        placa: r.placa,
+        fecha: r.fecha,
+        tipo_vehiculo: r.tipo_vehiculo ?? null,
+        captacion_canal: r.captacion_canal,
+        total: Number(r.total) || 0,
+        cliente_nombre: r.cliente_nombre ?? null,
+        cliente_documento: r.cliente_documento ?? null,
+      }))
+    }
+
+    const topClientes = {
+      nuevos: await construirTopClientes('NUEVO'),
+      recurrentes: await construirTopClientes('RECURRENTE'),
+      recuperaciones: await construirTopClientes('RECUPERACION'),
+    }
+
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -1581,6 +2072,8 @@ export default class ReportesAdministrativosController {
       resumen,
       por_canal: porCanal,
       por_mes: porMes,
+      top_clientes: topClientes,
+      top_clientes_limite: SI_TOP_N_CLIENTES,
     }
   }
 
@@ -1688,7 +2181,9 @@ export default class ReportesAdministrativosController {
         END as tipo_vehiculo_clasificado,
         COUNT(*) as turnos,
         MAX(ts.valor_base) as valor_base,
-        MAX(ts.valor_total) as valor_total
+        MAX(ts.valor_total) as valor_total,
+        SUM(ft.total) as valor_real_bruto,
+        SUM(ft.subtotal) as valor_real_neto
       FROM turnos_rtms t
       JOIN servicios s ON s.id = t.servicio_id
       INNER JOIN facturacion_tickets ft
@@ -1722,6 +2217,12 @@ export default class ReportesAdministrativosController {
         valor_unitario: valorUnitario,
         total_generado: turnos * valorUnitario,
         total_neto: turnos * valorBase,
+        // Valor REAL cobrado (post-descuento), directo de la factura —
+        // distinto de total_generado/total_neto arriba, que son estimados
+        // (turnos × tarifa configurada). Puede diferir si hay descuentos
+        // aplicados o la tarifa configurada no refleja lo realmente cobrado.
+        valor_real_bruto: Number(r.valor_real_bruto) || 0,
+        valor_real_neto: Number(r.valor_real_neto) || 0,
       }
     })
 
@@ -1730,8 +2231,10 @@ export default class ReportesAdministrativosController {
         turnos: acc.turnos + d.turnos,
         total_generado: acc.total_generado + d.total_generado,
         total_neto: acc.total_neto + d.total_neto,
+        valor_real_bruto: acc.valor_real_bruto + d.valor_real_bruto,
+        valor_real_neto: acc.valor_real_neto + d.valor_real_neto,
       }),
-      { turnos: 0, total_generado: 0, total_neto: 0 }
+      { turnos: 0, total_generado: 0, total_neto: 0, valor_real_bruto: 0, valor_real_neto: 0 }
     )
 
     return {
@@ -1761,16 +2264,17 @@ export default class ReportesAdministrativosController {
       .whereNotNull('ft.descuento_id')
       .where('ft.descuento_monto_aplicado', '>', 0)
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select('d.codigo', 'd.nombre')
+      .select('d.codigo', 'd.nombre', 'd.descripcion')
       .count('* as cantidad')
       .sum('ft.descuento_monto_aplicado as total_descuentos')
       .avg('ft.descuento_monto_aplicado as promedio')
-      .groupBy('d.id', 'd.codigo', 'd.nombre')
+      .groupBy('d.id', 'd.codigo', 'd.nombre', 'd.descripcion')
       .orderBy('cantidad', 'desc')) as any[]
 
     const porTipo = rows.map((r) => ({
       codigo: r.codigo,
       nombre: r.nombre,
+      descripcion: r.descripcion ?? null,
       cantidad: Number(r.cantidad),
       total_descuentos: Number(r.total_descuentos) || 0,
       promedio: Number(r.promedio) || 0,
@@ -3220,6 +3724,10 @@ export default class ReportesAdministrativosController {
     const mesActualIdx = meses.findIndex((m) => m.mes === now.month && m.anio === now.year)
     const esCasoUnMesActual = meses.length === 1 && mesActualIdx === 0
 
+    // Comparativo interanual — mismo cálculo para los 3 casos (ver
+    // calcularRealAnioAnteriorPorRango arriba), no depende del `caso`.
+    const realAnioAnterior = await calcularRealAnioAnteriorPorRango(fechaInicio, fechaFin, meses)
+
     // ===== Caso 1: idéntico al endpoint standalone =====
     if (esCasoUnMesActual) {
       const resultado = await calcularMetaMensualVentana(
@@ -3236,8 +3744,11 @@ export default class ReportesAdministrativosController {
         meta_total: resultado.meta_mes,
         real_total: resultado.real,
         pct_real_sobre_meta: resultado.pct_real_sobre_meta_mes,
+        semaforo: calcularSemaforo(resultado.pct_real_sobre_meta_mes),
         proyeccion_total: resultado.proyeccion,
         pct_proyeccion_sobre_meta: resultado.pct_proyeccion_sobre_meta_mes,
+        real_anio_anterior: realAnioAnterior,
+        ...calcularVariacion(resultado.real.total, realAnioAnterior.total),
         detalle_por_mes: [
           {
             mes: meses[0].mes,
@@ -3317,8 +3828,11 @@ export default class ReportesAdministrativosController {
         meta_total: metaTotal,
         real_total: realTotal,
         pct_real_sobre_meta: calcularPct(realTotal.total, metaTotal.total),
+        semaforo: calcularSemaforo(calcularPct(realTotal.total, metaTotal.total)),
         proyeccion_total: null,
         pct_proyeccion_sobre_meta: null,
+        real_anio_anterior: realAnioAnterior,
+        ...calcularVariacion(realTotal.total, realAnioAnterior.total),
         detalle_por_mes: detallePorMes,
       }
     }
@@ -3376,8 +3890,11 @@ export default class ReportesAdministrativosController {
       meta_total: metaTotal,
       real_total: realTotal,
       pct_real_sobre_meta: calcularPct(realTotal.total, metaTotal.total),
+      semaforo: calcularSemaforo(calcularPct(realTotal.total, metaTotal.total)),
       proyeccion_total: proyeccionTotal,
       pct_proyeccion_sobre_meta: calcularPct(proyeccionTotal.total, metaTotal.total),
+      real_anio_anterior: realAnioAnterior,
+      ...calcularVariacion(realTotal.total, realAnioAnterior.total),
       detalle_por_mes: detalleFinal,
     }
   }
@@ -3407,9 +3924,16 @@ export default class ReportesAdministrativosController {
 
     const metaRows = (await Database.from('meta_comercial_asesor')
       .where({ mes, anio })
-      .select('asesor_id', 'meta_pesos')) as { asesor_id: number; meta_pesos: string }[]
+      .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
+      asesor_id: number
+      meta_pesos: string
+      meta_vehiculos: number | null
+    }[]
 
     const metaMap = new Map(metaRows.map((r) => [Number(r.asesor_id), Number(r.meta_pesos)]))
+    const metaVehiculosMap = new Map(
+      metaRows.map((r) => [Number(r.asesor_id), r.meta_vehiculos === null ? null : Number(r.meta_vehiculos)])
+    )
     const idsConMeta = metaRows.map((r) => Number(r.asesor_id))
 
     let idsConDatos: number[] = []
@@ -3557,6 +4081,10 @@ export default class ReportesAdministrativosController {
 
       const pesosTotal = pesosConvenio + pesosComercial
       const pct = meta !== null ? calcularPct(pesosTotal, meta) : null
+      const metaVehiculos = metaVehiculosMap.get(id) ?? null
+      const logradoVehiculos = cantidadConvenio !== null && cantidadComercial !== null
+        ? cantidadConvenio + cantidadComercial
+        : null
 
       return {
         asesor_id: id,
@@ -3571,6 +4099,13 @@ export default class ReportesAdministrativosController {
         meta_pesos: meta,
         pct_avance: pct,
         semaforo: calcularSemaforo(pct),
+        // Meta en unidades — solo se expone acá el dato crudo (meta y, si el
+        // mes es histórico, el logrado ya calculado arriba). En meses
+        // reales no hay "logrado en vehículos" en este endpoint (usa
+        // comisiones, que no cuenta 1 fila por vehículo) — el Súper Informe
+        // sí lo calcula aparte contra facturacion_tickets.
+        meta_vehiculos: metaVehiculos,
+        logrado_vehiculos: logradoVehiculos,
       }
     })
 
@@ -3635,6 +4170,66 @@ export default class ReportesAdministrativosController {
   }
 
   /** Cálculo compartido por metaComercialSuperInforme() y el PDF del Súper Informe. */
+  /**
+   * Descuentos dados por cada asesor comercial en el rango, agrupados por
+   * tipo de descuento — usado solo por el Súper Informe (sección Meta
+   * Comercial por Asesor). El "autorizador" de un descuento
+   * (facturacion_tickets.autorizado_por_id, ver
+   * computeDescuentosPorAutorizador()) es quien lo aprobó en caja, NO el
+   * asesor que generó el turno/factura — ese es facturacion_tickets.agente_id
+   * (mismo campo que ya usa reporteAsesores() y el universo de
+   * computeMetaComercialSuperInforme()). Sin cambio de esquema: es una
+   * consulta nueva sobre datos ya existentes.
+   */
+  private async computeDescuentosPorAsesorComercial(
+    fechaInicio: string,
+    fechaFin: string,
+    idsPermitidos: number[]
+  ): Promise<
+    Map<number, { descuentos: { codigo: string; nombre: string; cantidad: number; total_descuentos: number }[]; total: number }>
+  > {
+    const resultado = new Map<
+      number,
+      { descuentos: { codigo: string; nombre: string; cantidad: number; total_descuentos: number }[]; total: number }
+    >()
+    if (idsPermitidos.length === 0) return resultado
+
+    const rows = (await Database.from('facturacion_tickets as ft')
+      .join('descuentos as d', 'd.id', 'ft.descuento_id')
+      .whereIn('ft.agente_id', idsPermitidos)
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .whereNotNull('ft.descuento_id')
+      .where('ft.descuento_monto_aplicado', '>', 0)
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .select('ft.agente_id', 'd.codigo', 'd.nombre')
+      .count('* as cantidad')
+      .sum('ft.descuento_monto_aplicado as total_descuentos')
+      .groupBy('ft.agente_id', 'd.id', 'd.codigo', 'd.nombre')
+      .orderBy('ft.agente_id', 'asc')) as {
+      agente_id: number
+      codigo: string
+      nombre: string
+      cantidad: string
+      total_descuentos: string
+    }[]
+
+    for (const r of rows) {
+      const id = Number(r.agente_id)
+      if (!resultado.has(id)) resultado.set(id, { descuentos: [], total: 0 })
+      const entry = resultado.get(id)!
+      const totalDescuento = Number(r.total_descuentos) || 0
+      entry.descuentos.push({
+        codigo: r.codigo,
+        nombre: r.nombre,
+        cantidad: Number(r.cantidad),
+        total_descuentos: totalDescuento,
+      })
+      entry.total += totalDescuento
+    }
+    return resultado
+  }
+
   private async computeMetaComercialSuperInforme(fechaInicio: string, fechaFin: string) {
     const meses = mesesEnRango(fechaInicio, fechaFin)
     const now = DateTime.now()
@@ -3655,11 +4250,36 @@ export default class ReportesAdministrativosController {
     const idsPermitidos = asesoresComerciales.map((a) => a.id)
     const nombreMap = new Map(asesoresComerciales.map((a) => [a.id, a.nombre]))
 
-    type Acum = { metaPesos: number | null; pesosConvenio: number; pesosComercial: number }
+    // Descuentos dados por cada asesor — rango completo, no por mes (los
+    // descuentos no distinguen fuente real/histórica como el resto de esta
+    // función, siempre salen de facturacion_tickets).
+    const descuentosPorAsesor = await this.computeDescuentosPorAsesorComercial(
+      fechaInicio,
+      fechaFin,
+      idsPermitidos
+    )
+
+    type Acum = {
+      metaPesos: number | null
+      metaVehiculos: number | null
+      cantidadVehiculos: number
+      pesosConvenio: number
+      pesosComercial: number
+      comisionPagada: number
+      comisionPendiente: number
+    }
     const acumPorAsesor = new Map<number, Acum>()
     const asegurar = (id: number): Acum => {
       if (!acumPorAsesor.has(id)) {
-        acumPorAsesor.set(id, { metaPesos: null, pesosConvenio: 0, pesosComercial: 0 })
+        acumPorAsesor.set(id, {
+          metaPesos: null,
+          metaVehiculos: null,
+          cantidadVehiculos: 0,
+          pesosConvenio: 0,
+          pesosComercial: 0,
+          comisionPagada: 0,
+          comisionPendiente: 0,
+        })
       }
       return acumPorAsesor.get(id)!
     }
@@ -3682,27 +4302,60 @@ export default class ReportesAdministrativosController {
         const metaRows = (await Database.from('meta_comercial_asesor')
           .where({ mes, anio })
           .whereIn('asesor_id', idsPermitidos)
-          .select('asesor_id', 'meta_pesos')) as { asesor_id: number; meta_pesos: string }[]
+          .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
+          asesor_id: number
+          meta_pesos: string
+          meta_vehiculos: number | null
+        }[]
         for (const r of metaRows) {
           const acc = asegurar(Number(r.asesor_id))
           acc.metaPesos = (acc.metaPesos ?? 0) + Number(r.meta_pesos)
+          if (r.meta_vehiculos !== null) {
+            acc.metaVehiculos = (acc.metaVehiculos ?? 0) + Number(r.meta_vehiculos)
+          }
         }
 
         if (esReal) {
+          // ── Vehículos logrados (real) — facturacion_tickets, NO comisiones:
+          // comisiones solo genera una fila por "dateo exitoso"
+          // (captacion_dateos_controller.ts), no por cada vehículo facturado
+          // — subestimaría fuertemente el conteo (verificado: ~20 filas de
+          // comisiones vs. ~114 vehículos reales en facturacion_tickets para
+          // un mismo asesor/mes). agente_id ya es el mismo universo que
+          // reporteAsesores() usa para "vehículos atendidos por el asesor".
+          const vehiculosRows = (await Database.from('facturacion_tickets')
+            .whereIn('agente_id', idsPermitidos)
+            .where('estado', 'CONFIRMADA')
+            .where('servicio_codigo', 'RTM')
+            .whereRaw('DATE(created_at) BETWEEN ? AND ?', [ventanaInicio, ventanaFin])
+            .select('agente_id')
+            .count('* as cantidad')
+            .groupBy('agente_id')) as { agente_id: number; cantidad: string }[]
+          for (const r of vehiculosRows) {
+            asegurar(Number(r.agente_id)).cantidadVehiculos += Number(r.cantidad) || 0
+          }
           // Ya filtrado a solo ASESOR_COMERCIAL: todo el monto va a "comercial"
           // (mismo criterio de clasificación por tipo de agente que usa
           // metaComercialResumen() para el mes en curso).
+          // Agrupado también por estado (una sola query) para poder
+          // desglosar Pagada (estado='PAGADA') vs. Pendiente de pago
+          // (PENDIENTE+APROBADA) sin correr una segunda consulta — ANULADA
+          // ya queda excluida por el whereIn de arriba.
           const rows = (await Database.from('comisiones as c')
             .whereIn('c.asesor_id', idsPermitidos)
             .where('c.es_config', false)
             .where('c.tipo_servicio', 'RTM')
             .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
             .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [ventanaInicio, ventanaFin])
-            .select('c.asesor_id')
+            .select('c.asesor_id', 'c.estado')
             .sum('c.monto_asesor as total')
-            .groupBy('c.asesor_id')) as { asesor_id: number; total: string }[]
+            .groupBy('c.asesor_id', 'c.estado')) as { asesor_id: number; estado: string; total: string }[]
           for (const r of rows) {
-            asegurar(Number(r.asesor_id)).pesosComercial += Number(r.total) || 0
+            const acc = asegurar(Number(r.asesor_id))
+            const monto = Number(r.total) || 0
+            acc.pesosComercial += monto
+            if (r.estado === 'PAGADA') acc.comisionPagada += monto
+            else acc.comisionPendiente += monto
           }
         } else {
           // Histórico: aquí "tipo" SÍ es un atributo por registro
@@ -3747,9 +4400,13 @@ export default class ReportesAdministrativosController {
               const tarifaMoto = Number(vd.tarifa_moto)
               acc.pesosConvenio += Number(vd.livianos_convenio) * tarifaCarro + Number(vd.motos_convenio) * tarifaMoto
               acc.pesosComercial += Number(vd.livianos_propio) * tarifaCarro + Number(vd.motos_propio) * tarifaMoto
+              acc.cantidadVehiculos +=
+                Number(vd.livianos_convenio) + Number(vd.motos_convenio) +
+                Number(vd.livianos_propio) + Number(vd.motos_propio)
             } else {
               acc.pesosConvenio += cantidades.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
               acc.pesosComercial += cantidades.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
+              acc.cantidadVehiculos += cantidades.convenio + cantidades.comercial
               esEstimadoAlgunMes = true
             }
           }
@@ -3757,37 +4414,13 @@ export default class ReportesAdministrativosController {
       }
     }
 
-    const asesoresOut = [...acumPorAsesor.entries()]
-      .map(([id, acc]) => {
-        const pesosTotal = acc.pesosConvenio + acc.pesosComercial
-        return {
-          asesor_id: id,
-          asesor_nombre: nombreMap.get(id) ?? '—',
-          pesos_convenio: acc.pesosConvenio,
-          pesos_comercial: acc.pesosComercial,
-          pesos_total: pesosTotal,
-          meta_pesos: acc.metaPesos,
-          pct_avance: acc.metaPesos !== null ? calcularPct(pesosTotal, acc.metaPesos) : null,
-        }
-      })
-      .sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
-
-    // ── Agregados para las 4 KPI cards (igual que "todos" en pantalla, sin
-    // asesor_id seleccionado) ──
-    const totalConvenio = asesoresOut.reduce((acc, a) => acc + a.pesos_convenio, 0)
-    const totalComercial = asesoresOut.reduce((acc, a) => acc + a.pesos_comercial, 0)
-    const totalMeta = asesoresOut.reduce<number | null>(
-      (acc, a) => (a.meta_pesos === null ? acc : (acc ?? 0) + a.meta_pesos),
-      null
-    )
-    const totalPesos = totalConvenio + totalComercial
-    const pctAvanceTotal = totalMeta !== null ? calcularPct(totalPesos, totalMeta) : null
-
-    // ── Proyección de cierre agregada — solo el tramo del mes en curso
-    // (ritmo conjunto de todos los asesores incluidos), sumada al avance ya
-    // cerrado de los meses anteriores. En meses históricos no se extrapola
-    // (se usa el total ya conocido), igual que metaComercialProyectado(). ──
-    let proyeccionCierreTotal: number | null = totalPesos
+    // ── Proyección de cierre POR ASESOR — misma fórmula ya validada de
+    // metaComercialProyectado(asesor_id) (promedio diario del tramo del mes
+    // en curso × días del mes, sumado al avance ya cerrado de meses
+    // anteriores), pero corrida en 2 consultas agrupadas por asesor_id en
+    // vez de N llamadas individuales al endpoint. En meses históricos no se
+    // extrapola (se usa el total ya conocido), igual que antes. ──
+    const proyeccionPorAsesor = new Map<number, number>()
     if (caso !== 'solo_cerrados' && idsPermitidos.length > 0) {
       const mesActual = meses[mesActualIdx]
       const inicioMesActual = DateTime.fromObject({
@@ -3815,34 +4448,93 @@ export default class ReportesAdministrativosController {
           month: mesActual.mes,
         }).daysInMonth as number
 
-        const rowMesActual = (await Database.from('comisiones as c')
+        const rowsVentanaPromedio = (await Database.from('comisiones as c')
           .whereIn('c.asesor_id', idsPermitidos)
           .where('c.es_config', false)
           .where('c.tipo_servicio', 'RTM')
           .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
           .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [ventanaActualInicio, finParaPromedio])
+          .select('c.asesor_id')
           .sum('c.monto_asesor as total')
-          .first()) as { total: string | null } | undefined
-        const avanceVentanaPromedio = Number(rowMesActual?.total) || 0
+          .groupBy('c.asesor_id')) as { asesor_id: number; total: string }[]
+        const avanceVentanaPromedioPorAsesor = new Map<number, number>(
+          rowsVentanaPromedio.map((r) => [Number(r.asesor_id), Number(r.total) || 0])
+        )
 
-        const rowMesActualCompleto = (await Database.from('comisiones as c')
+        const rowsMesActualCompleto = (await Database.from('comisiones as c')
           .whereIn('c.asesor_id', idsPermitidos)
           .where('c.es_config', false)
           .where('c.tipo_servicio', 'RTM')
           .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
           .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [ventanaActualInicio, ventanaActualFin])
+          .select('c.asesor_id')
           .sum('c.monto_asesor as total')
-          .first()) as { total: string | null } | undefined
-        const avanceMesActualAgregado = Number(rowMesActualCompleto?.total) || 0
+          .groupBy('c.asesor_id')) as { asesor_id: number; total: string }[]
+        const avanceMesActualAgregadoPorAsesor = new Map<number, number>(
+          rowsMesActualCompleto.map((r) => [Number(r.asesor_id), Number(r.total) || 0])
+        )
 
-        const promedioDiario = diasParaPromedio > 0 ? avanceVentanaPromedio / diasParaPromedio : 0
-        const proyeccionMesActual = Math.round(promedioDiario * diasDelMesActual)
-        const avanceCerrados = totalPesos - avanceMesActualAgregado
-        proyeccionCierreTotal = avanceCerrados + proyeccionMesActual
+        for (const [id, acc] of acumPorAsesor) {
+          const pesosTotalAsesor = acc.pesosConvenio + acc.pesosComercial
+          const avanceVentanaAsesor = avanceVentanaPromedioPorAsesor.get(id) ?? 0
+          const avanceMesActualAsesor = avanceMesActualAgregadoPorAsesor.get(id) ?? 0
+          const promedioDiarioAsesor = diasParaPromedio > 0 ? avanceVentanaAsesor / diasParaPromedio : 0
+          const proyeccionMesActualAsesor = Math.round(promedioDiarioAsesor * diasDelMesActual)
+          const avanceCerradosAsesor = pesosTotalAsesor - avanceMesActualAsesor
+          proyeccionPorAsesor.set(id, avanceCerradosAsesor + proyeccionMesActualAsesor)
+        }
       }
-      // Mes actual histórico (no debería pasar en la práctica): sin
-      // extrapolación, proyeccionCierreTotal ya quedó en totalPesos.
+      // Mes actual histórico (no debería pasar en la práctica): el mapa
+      // queda vacío y cada asesor cae al fallback pesos_total (sin
+      // extrapolación), igual que el KPI agregado.
     }
+
+    const asesoresOut = [...acumPorAsesor.entries()]
+      .map(([id, acc]) => {
+        const pesosTotal = acc.pesosConvenio + acc.pesosComercial
+        const pctAvance = acc.metaPesos !== null ? calcularPct(pesosTotal, acc.metaPesos) : null
+        const descuentosAsesor = descuentosPorAsesor.get(id)
+        return {
+          asesor_id: id,
+          asesor_nombre: nombreMap.get(id) ?? '—',
+          pesos_convenio: acc.pesosConvenio,
+          pesos_comercial: acc.pesosComercial,
+          pesos_total: pesosTotal,
+          meta_pesos: acc.metaPesos,
+          pct_avance: pctAvance,
+          cumplio: pctAvance !== null ? pctAvance >= 100 : null,
+          faltante: acc.metaPesos !== null ? Math.max(acc.metaPesos - pesosTotal, 0) : null,
+          proyeccion_cierre: proyeccionPorAsesor.get(id) ?? pesosTotal,
+          comision_pagada: acc.comisionPagada,
+          comision_pendiente: acc.comisionPendiente,
+          meta_vehiculos: acc.metaVehiculos,
+          logrado_vehiculos: acc.cantidadVehiculos,
+          faltante_vehiculos:
+            acc.metaVehiculos !== null ? Math.max(acc.metaVehiculos - acc.cantidadVehiculos, 0) : null,
+          descuentos: descuentosAsesor?.descuentos ?? [],
+          descuentos_total: descuentosAsesor?.total ?? 0,
+        }
+      })
+      .sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
+
+    // ── Agregados para las 4 KPI cards (igual que "todos" en pantalla, sin
+    // asesor_id seleccionado) ──
+    const totalConvenio = asesoresOut.reduce((acc, a) => acc + a.pesos_convenio, 0)
+    const totalComercial = asesoresOut.reduce((acc, a) => acc + a.pesos_comercial, 0)
+    const totalMeta = asesoresOut.reduce<number | null>(
+      (acc, a) => (a.meta_pesos === null ? acc : (acc ?? 0) + a.meta_pesos),
+      null
+    )
+    const totalPesos = totalConvenio + totalComercial
+    const pctAvanceTotal = totalMeta !== null ? calcularPct(totalPesos, totalMeta) : null
+
+    // Proyección global = suma de las proyecciones por asesor ya calculadas
+    // arriba (matemáticamente idéntico al cálculo agregado anterior, que
+    // sumaba una sola consulta global en vez de N filas por asesor).
+    const proyeccionCierreTotal: number | null =
+      caso !== 'solo_cerrados' && proyeccionPorAsesor.size > 0
+        ? asesoresOut.reduce((acc, a) => acc + a.proyeccion_cierre, 0)
+        : totalPesos
     const pctProyeccionTotal = totalMeta !== null && proyeccionCierreTotal !== null
       ? calcularPct(proyeccionCierreTotal, totalMeta)
       : null
@@ -3860,6 +4552,10 @@ export default class ReportesAdministrativosController {
       fecha_fin: fechaFin,
       meses_tocados: meses,
       nota,
+      // Si algún mes tocado es histórico, comision_pagada/comision_pendiente
+      // por asesor puede quedar incompleta (el histórico no registra estado
+      // de pago) — este flag le dice al front/PDF si el desglose es confiable.
+      comision_estado_disponible: esRealTodosLosMeses,
       kpis: {
         pesos_total: totalPesos,
         meta_pesos: totalMeta,
@@ -4888,36 +5584,41 @@ export default class ReportesAdministrativosController {
 
   /**
    * GET /reportes-admin/super-informe/pdf?fecha_inicio=&fecha_fin=
-   * Súper Informe consolidado: portada + 7 secciones (Meta Mensual,
-   * Servicios Global, Producción por Líder, Ingresos por Canal, Retención
-   * de Clientes, Descuentos, Meta Comercial por Asesor). Reutiliza
-   * exactamente los mismos compute*() ya verificados contra cada reporte
-   * individual — no recalcula nada por su cuenta.
+   * Súper Informe consolidado: portada + 7 secciones (Meta Mensual, Meta
+   * Comercial por Asesor, Ingresos por Canal, Servicios (RTM), Retención
+   * de Clientes, Descuentos, Producción por Líder). Reutiliza exactamente
+   * los mismos compute*() ya verificados contra cada reporte individual —
+   * no recalcula nada por su cuenta (salvo el rango anterior de Ingresos
+   * por Canal, usado solo para el comparativo).
    */
   public async superInformePdf({ request, response, auth }: HttpContext) {
     const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
     if (error) return response.badRequest({ message: error })
 
+    const rangoAnterior = calcularRangoAnterior(fechaInicio, fechaFin)
+
     const [
       metaMensual,
-      servicios,
-      produccionLider,
+      metaComercial,
       ingresosCanal,
+      ingresosCanalAnterior,
+      servicios,
       retencion,
       descuentosTipo,
       descuentosCanal,
       descuentosAutorizador,
-      metaComercial,
+      produccionLider,
     ] = await Promise.all([
       this.computeMetaMensualSuperInforme(fechaInicio, fechaFin),
-      this.computeReporteServicios(fechaInicio, fechaFin),
-      this.computeProduccionPorLider(fechaInicio, fechaFin),
+      this.computeMetaComercialSuperInforme(fechaInicio, fechaFin),
       this.computeIngresosPorCanal(fechaInicio, fechaFin),
+      this.computeIngresosPorCanal(rangoAnterior.inicio, rangoAnterior.fin),
+      this.computeReporteServicios(fechaInicio, fechaFin),
       this.computeRetencionClientes(fechaInicio, fechaFin),
       this.computeDescuentosPorTipo(fechaInicio, fechaFin),
       this.computeDescuentosPorCanal(fechaInicio, fechaFin),
       this.computeDescuentosPorAutorizador(fechaInicio, fechaFin),
-      this.computeMetaComercialSuperInforme(fechaInicio, fechaFin),
+      this.computeProduccionPorLider(fechaInicio, fechaFin),
     ])
 
     const generadoPor = auth.user ? `${auth.user.nombres} ${auth.user.apellidos}` : 'Usuario del sistema'
@@ -4927,14 +5628,15 @@ export default class ReportesAdministrativosController {
       fechaFin,
       generadoPor,
       metaMensual,
-      servicios,
-      produccionLider,
+      metaComercial,
       ingresosCanal,
+      ingresosCanalAnterior,
+      servicios,
       retencion,
       descuentosTipo,
       descuentosCanal,
       descuentosAutorizador,
-      metaComercial,
+      produccionLider,
     })
 
     const fileName = `Super_Informe_${fechaInicio}_${fechaFin}.pdf`
