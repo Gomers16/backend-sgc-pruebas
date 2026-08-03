@@ -12,6 +12,7 @@ import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
 import Liquidacion from '#models/liquidacion'
+import Comision from '#models/comision'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -428,6 +429,23 @@ function calcularRangoAnterior(fechaInicio: string, fechaFin: string): { inicio:
   return { inicio: inicio.toISODate() as string, fin: fin.toISODate() as string }
 }
 
+/**
+ * Costo Base RTM Global (comisiones es_config=true, asesor_id IS NULL) —
+ * mismo patrón/fila que ya usa metasMensuales() en comisiones_controller.ts
+ * como fallback cuando un asesor no tiene override propio.
+ */
+async function obtenerCostoBaseRtmGlobal(): Promise<{ moto: number; vehiculo: number }> {
+  const globalCfg = await Comision.query()
+    .where('es_config', true)
+    .whereNull('asesor_id')
+    .where((wb) => wb.where('valor_rtm_moto', '>', 0).orWhere('valor_rtm_vehiculo', '>', 0))
+    .first()
+  return {
+    moto: globalCfg?.valorRtmMoto ?? 0,
+    vehiculo: globalCfg?.valorRtmVehiculo ?? 0,
+  }
+}
+
 /* ======================== SÚPER INFORME — PDF ======================== */
 // Mismo patrón visual que liquidacion_pagos_controller.ts / tramite_liquidaciones_controller.ts
 // (pdfkit + pdfkit-table, color de marca #1a3c5e).
@@ -842,15 +860,17 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   await siDibujarTabla(
     doc,
     [
-      { label: 'Asesor', property: 'asesor', width: 200 },
-      { label: 'Meta (Veh)', property: 'meta', width: 100, align: 'right' },
-      { label: 'Logrado (Veh)', property: 'logrado', width: 106, align: 'right' },
-      { label: 'Faltante (Veh)', property: 'faltante', width: 106, align: 'right' },
+      { label: 'Asesor', property: 'asesor', width: 160 },
+      { label: 'Meta (Veh)', property: 'meta', width: 88, align: 'right' },
+      { label: 'Motos', property: 'motos', width: 88, align: 'right' },
+      { label: 'Vehículos', property: 'vehiculos', width: 88, align: 'right' },
+      { label: 'Faltante (Veh)', property: 'faltante', width: 88, align: 'right' },
     ],
     mc.asesores.map((a) => ({
       asesor: a.asesor_nombre,
       meta: a.meta_vehiculos === null ? 'Sin meta' : formatNumPdf(a.meta_vehiculos),
-      logrado: formatNumPdf(a.logrado_vehiculos),
+      motos: formatNumPdf(a.logrado_motos),
+      vehiculos: formatNumPdf(a.logrado_vehiculos),
       faltante: a.faltante_vehiculos === null ? '—' : formatNumPdf(a.faltante_vehiculos),
     }))
   )
@@ -859,14 +879,48 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .fontSize(7)
     .fillColor(SI_COLOR_GRIS)
     .text(
-      'Logrado (vehículos) = vehículos facturados atribuidos al asesor (facturacion_tickets), no filas de comisiones — un dateo exitoso no equivale a un vehículo facturado.',
+      'Motos/Vehículos = unidades facturadas atribuidas al asesor (facturacion_tickets), no filas de comisiones. En meses históricos sin detalle por tipo de vehículo cargado, ese mes no aporta a este desglose (sí sigue sumando en el total $ de arriba).',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
     )
   doc.fillColor('#000000')
 
-  // ===== 2c. Meta Comercial por Asesor — Descuentos dados (Comercial + Convenio) =====
+  // ===== 2c. Meta Comercial por Asesor — Ingreso RTM Generado por Asesor =====
+  doc.moveDown(0.8)
+  siDibujarSubtitulo(doc, 'Ingreso RTM Generado por Asesor')
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Asesor', property: 'asesor', width: 120 },
+      { label: 'Motos', property: 'motos', width: 62, align: 'right' },
+      { label: 'Vehículos', property: 'vehiculos', width: 62, align: 'right' },
+      { label: 'Costo Base Moto', property: 'costoBaseMoto', width: 90, align: 'right' },
+      { label: 'Costo Base Vehículo', property: 'costoBaseVehiculo', width: 90, align: 'right' },
+      { label: 'Ingreso RTM Generado', property: 'ingreso', width: 88, align: 'right' },
+    ],
+    mc.asesores.map((a) => ({
+      asesor: a.asesor_nombre,
+      motos: formatNumPdf(a.logrado_motos),
+      vehiculos: formatNumPdf(a.logrado_vehiculos),
+      costoBaseMoto: a.costo_base_moto === null ? '—' : formatPesoPdf(a.costo_base_moto),
+      costoBaseVehiculo: a.costo_base_vehiculo === null ? '—' : formatPesoPdf(a.costo_base_vehiculo),
+      ingreso: formatPesoPdf(a.ingreso_rtm_generado),
+    }))
+  )
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'Ingreso RTM Generado = el ingreso real que el asesor trajo al negocio (unidades × Costo Base), NO su comisión — la comisión ganada sigue en la tabla de arriba, sin cambios. Costo Base: en meses reales, config individual del asesor (con fallback al valor Global si no tiene override propio); en meses históricos, la tarifa real de ese asesor/mes. En rangos que cruzan varios meses con tarifas distintas, las columnas Costo Base muestran el valor del mes más reciente tocado — el Ingreso sí se calcula mes a mes con la tarifa correspondiente.',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+
+  // ===== 2d. Meta Comercial por Asesor — Descuentos dados (Comercial + Convenio) =====
   if (mc.descuentosPorAsesor.length > 0) {
     doc.moveDown(0.8)
     siDibujarSubtitulo(doc, 'Descuentos dados por asesor (Comercial y Convenio)')
@@ -967,7 +1021,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     doc,
     4,
     'Servicios (RTM)',
-    'Turnos y facturación por servicio y tipo de vehículo: valor Estimado (turnos × tarifa configurada) vs. valor Real cobrado (post-descuento, directo de la factura). Fuente: turnos_rtms + facturacion_tickets + tarifas_servicios.'
+    'Turnos y facturación por servicio y tipo de vehículo: valor Estimado (turnos × tarifa configurada), Costo Base (referencia interna RTM) y valor Real cobrado (post-descuento, directo de la factura). Fuente: turnos_rtms + facturacion_tickets + tarifas_servicios + comisiones.'
   )
 
   // Inserta una fila "TOTAL" (Moto + Vehículo) después de cada grupo de
@@ -979,6 +1033,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     turnos: string
     estBruto: string
     estNeto: string
+    costoBase: string
     realBruto: string
     realNeto: string
   }[] = []
@@ -998,6 +1053,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
         turnos: formatNumPdf(d.turnos),
         estBruto: formatPesoPdf(d.total_generado),
         estNeto: formatPesoPdf(d.total_neto),
+        costoBase: formatPesoPdf(d.costo_base),
         realBruto: formatPesoPdf(d.valor_real_bruto),
         realNeto: formatPesoPdf(d.valor_real_neto),
       })
@@ -1009,6 +1065,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
         turnos: formatNumPdf(grupo.reduce((acc, r) => acc + r.turnos, 0)),
         estBruto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_generado, 0)),
         estNeto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.total_neto, 0)),
+        costoBase: formatPesoPdf(grupo.reduce((acc, r) => acc + r.costo_base, 0)),
         realBruto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.valor_real_bruto, 0)),
         realNeto: formatPesoPdf(grupo.reduce((acc, r) => acc + r.valor_real_neto, 0)),
       })
@@ -1020,6 +1077,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     turnos: formatNumPdf(datos.servicios.totales.turnos),
     estBruto: formatPesoPdf(datos.servicios.totales.total_generado),
     estNeto: formatPesoPdf(datos.servicios.totales.total_neto),
+    costoBase: formatPesoPdf(datos.servicios.totales.costo_base),
     realBruto: formatPesoPdf(datos.servicios.totales.valor_real_bruto),
     realNeto: formatPesoPdf(datos.servicios.totales.valor_real_neto),
   })
@@ -1027,13 +1085,14 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   await siDibujarTabla(
     doc,
     [
-      { label: 'Servicio', property: 'servicio', width: 110 },
-      { label: 'Tipo', property: 'tipo', width: 48 },
-      { label: 'Turnos', property: 'turnos', width: 48, align: 'right' },
-      { label: 'Est. Bruto', property: 'estBruto', width: 72, align: 'right' },
-      { label: 'Est. Neto', property: 'estNeto', width: 66, align: 'right' },
-      { label: 'Real Bruto', property: 'realBruto', width: 84, align: 'right' },
-      { label: 'Real Neto', property: 'realNeto', width: 84, align: 'right' },
+      { label: 'Servicio', property: 'servicio', width: 100 },
+      { label: 'Tipo', property: 'tipo', width: 40 },
+      { label: 'Turnos', property: 'turnos', width: 42, align: 'right' },
+      { label: 'Est. Bruto', property: 'estBruto', width: 62, align: 'right' },
+      { label: 'Est. Neto', property: 'estNeto', width: 58, align: 'right' },
+      { label: 'Costo Base', property: 'costoBase', width: 62, align: 'right' },
+      { label: 'Real Bruto', property: 'realBruto', width: 74, align: 'right' },
+      { label: 'Real Neto', property: 'realNeto', width: 74, align: 'right' },
     ],
     filasServicios,
     filasServicios.length - 1
@@ -1043,7 +1102,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .fontSize(7)
     .fillColor(SI_COLOR_GRIS)
     .text(
-      'Estimado = turnos × tarifa configurada (servicios sin tarifa muestran $0). Real = directo de la factura, ya refleja descuentos aplicados — puede diferir del Estimado.',
+      'Estimado = turnos × tarifa configurada (servicios sin tarifa muestran $0). Costo Base = turnos × valor RTM Global de referencia (comisiones, config general) — solo aplica a filas RTM, no ajustado por override individual de asesor. Real = directo de la factura, ya refleja descuentos aplicados.',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
@@ -1992,10 +2051,17 @@ export default class ReportesAdministrativosController {
     const result = (await Database.rawQuery(sql, [fechaInicio, fechaFin])) as unknown as [any[]]
     const rows = result[0]
 
+    // Costo Base RTM (valor Global de referencia — comisiones es_config=true,
+    // asesor_id IS NULL). Solo aplica a filas RTM: valor_rtm_moto/vehiculo es
+    // un concepto específico de RTM, no de SOAT/PREV/PERI.
+    const costoBaseGlobal = await obtenerCostoBaseRtmGlobal()
+
     const detalle = rows.map((r) => {
       const turnos = Number(r.turnos)
       const valorUnitario = Number(r.valor_total) || 0
       const valorBase = Number(r.valor_base) || 0
+      const esRTM = r.codigo_servicio === 'RTM'
+      const costoBaseUnitario = r.tipo_vehiculo_clasificado === 'MOTO' ? costoBaseGlobal.moto : costoBaseGlobal.vehiculo
       return {
         codigo_servicio: r.codigo_servicio,
         nombre_servicio: r.nombre_servicio,
@@ -2004,6 +2070,10 @@ export default class ReportesAdministrativosController {
         valor_unitario: valorUnitario,
         total_generado: turnos * valorUnitario,
         total_neto: turnos * valorBase,
+        // Costo Base = turnos × valor Global de referencia RTM (moto o
+        // vehículo). No ajustado por override individual de asesor — ver
+        // nota en el PDF. $0 para servicios que no son RTM.
+        costo_base: esRTM ? turnos * costoBaseUnitario : 0,
         // Valor REAL cobrado (post-descuento), directo de la factura —
         // distinto de total_generado/total_neto arriba, que son estimados
         // (turnos × tarifa configurada). Puede diferir si hay descuentos
@@ -2018,10 +2088,11 @@ export default class ReportesAdministrativosController {
         turnos: acc.turnos + d.turnos,
         total_generado: acc.total_generado + d.total_generado,
         total_neto: acc.total_neto + d.total_neto,
+        costo_base: acc.costo_base + d.costo_base,
         valor_real_bruto: acc.valor_real_bruto + d.valor_real_bruto,
         valor_real_neto: acc.valor_real_neto + d.valor_real_neto,
       }),
-      { turnos: 0, total_generado: 0, total_neto: 0, valor_real_bruto: 0, valor_real_neto: 0 }
+      { turnos: 0, total_generado: 0, total_neto: 0, costo_base: 0, valor_real_bruto: 0, valor_real_neto: 0 }
     )
 
     return {
@@ -2101,11 +2172,11 @@ export default class ReportesAdministrativosController {
       .whereNotNull('ft.descuento_id')
       .where('ft.descuento_monto_aplicado', '>', 0)
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select('ft.captacion_canal as canal')
+      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
       .count('* as cantidad')
       .sum('ft.descuento_monto_aplicado as total_descuentos')
       .countDistinct('ft.descuento_id as tipos_usados')
-      .groupBy('ft.captacion_canal')
+      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
       .orderBy('cantidad', 'desc')) as any[]
 
     const porCanalBase = rows.map((r) => ({
@@ -4040,6 +4111,29 @@ export default class ReportesAdministrativosController {
     const idsPermitidos = asesoresComerciales.map((a) => a.id)
     const nombreMap = new Map(asesoresComerciales.map((a) => [a.id, a.nombre]))
 
+    // Costo Base RTM (moto/vehículo) por asesor — para "Ingreso RTM
+    // Generado". Meses reales: config individual del asesor (comisiones
+    // es_config=true), con fallback al valor Global si no tiene override
+    // propio — mismo mecanismo que ya usa metasMensuales() en
+    // comisiones_controller.ts. Meses históricos: tarifa_moto/tarifa_carro
+    // de historico_comercial_vehiculo_mensual (ya se consulta más abajo).
+    const costoBaseGlobal = await obtenerCostoBaseRtmGlobal()
+    const costoBaseConfigRows = idsPermitidos.length
+      ? await Comision.query()
+          .where('es_config', true)
+          .whereIn('asesor_id', idsPermitidos)
+          .where((wb) => wb.where('valor_rtm_moto', '>', 0).orWhere('valor_rtm_vehiculo', '>', 0))
+      : []
+    const costoBasePorAsesor = new Map<number, { moto: number; vehiculo: number }>()
+    for (const c of costoBaseConfigRows) {
+      if (c.asesorId === null) continue
+      costoBasePorAsesor.set(c.asesorId, {
+        moto: c.valorRtmMoto || costoBaseGlobal.moto,
+        vehiculo: c.valorRtmVehiculo || costoBaseGlobal.vehiculo,
+      })
+    }
+    const obtenerCostoBaseAsesor = (asesorId: number) => costoBasePorAsesor.get(asesorId) ?? costoBaseGlobal
+
     // Descuentos dados por cada asesor — universo AMPLIADO (Comercial +
     // Convenio, pedido explícito para este bloque), a diferencia del resto
     // de la función que solo cubre ASESOR_COMERCIAL. Rango completo, no por
@@ -4086,11 +4180,25 @@ export default class ReportesAdministrativosController {
     type Acum = {
       metaPesos: number | null
       metaVehiculos: number | null
-      cantidadVehiculos: number
+      // Antes "cantidadVehiculos" (un solo número, moto+vehículo sumados) —
+      // ahora separado en las 2 categorías, pedido explícito para la tabla
+      // "Unidades (vehículos)" y para "Ingreso RTM Generado".
+      logradoMotos: number
+      logradoVehiculos: number
       pesosConvenio: number
       pesosComercial: number
       comisionPagada: number
       comisionPendiente: number
+      // Ingreso RTM Generado = Σ por mes de (motos_del_mes × costoBaseMoto +
+      // vehiculos_del_mes × costoBaseVehiculo) — costoBase puede variar mes
+      // a mes en rangos históricos, por eso se acumula dentro del loop de
+      // meses, no al final con un solo costoBase fijo.
+      ingresoRtmGenerado: number
+      // Último costoBase usado (para mostrarlo en la tabla) — en rangos que
+      // cruzan varios meses con tarifas distintas, es el del mes más
+      // reciente tocado, no necesariamente uniforme en todo el rango.
+      ultimoCostoBaseMoto: number | null
+      ultimoCostoBaseVehiculo: number | null
     }
     const acumPorAsesor = new Map<number, Acum>()
     const asegurar = (id: number): Acum => {
@@ -4098,11 +4206,15 @@ export default class ReportesAdministrativosController {
         acumPorAsesor.set(id, {
           metaPesos: null,
           metaVehiculos: null,
-          cantidadVehiculos: 0,
+          logradoMotos: 0,
+          logradoVehiculos: 0,
           pesosConvenio: 0,
           pesosComercial: 0,
           comisionPagada: 0,
           comisionPendiente: 0,
+          ingresoRtmGenerado: 0,
+          ultimoCostoBaseMoto: null,
+          ultimoCostoBaseVehiculo: null,
         })
       }
       return acumPorAsesor.get(id)!
@@ -4147,16 +4259,41 @@ export default class ReportesAdministrativosController {
           // comisiones vs. ~114 vehículos reales en facturacion_tickets para
           // un mismo asesor/mes). agente_id ya es el mismo universo que
           // reporteAsesores() usa para "vehículos atendidos por el asesor".
-          const vehiculosRows = (await Database.from('facturacion_tickets')
-            .whereIn('agente_id', idsPermitidos)
-            .where('estado', 'CONFIRMADA')
-            .where('servicio_codigo', 'RTM')
-            .whereRaw('DATE(created_at) BETWEEN ? AND ?', [ventanaInicio, ventanaFin])
-            .select('agente_id')
+          // Agrupado también por tipo de vehículo (join a turnos_rtms vía
+          // turno_id, misma clasificación MOTO/VEHICULO que usa Servicios)
+          // para poder separar "Unidades" en Motos/Vehículos y calcular
+          // Ingreso RTM Generado por categoría.
+          const vehiculosRows = (await Database.from('facturacion_tickets as ft')
+            .join('turnos_rtms as t', 't.id', 'ft.turno_id')
+            .whereIn('ft.agente_id', idsPermitidos)
+            .where('ft.estado', 'CONFIRMADA')
+            .where('ft.servicio_codigo', 'RTM')
+            .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [ventanaInicio, ventanaFin])
+            .select(
+              'ft.agente_id',
+              Database.raw(
+                "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
+              )
+            )
             .count('* as cantidad')
-            .groupBy('agente_id')) as { agente_id: number; cantidad: string }[]
+            .groupBy('ft.agente_id', 'tipo_clasificado')) as {
+            agente_id: number
+            tipo_clasificado: 'MOTO' | 'VEHICULO'
+            cantidad: string
+          }[]
           for (const r of vehiculosRows) {
-            asegurar(Number(r.agente_id)).cantidadVehiculos += Number(r.cantidad) || 0
+            const acc = asegurar(Number(r.agente_id))
+            const cantidad = Number(r.cantidad) || 0
+            const costoBase = obtenerCostoBaseAsesor(Number(r.agente_id))
+            if (r.tipo_clasificado === 'MOTO') {
+              acc.logradoMotos += cantidad
+              acc.ingresoRtmGenerado += cantidad * costoBase.moto
+              acc.ultimoCostoBaseMoto = costoBase.moto
+            } else {
+              acc.logradoVehiculos += cantidad
+              acc.ingresoRtmGenerado += cantidad * costoBase.vehiculo
+              acc.ultimoCostoBaseVehiculo = costoBase.vehiculo
+            }
           }
           // Ya filtrado a solo ASESOR_COMERCIAL: todo el monto va a "comercial"
           // (mismo criterio de clasificación por tipo de agente que usa
@@ -4224,13 +4361,26 @@ export default class ReportesAdministrativosController {
               const tarifaMoto = Number(vd.tarifa_moto)
               acc.pesosConvenio += Number(vd.livianos_convenio) * tarifaCarro + Number(vd.motos_convenio) * tarifaMoto
               acc.pesosComercial += Number(vd.livianos_propio) * tarifaCarro + Number(vd.motos_propio) * tarifaMoto
-              acc.cantidadVehiculos +=
-                Number(vd.livianos_convenio) + Number(vd.motos_convenio) +
-                Number(vd.livianos_propio) + Number(vd.motos_propio)
+              // "Unidades" e "Ingreso RTM Generado" históricos: SOLO la
+              // porción propia (livianos_propio/motos_propio), pedido
+              // explícito — no incluye la porción convenio de esta misma
+              // fila. tarifa_carro/tarifa_moto ES el Costo Base histórico
+              // de ese asesor/mes (ya reconciliado contra Excel).
+              const motosPropio = Number(vd.motos_propio)
+              const vehiculosPropio = Number(vd.livianos_propio)
+              acc.logradoMotos += motosPropio
+              acc.logradoVehiculos += vehiculosPropio
+              acc.ingresoRtmGenerado += motosPropio * tarifaMoto + vehiculosPropio * tarifaCarro
+              acc.ultimoCostoBaseMoto = tarifaMoto
+              acc.ultimoCostoBaseVehiculo = tarifaCarro
             } else {
               acc.pesosConvenio += cantidades.convenio * VALOR_ESTIMADO_ASESOR_CONVENIO
               acc.pesosComercial += cantidades.comercial * VALOR_ESTIMADO_ASESOR_COMERCIAL
-              acc.cantidadVehiculos += cantidades.convenio + cantidades.comercial
+              // Sin fila en historico_comercial_vehiculo_mensual no hay
+              // desglose moto/vehículo ni tarifa real disponible para ese
+              // mes — "Unidades" e "Ingreso RTM Generado" quedan sin
+              // contribución de este mes (no se estima con tarifa plana,
+              // a diferencia de pesosConvenio/pesosComercial arriba).
               esEstimadoAlgunMes = true
             }
           }
@@ -4331,9 +4481,15 @@ export default class ReportesAdministrativosController {
           comision_pagada: acc.comisionPagada,
           comision_pendiente: acc.comisionPendiente,
           meta_vehiculos: acc.metaVehiculos,
-          logrado_vehiculos: acc.cantidadVehiculos,
+          logrado_motos: acc.logradoMotos,
+          logrado_vehiculos: acc.logradoVehiculos,
           faltante_vehiculos:
-            acc.metaVehiculos !== null ? Math.max(acc.metaVehiculos - acc.cantidadVehiculos, 0) : null,
+            acc.metaVehiculos !== null
+              ? Math.max(acc.metaVehiculos - (acc.logradoMotos + acc.logradoVehiculos), 0)
+              : null,
+          costo_base_moto: acc.ultimoCostoBaseMoto,
+          costo_base_vehiculo: acc.ultimoCostoBaseVehiculo,
+          ingreso_rtm_generado: acc.ingresoRtmGenerado,
         }
       })
       .sort((a, b) => a.asesor_nombre.localeCompare(b.asesor_nombre))
