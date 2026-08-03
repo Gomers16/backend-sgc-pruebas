@@ -6,8 +6,16 @@ import Database from '@adonisjs/lucid/services/db'
 import Comision from '#models/comision'
 import AgenteCaptacion from '#models/agente_captacion'
 import TurnoRtm from '#models/turno_rtm'
+import Descuento from '#models/descuento'
 import Liquidacion, { type LiquidacionTipoOrigen, type LiquidacionTipoPeriodo } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
+import {
+  resolveConfigComision,
+  resolveConfigRecurrencia,
+  calcularComision,
+  type CasoComision,
+  type EscenarioCliente,
+} from '#services/comision_calculo_service'
 
 /* ========= Helpers ========= */
 function toNumber(v: any): number {
@@ -1328,10 +1336,17 @@ export default class ComisionesController {
 
     const asesorIdRaw = payload.asesor_id
     const asesorId = asesorIdRaw ? Number(asesorIdRaw) : null
-    const tipoVehiculo = (payload.tipo_vehiculo || '').toUpperCase()
 
-    if (!['MOTO', 'VEHICULO'].includes(tipoVehiculo))
-      return response.badRequest({ message: 'tipo_vehiculo inválido (MOTO o VEHICULO)' })
+    const rawTipo = payload.tipo_vehiculo
+    let tipoVehiculo: 'MOTO' | 'VEHICULO' | null = null
+    if (rawTipo !== undefined && rawTipo !== null && String(rawTipo).trim() !== '') {
+      const tv = String(rawTipo).toUpperCase()
+      if (!['MOTO', 'VEHICULO'].includes(tv))
+        return response.badRequest({
+          message: 'tipo_vehiculo inválido (MOTO o VEHICULO o vacío para Comercial/sin distinción)',
+        })
+      tipoVehiculo = tv as 'MOTO' | 'VEHICULO'
+    }
 
     const valorPlaca = Math.max(0, toNumber(payload.valor_placa))
     const valorDateo = Math.max(0, toNumber(payload.valor_dateo))
@@ -1339,9 +1354,9 @@ export default class ComisionesController {
     const valorPlacaVehiculo = parseNullable(payload.valor_placa_vehiculo)
     const valorPlacaMoto = parseNullable(payload.valor_placa_moto)
 
-    const existingQuery = Comision.query()
-      .where('es_config', true)
-      .where('tipo_vehiculo', tipoVehiculo)
+    const existingQuery = Comision.query().where('es_config', true)
+    if (tipoVehiculo === null) existingQuery.whereNull('tipo_vehiculo')
+    else existingQuery.where('tipo_vehiculo', tipoVehiculo)
 
     if (asesorId === null) existingQuery.whereNull('asesor_id')
     else existingQuery.where('asesor_id', asesorId)
@@ -1401,11 +1416,18 @@ export default class ComisionesController {
     if (payload.asesor_id !== undefined)
       comision.asesorId = payload.asesor_id ? Number(payload.asesor_id) : null
 
-    if (payload.tipo_vehiculo) {
-      const tipoVehiculo = String(payload.tipo_vehiculo).toUpperCase()
-      if (!['MOTO', 'VEHICULO'].includes(tipoVehiculo))
-        return response.badRequest({ message: 'tipo_vehiculo inválido (MOTO o VEHICULO)' })
-      ;(comision as any).tipoVehiculo = tipoVehiculo
+    if (payload.tipo_vehiculo !== undefined) {
+      const rawTipo = payload.tipo_vehiculo
+      if (rawTipo === null || String(rawTipo).trim() === '') {
+        ;(comision as any).tipoVehiculo = null
+      } else {
+        const tipoVehiculo = String(rawTipo).toUpperCase()
+        if (!['MOTO', 'VEHICULO'].includes(tipoVehiculo))
+          return response.badRequest({
+            message: 'tipo_vehiculo inválido (MOTO o VEHICULO o vacío para Comercial/sin distinción)',
+          })
+        ;(comision as any).tipoVehiculo = tipoVehiculo
+      }
     }
 
     if (payload.valor_placa !== undefined)
@@ -1438,6 +1460,130 @@ export default class ComisionesController {
       return response.notFound({ message: 'Configuración no encontrada' })
     await comision.delete()
     return response.ok({ message: 'Configuración eliminada correctamente' })
+  }
+
+  /* ============================================================
+   *          SIMULADOR DE COMISIONES (DRY-RUN — Fase 6)
+   *
+   * Ejecuta la MISMA función real de cálculo (comision_calculo_service.ts)
+   * que usa facturacion_tickets_controller.ts para comisiones reales, con
+   * parámetros simulados. No crea ninguna fila en `comisiones` ni toca
+   * `captacion_dateos` — es 100% de lectura.
+   * ============================================================*/
+
+  public async simularComision({ request, response }: HttpContext) {
+    const payload = request.only([
+      'actor',
+      'asesorId',
+      'tipoVehiculo',
+      'conConvenio',
+      'escenario',
+      'tuvoContinuidad',
+      'esAvance',
+      'codigoDescuento',
+      'origenDescuento',
+    ])
+
+    const actor = String(payload.actor || '').toUpperCase()
+    if (!['COMERCIAL', 'CONVENIO'].includes(actor))
+      return response.badRequest({ message: 'actor debe ser COMERCIAL o CONVENIO' })
+
+    const asesorId = payload.asesorId ? Number(payload.asesorId) : null
+    if (!asesorId) return response.badRequest({ message: 'asesorId es requerido' })
+
+    const tipoVehiculo = String(payload.tipoVehiculo || '').toUpperCase()
+    if (!['MOTO', 'VEHICULO'].includes(tipoVehiculo))
+      return response.badRequest({ message: 'tipoVehiculo debe ser MOTO o VEHICULO' })
+
+    const escenario = String(payload.escenario || '').toUpperCase()
+    if (!['NUEVO', 'RECURRENTE', 'RECUPERACION'].includes(escenario))
+      return response.badRequest({ message: 'escenario debe ser NUEVO, RECURRENTE o RECUPERACION' })
+
+    const conConvenio = Boolean(payload.conConvenio)
+    const esAvance = actor === 'COMERCIAL' && !conConvenio ? false : Boolean(payload.esAvance)
+    const tuvoContinuidad =
+      actor === 'CONVENIO' && !conConvenio ? Boolean(payload.tuvoContinuidad) : true
+
+    const codigoDescuento = payload.codigoDescuento ? String(payload.codigoDescuento) : null
+    let origenDescuento: 'DATEO' | 'CAJA' | null = null
+    if (codigoDescuento) {
+      const origenRaw = String(payload.origenDescuento || '').toUpperCase()
+      if (!['DATEO', 'CAJA'].includes(origenRaw))
+        return response.badRequest({ message: 'origenDescuento debe ser DATEO o CAJA cuando hay descuento' })
+      origenDescuento = origenRaw as 'DATEO' | 'CAJA'
+      const descuentoExiste = await Descuento.query()
+        .where('codigo', codigoDescuento)
+        .where('activo', true)
+        .first()
+      if (!descuentoExiste)
+        return response.badRequest({ message: `Descuento "${codigoDescuento}" no existe o no está activo` })
+    }
+
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return response.notFound({ message: 'Asesor no encontrado' })
+    const asesorEsConvenio = String(asesor.tipo || '').toUpperCase().includes('CONVENIO')
+    if (actor === 'COMERCIAL' && asesorEsConvenio)
+      return response.badRequest({ message: 'El asesor elegido es Convenio, no Comercial' })
+    if (actor === 'CONVENIO' && !asesorEsConvenio)
+      return response.badRequest({ message: 'El asesor elegido es Comercial, no Convenio' })
+
+    const caso: CasoComision =
+      actor === 'COMERCIAL'
+        ? conConvenio
+          ? 'CONVENIO_COMERCIAL'
+          : 'SIN_CONVENIO'
+        : conConvenio
+          ? 'CONVENIO_COMERCIAL'
+          : 'CONVENIO_SELF'
+
+    const cfgValues = await resolveConfigComision({
+      asesorId: actor === 'COMERCIAL' ? asesorId : null,
+      asesorConvenioId: actor === 'CONVENIO' ? asesorId : null,
+      tipoVehiculo: tipoVehiculo as 'MOTO' | 'VEHICULO',
+    })
+    const recValues = await resolveConfigRecurrencia(
+      actor === 'COMERCIAL' ? asesorId : null,
+      tipoVehiculo as 'MOTO' | 'VEHICULO'
+    )
+
+    const resultado = calcularComision({
+      caso,
+      escenario: escenario as EscenarioCliente,
+      tuvoContinuidad,
+      esAvance,
+      montoAvance: 0,
+      codigoDescuento,
+      origenDescuento,
+      cfgValues,
+      recValues,
+    })
+
+    // Qué regla ganó — mismo criterio de prioridad usado en la pestaña Reglas
+    const filaAsesor = await Comision.query()
+      .where('es_config', true)
+      .where('asesor_id', asesorId)
+      .first()
+    const reglaGanadora = filaAsesor
+      ? { alcance: 'INDIVIDUAL' as const, asesorId, asesorNombre: asesor.nombre }
+      : { alcance: 'GLOBAL' as const, asesorId: null, asesorNombre: null }
+
+    return response.ok({
+      caso,
+      escenario,
+      actor,
+      asesor: { id: asesor.id, nombre: asesor.nombre, tipo: asesor.tipo },
+      continuidadUsada:
+        actor === 'CONVENIO' && !conConvenio && escenario !== 'NUEVO' ? tuvoContinuidad : null,
+      reglaGanadora,
+      reglaAplicada: resultado.reglaAplicada,
+      resultado: {
+        base: resultado.base,
+        monto: resultado.monto,
+        montoAsesor: resultado.montoAsesor,
+        montoConvenio: resultado.montoConvenio,
+        valorNuevoDirectoFinal: resultado.valorNuevoDirectoFinal,
+      },
+    })
   }
 
   /* ============================================================

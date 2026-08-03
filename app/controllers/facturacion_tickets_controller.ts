@@ -15,6 +15,15 @@ import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
 import { evaluarContinuidad } from '#services/continuidad_service'
+import {
+  resolveConfigComision,
+  resolveConfigRecurrencia,
+  calcularComision,
+  isRTM,
+  inferTipoVehiculoComision,
+  type EscenarioCliente,
+  type OrigenDescuento,
+} from '#services/comision_calculo_service'
 
 /** Carpeta para subir tickets (local). */
 const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
@@ -1007,18 +1016,19 @@ export default class FacturacionTicketsController {
     let esInformativoEmpleado = false // 🆕
     let esAvancePropietario = false // 🆕 CAMBIO 1
     let esObsequio = false // 🆕 CAMBIO NUEVO
-    let esInformativoSoatRtm = false // 🆕
+    // Código del descuento activo (o null) — usado por comision_calculo_service.calcularComision()
+    let codigoDescuentoActivo: string | null = null
     if (descuentoIdActivo) {
       const descuentoInfo = await Descuento.query()
         .where('id', descuentoIdActivo)
         .where('activo', true)
         .first()
       tieneInformativo = descuentoInfo !== null
+      codigoDescuentoActivo = descuentoInfo?.codigo ?? null
       esInformativoPolicia = descuentoInfo?.codigo === 'INFORMATIVO_POLICIA'
       esInformativoEmpleado = descuentoInfo?.codigo === 'INFORMATIVO_EMPLEADO' // 🆕
       esAvancePropietario = descuentoInfo?.codigo === 'AVANCE_PROPIETARIO' // 🆕 CAMBIO 2
       esObsequio = descuentoInfo?.codigo === 'INFORMATIVO_OBSEQUIO' // 🆕 CAMBIO NUEVO
-      esInformativoSoatRtm = descuentoInfo?.codigo === 'INFORMATIVO_SOAT_RTM' // 🆕
       console.log(
         `🏷️ Descuento informativo: ${tieneInformativo ? `${descuentoInfo!.nombre} (ID ${descuentoIdActivo})` : 'NO'} | esPolicia: ${esInformativoPolicia} | esEmpleado: ${esInformativoEmpleado} | esAvancePropietario: ${esAvancePropietario} | esObsequio: ${esObsequio} | origenCaja: ${descuentoOrigenCaja}`
       )
@@ -1083,6 +1093,14 @@ export default class FacturacionTicketsController {
       `🔗 Continuidad asesor convenio: ${estadoContinuidad} (${tuvoContinuidad ? '✅ paga completo' : '❌ paga recurrencia'})`
     )
 
+    // Flags normalizados para comision_calculo_service.calcularComision()
+    const escenario: EscenarioCliente = esClienteNuevo
+      ? 'NUEVO'
+      : esClienteRecurrente
+        ? 'RECURRENTE'
+        : 'RECUPERACION'
+    const origenDescuento: OrigenDescuento = descuentoOrigenCaja ? 'CAJA' : 'DATEO'
+
     // Persistir el resultado en el turno para que la pestaña Continuidad lo
     // pueda mostrar sin recalcular (ver app/services/continuidad_service.ts).
     if (turnoActual?.id && (asesorConvenioIdReal || dateo.convenioId)) {
@@ -1135,36 +1153,26 @@ export default class FacturacionTicketsController {
         c.calculadoPor = usuarioId
         c.porcentaje = '0'
         c.asesorSecundarioId = null
-        c.base = '0'
         c.montoConvenio = '0'
         c.esAvance = false // Sin convenio: avance no aplica
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
-        if (esClienteNuevo) {
-          if (tieneInformativo) {
-            // Informativo (cliente propio, sin convenio) = $0 por especificación
-            c.monto = '0'
-            c.montoAsesor = '0'
-            c.valorNuevoDirecto = '0'
-            console.log(
-              `✅ Sin convenio 🆕 NUEVO + INFORMATIVO → $0 (bajó de $${cfgValues.valorNuevoDirecto})`
-            )
-          } else {
-            // Nuevo directo sin descuento → valor_nuevo_directo
-            c.monto = String(cfgValues.valorNuevoDirecto)
-            c.montoAsesor = String(cfgValues.valorNuevoDirecto)
-            c.valorNuevoDirecto = String(cfgValues.valorNuevoDirecto)
-            console.log(`✅ Sin convenio 🆕 NUEVO DIRECTO → $${cfgValues.valorNuevoDirecto}`)
-          }
-        } else {
-          // Recuperación es solo una categoría informativa/de reporte para
-          // el comercial — nunca paga distinto de recurrente.
-          c.monto = String(recValues.valorRecurrente)
-          c.montoAsesor = String(recValues.valorRecurrente)
-          c.valorNuevoDirecto = '0'
-          const etiqueta = esClienteRecurrente ? '🔄 RECURRENTE' : '💛 RECUPERACIÓN'
-          console.log(`✅ Sin convenio ${etiqueta} → $${recValues.valorRecurrente}`)
-        }
+        const resultadoCaso1 = calcularComision({
+          caso: 'SIN_CONVENIO',
+          escenario,
+          tuvoContinuidad,
+          esAvance: false,
+          montoAvance: 0,
+          codigoDescuento: codigoDescuentoActivo,
+          origenDescuento,
+          cfgValues,
+          recValues,
+        })
+        c.base = String(resultadoCaso1.base)
+        c.monto = String(resultadoCaso1.monto)
+        c.montoAsesor = String(resultadoCaso1.montoAsesor)
+        c.valorNuevoDirecto = String(resultadoCaso1.valorNuevoDirectoFinal)
+        console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
 
         await c.useTransaction(trx).save()
       } else if (
@@ -1192,54 +1200,24 @@ export default class FacturacionTicketsController {
         c.esAvance = esAvance
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
-        if (esAvance) {
-          // Con avance: el asesor convenio ya recibió su dinero como descuento
-          // en la factura del cliente. No cobra comisión adicional.
-          c.base = String(cfgValues.valorIncentivoPorTipo)
-          c.monto = '0'
-          c.montoAsesor = '0'
-          c.descuentoMontoAplicado = montoAvance
-          console.log(`✅ Convenio datea + AVANCE → $0 (ya cobró vía descuento en factura)`)
-        } else if (
-          (esInformativoPolicia ||
-            esInformativoEmpleado ||
-            esAvancePropietario ||
-            esObsequio ||
-            esInformativoSoatRtm) &&
-          descuentoOrigenCaja
-        ) {
-          // Descuento especial aplicado en caja → $0
-          c.base = '0'
-          c.monto = '0'
-          c.montoAsesor = '0'
-          console.log(`✅ Convenio datea + DESCUENTO CAJA → $0`)
-        } else if (esClienteNuevo) {
-          // 2A — Nuevo: es continuidad automática → incentivo_base
-          c.base = String(cfgValues.valorIncentivo)
-          c.monto = String(cfgValues.valorIncentivo)
-          c.montoAsesor = String(cfgValues.valorIncentivo)
-          console.log(`✅ Convenio datea 🆕 NUEVO → asesor cobra $${cfgValues.valorIncentivo}`)
-        } else if (esClienteRecurrente || esClienteRecuperacion) {
-          if (tuvoContinuidad) {
-            // 2B — Continuidad
-            c.base = String(cfgValues.valorIncentivo)
-            c.monto = String(cfgValues.valorIncentivo)
-            c.montoAsesor = String(cfgValues.valorIncentivo)
-            console.log(`✅ Convenio datea CONTINUIDAD → asesor cobra $${cfgValues.valorIncentivo}`)
-          } else {
-            // 2C/2D — Recurrente sin continuidad O Recuperación → dateo_recurrente
-            // (recuperación usa el mismo valor que recurrente para asesor convenio)
-            c.base = '0'
-            c.monto = String(recValues.valorRecurrente)
-            c.montoAsesor = String(recValues.valorRecurrente)
-            const etiqueta = esClienteRecuperacion
-              ? '💛 RECUPERACIÓN'
-              : '🔄 RECURRENTE sin continuidad'
-            console.log(
-              `✅ Convenio datea ${etiqueta} → asesor cobra $${recValues.valorRecurrente}`
-            )
-          }
+        const resultadoCaso2 = calcularComision({
+          caso: 'CONVENIO_SELF',
+          escenario,
+          tuvoContinuidad,
+          esAvance,
+          montoAvance,
+          codigoDescuento: codigoDescuentoActivo,
+          origenDescuento,
+          cfgValues,
+          recValues,
+        })
+        c.base = String(resultadoCaso2.base)
+        c.monto = String(resultadoCaso2.monto)
+        c.montoAsesor = String(resultadoCaso2.montoAsesor)
+        if (resultadoCaso2.descuentoMontoAplicado !== null) {
+          c.descuentoMontoAplicado = resultadoCaso2.descuentoMontoAplicado
         }
+        console.log(`✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`)
 
         await c.useTransaction(trx).save()
 
@@ -1267,79 +1245,27 @@ export default class FacturacionTicketsController {
         c.esAvance = esAvance
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
-        if (esClienteNuevo) {
-          c.base = String(cfgValues.valorIncentivoPorTipo)
-          if (
-            (esInformativoPolicia ||
-              esInformativoEmpleado ||
-              esAvancePropietario ||
-              esObsequio ||
-              esInformativoSoatRtm) &&
-            descuentoOrigenCaja
-          ) {
-            // 🆕 CAMBIO 4
-            // 🆕 INFORMATIVO_POLICIA / INFORMATIVO_EMPLEADO / AVANCE_PROPIETARIO / INFORMATIVO_OBSEQUIO aplicado en caja:
-            // Comercial baja a valor dateo ($4.300), convenio queda en $0
-            c.monto = String(recValues.valorRecurrente)
-            c.montoAsesor = String(recValues.valorRecurrente)
-            c.montoConvenio = '0'
-            console.log(
-              `✅ Comercial con convenio 🆕 NUEVO + INFORMATIVO_POLICIA/EMPLEADO/AVANCE_PROPIETARIO/OBSEQUIO (caja) → dateo $${recValues.valorRecurrente} | convenio $0`
-            )
-          } else if (esAvance) {
-            // Avance con convenio: al comercial no se le baja nada, la
-            // comisión del convenio queda en $0 completo (no una resta
-            // parcial del incentivo).
-            c.monto = String(cfgValues.valorDateoNuevo)
-            c.montoAsesor = String(cfgValues.valorDateoNuevo)
-            c.montoConvenio = '0'
-            c.descuentoMontoAplicado = montoAvance
-            console.log(
-              `✅ Comercial con convenio 🆕 NUEVO + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
-            )
-          } else {
-            c.monto = String(cfgValues.valorDateoNuevo)
-            c.montoAsesor = String(cfgValues.valorDateoNuevo)
-            c.montoConvenio = String(cfgValues.valorIncentivoPorTipo)
-            console.log(
-              `✅ Comercial con convenio 🆕 NUEVO → dateo $${cfgValues.valorDateoNuevo} + incentivo $${cfgValues.valorIncentivoPorTipo}`
-            )
-          }
-        } else if (esClienteRecurrente) {
-          // 3D/3E — Recurrente: comercial cobra dateo_via_convenio
-          c.monto = String(cfgValues.valorDateoNuevo)
-          c.montoAsesor = String(cfgValues.valorDateoNuevo)
-          c.base = String(cfgValues.valorIncentivoPorTipo)
-          if (esAvance) {
-            c.montoConvenio = '0'
-            c.descuentoMontoAplicado = montoAvance
-            console.log(
-              `✅ Comercial+convenio 🔄 RECURRENTE + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
-            )
-          } else {
-            c.montoConvenio = String(cfgValues.valorIncentivoPorTipo)
-            console.log(
-              `✅ Comercial+convenio 🔄 RECURRENTE → dateo $${cfgValues.valorDateoNuevo} + convenio $${cfgValues.valorIncentivoPorTipo}`
-            )
-          }
-        } else {
-          // 3F/3G — Recuperación: comercial cobra dateo_via_convenio
-          c.monto = String(cfgValues.valorDateoNuevo)
-          c.montoAsesor = String(cfgValues.valorDateoNuevo)
-          c.base = String(cfgValues.valorIncentivoPorTipo)
-          if (esAvance) {
-            c.montoConvenio = '0'
-            c.descuentoMontoAplicado = montoAvance
-            console.log(
-              `✅ Comercial+convenio 💛 RECUPERACIÓN + AVANCE → dateo $${cfgValues.valorDateoNuevo} + convenio $0`
-            )
-          } else {
-            c.montoConvenio = String(cfgValues.valorIncentivoPorTipo)
-            console.log(
-              `✅ Comercial+convenio 💛 RECUPERACIÓN → dateo $${cfgValues.valorDateoNuevo} + convenio $${cfgValues.valorIncentivoPorTipo}`
-            )
-          }
+        const resultadoCaso3 = calcularComision({
+          caso: 'CONVENIO_COMERCIAL',
+          escenario,
+          tuvoContinuidad,
+          esAvance,
+          montoAvance,
+          codigoDescuento: codigoDescuentoActivo,
+          origenDescuento,
+          cfgValues,
+          recValues,
+        })
+        c.base = String(resultadoCaso3.base)
+        c.monto = String(resultadoCaso3.monto)
+        c.montoAsesor = String(resultadoCaso3.montoAsesor)
+        c.montoConvenio = String(resultadoCaso3.montoConvenio)
+        if (resultadoCaso3.descuentoMontoAplicado !== null) {
+          c.descuentoMontoAplicado = resultadoCaso3.descuentoMontoAplicado
         }
+        console.log(
+          `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
+        )
         await c.useTransaction(trx).save()
       }
 
@@ -1587,16 +1513,6 @@ export default class FacturacionTicketsController {
 }
 
 // ============================== Utils ==============================
-
-function isRTM(codigo?: string | null, nombre?: string | null): boolean {
-  const c = (codigo || '').toUpperCase().trim()
-  const n = (nombre || '').toUpperCase().trim()
-  if (c.includes('RTM')) return true
-  if (n.includes('RTM')) return true
-  if (n.includes('TECNOMECANICA') || n.includes('TECNOMECÁNICA')) return true
-  if (n.includes('REVISION') && n.includes('TECNICO')) return true
-  return false
-}
 
 function isSOAT(codigo?: string | null, nombre?: string | null): boolean {
   const c = (codigo || '').toUpperCase().trim()
@@ -1850,177 +1766,6 @@ function buildTicketDTO(ticket: FacturacionTicket): TicketDTO {
 }
 
 /* ======================= Helpers de configuración ======================= */
-
-type TipoVehiculoComision = 'MOTO' | 'VEHICULO'
-
-function inferTipoVehiculoComision(opts: {
-  ticketTipo?: string | null
-  turnoTipo?: string | null
-}): TipoVehiculoComision | null {
-  const normalize = (v?: string | null) => (v ?? '').toString().toUpperCase().trim()
-  const txt = normalize(opts.ticketTipo) || normalize(opts.turnoTipo)
-  if (!txt) return null
-  if (txt.includes('MOTO')) return 'MOTO'
-  return 'VEHICULO'
-}
-
-async function resolveConfigComision(params: {
-  asesorId: number | null
-  asesorConvenioId: number | null
-  tipoVehiculo: TipoVehiculoComision | null
-}): Promise<{
-  valorIncentivo: number
-  valorIncentivoPorTipo: number
-  valorDateoNuevo: number
-  valorNuevoDirecto: number
-}> {
-  const { asesorId, asesorConvenioId, tipoVehiculo } = params
-
-  const num = (v: any) => {
-    const n = Number(String(v ?? '').replace(/[^\d.-]/g, ''))
-    return Number.isFinite(n) ? n : 0
-  }
-
-  const tryFind = async (aId: number | null, tv: string | null) => {
-    const q = Comision.query().where('es_config', true)
-    if (aId === null) q.whereNull('asesor_id')
-    else q.where('asesor_id', aId)
-    if (tv === null) q.whereNull('tipo_vehiculo')
-    else q.where('tipo_vehiculo', tv)
-    return q.first()
-  }
-
-  // Búsqueda 1: config del COMERCIAL (dateo nuevo, nuevo directo)
-  let rowComercial: Comision | null = null
-  if (asesorId && tipoVehiculo) rowComercial = await tryFind(asesorId, tipoVehiculo)
-  if (!rowComercial && asesorId) rowComercial = await tryFind(asesorId, null)
-  if (!rowComercial && tipoVehiculo) rowComercial = await tryFind(null, tipoVehiculo)
-  if (!rowComercial) rowComercial = await tryFind(null, null)
-
-  // Búsqueda 2: incentivo — config personal del convenio (cualquier tipo), fallback global
-  let rowIncentivo: Comision | null = null
-  if (asesorConvenioId && tipoVehiculo) rowIncentivo = await tryFind(asesorConvenioId, tipoVehiculo)
-  if (!rowIncentivo && asesorConvenioId) {
-    // Buscar fila del convenio con CUALQUIER tipo de vehículo (MOTO o VEHICULO)
-    // para extraer luego el campo correcto según tipo real del vehículo
-    const rowConvenioMoto = await tryFind(asesorConvenioId, 'MOTO')
-    const rowConvenioVehiculo = await tryFind(asesorConvenioId, 'VEHICULO')
-    rowIncentivo = rowConvenioMoto ?? rowConvenioVehiculo ?? null
-  }
-  if (!rowIncentivo && tipoVehiculo) rowIncentivo = await tryFind(null, tipoVehiculo)
-  if (!rowIncentivo) rowIncentivo = await tryFind(null, null)
-
-  // Mantener rowGlobal solo para valorIncentivo base (fallback)
-  let rowGlobal: Comision | null = null
-  if (tipoVehiculo) rowGlobal = await tryFind(null, tipoVehiculo)
-  if (!rowGlobal) rowGlobal = await tryFind(null, null)
-
-  // Calcular incentivo por tipo
-  // Prioridad: valorPlacaMoto/valorPlacaVehiculo específico > base
-  // Si rowIncentivo es de VEHICULO pero el vehículo real es MOTO,
-  // intenta leer valorPlacaMoto de esa fila antes de caer al base
-  let valorIncentivoPorTipo = 0
-  if (rowIncentivo) {
-    if (tipoVehiculo === 'MOTO') {
-      if (rowIncentivo.valorPlacaMoto !== null && rowIncentivo.valorPlacaMoto !== undefined) {
-        valorIncentivoPorTipo = num(rowIncentivo.valorPlacaMoto)
-      } else {
-        // Intentar buscar otra fila del mismo convenio con tipo MOTO
-        const rowMotoEspecifica = asesorConvenioId ? await tryFind(asesorConvenioId, 'MOTO') : null
-        valorIncentivoPorTipo = rowMotoEspecifica
-          ? rowMotoEspecifica.valorPlacaMoto !== null
-            ? num(rowMotoEspecifica.valorPlacaMoto)
-            : num(rowMotoEspecifica.base)
-          : num(rowIncentivo.base)
-      }
-    } else if (tipoVehiculo === 'VEHICULO') {
-      if (
-        rowIncentivo.valorPlacaVehiculo !== null &&
-        rowIncentivo.valorPlacaVehiculo !== undefined
-      ) {
-        valorIncentivoPorTipo = num(rowIncentivo.valorPlacaVehiculo)
-      } else {
-        const rowVehiculoEspecifica = asesorConvenioId
-          ? await tryFind(asesorConvenioId, 'VEHICULO')
-          : null
-        valorIncentivoPorTipo = rowVehiculoEspecifica
-          ? rowVehiculoEspecifica.valorPlacaVehiculo !== null
-            ? num(rowVehiculoEspecifica.valorPlacaVehiculo)
-            : num(rowVehiculoEspecifica.base)
-          : num(rowIncentivo.base)
-      }
-    } else {
-      valorIncentivoPorTipo = num(rowIncentivo.base)
-    }
-  }
-
-  const valorIncentivo = rowIncentivo ? num(rowIncentivo.base) : 14000
-  console.log(`   💰 resolveConfigComision`)
-  console.log(
-    `      COMERCIAL → fila: ${rowComercial?.asesorId ?? 'global'} | dateoNuevo: $${num(rowComercial?.monto)} | nuevoDirecto: $${num(rowComercial?.valorNuevoDirecto)}`
-  )
-  console.log(
-    `      INCENTIVO → personal/global | base: $${valorIncentivo} | incentivoPorTipo: $${valorIncentivoPorTipo}`
-  )
-
-  return {
-    valorIncentivo,
-    valorIncentivoPorTipo,
-    valorDateoNuevo: num(rowComercial?.monto),
-    valorNuevoDirecto: num(rowComercial?.valorNuevoDirecto),
-  }
-}
-
-async function resolveConfigRecurrencia(
-  asesorId: number | null,
-  tipoVehiculo: TipoVehiculoComision | null = null
-): Promise<{
-  valorRecurrente: number
-  valorRecuperacion: number
-}> {
-  const esMoto = tipoVehiculo === 'MOTO'
-
-  const globalCfg = await Database.from('configuracion_recurrencia_global')
-    .orderBy('id', 'asc')
-    .first()
-
-  let valorRecurrente: number
-  let valorRecuperacion: number
-
-  if (esMoto) {
-    valorRecurrente = Number(
-      globalCfg?.valor_dateo_recurrencia_moto ?? globalCfg?.valor_dateo_recurrencia ?? 4300
-    )
-    valorRecuperacion = Number(
-      globalCfg?.valor_dateo_recuperacion_moto ?? globalCfg?.valor_dateo_recuperacion ?? 8600
-    )
-  } else {
-    valorRecurrente = Number(
-      globalCfg?.valor_dateo_recurrencia_vehiculo ?? globalCfg?.valor_dateo_recurrencia ?? 4300
-    )
-    valorRecuperacion = Number(
-      globalCfg?.valor_dateo_recuperacion_vehiculo ?? globalCfg?.valor_dateo_recuperacion ?? 8600
-    )
-  }
-
-  if (asesorId) {
-    const asesorCfg = await Database.from('configuracion_recurrencia_asesores')
-      .where('asesor_id', asesorId)
-      .where('recurrencia_habilitada', true)
-      .first()
-
-    if (asesorCfg?.valor_dateo_recurrencia)
-      valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
-    if (asesorCfg?.valor_dateo_recuperacion)
-      valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion)
-  }
-
-  console.log(
-    `   💰 resolveConfigRecurrencia | tipoVehiculo: ${tipoVehiculo} | recurrente: $${valorRecurrente} | recuperacion: $${valorRecuperacion}`
-  )
-
-  return { valorRecurrente, valorRecuperacion }
-}
 
 /* ======================== OCR Fake ======================== */
 
