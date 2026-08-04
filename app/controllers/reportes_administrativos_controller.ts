@@ -1740,14 +1740,25 @@ export default class ReportesAdministrativosController {
 
   /** Cálculo compartido por produccionPorLider() y el Súper Informe. */
   private async computeProduccionPorLider(fechaInicio: string, fechaFin: string) {
-    const rows = (await Database.from('facturacion_tickets')
-      .where('estado', 'CONFIRMADA')
-      .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select('sede_id', 'sede_nombre')
+    // JOIN a turnos_rtms + estado='finalizado' + placa NOT LIKE 'TST%':
+    // mismo estándar ya aplicado en computeIngresosPorCanal()/
+    // computeRetencionClientes() — sin esto se contaban tickets CONFIRMADA
+    // de turnos cancelados/activos (ver diagnóstico de reconciliación RTM,
+    // julio 2026: turnos 57168/57349/57618). Columnas calificadas con
+    // ft./t. porque ambas tablas tienen sede_id — sin calificar, MySQL
+    // tira columna ambigua tras el JOIN.
+    const rows = (await Database.from('facturacion_tickets as ft')
+      .join('turnos_rtms as t', 't.id', 'ft.turno_id')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .where('t.estado', 'finalizado')
+      .whereRaw("t.placa NOT LIKE 'TST%'")
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .select('ft.sede_id', 'ft.sede_nombre')
       .count('* as vehiculos')
-      .sum('total as total_bruto')
-      .sum('subtotal as total_neto')
-      .groupBy('sede_id', 'sede_nombre')
+      .sum('ft.total as total_bruto')
+      .sum('ft.subtotal as total_neto')
+      .groupBy('ft.sede_id', 'ft.sede_nombre')
       .orderBy('total_bruto', 'desc')) as any[]
 
     const sedeIds = [...new Set(rows.map((r) => r.sede_id).filter((v) => v !== null))] as number[]
