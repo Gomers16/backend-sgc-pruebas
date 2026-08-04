@@ -2258,6 +2258,18 @@ router
           )
           return new ReportesAdministrativosController().metaMensualSuperInforme(ctx)
         })
+        router.get('/meta-comercial/config', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialConfigGet(ctx)
+        })
+        router.post('/meta-comercial/config', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().metaComercialConfigUpsert(ctx)
+        })
         router.get('/meta-comercial/resumen', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
             '#controllers/reportes_administrativos_controller'
@@ -2305,6 +2317,12 @@ router
             '#controllers/reportes_administrativos_controller'
           )
           return new ReportesAdministrativosController().superInformePdf(ctx)
+        })
+        router.get('/super-informe/reconciliacion-rtm', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().superInformeReconciliacionRtm(ctx)
         })
       })
       .prefix('/reportes-admin')

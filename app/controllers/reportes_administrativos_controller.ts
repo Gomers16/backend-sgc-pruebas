@@ -528,6 +528,58 @@ const SI_SEMAFORO_LABEL: Record<'VERDE' | 'AMARILLO' | 'ROJO' | 'SIN_META', stri
   SIN_META: 'Sin meta',
 }
 
+/**
+ * Bloque de reconciliación RTM — se dibuja al inicio de la sección
+ * "Ingresos por Canal" (3), la primera sección donde aparece un total de
+ * turnos menor al de Meta Mensual/Producción por Líder. Explica el
+ * desfase con el desglose exacto de computeReconciliacionFacturacionRtm(),
+ * para que nunca quede como una pregunta sin respuesta.
+ */
+function siDibujarReconciliacionRtm(
+  doc: any,
+  r: { turnos_reales_total: number; con_factura_confirmada_rtm: number; pendientes_total: number; categorias: { label: string; cantidad: number }[] }
+) {
+  siDibujarSubtitulo(doc, 'Reconciliación contra turnos RTM reales')
+  siDibujarKpis(doc, [
+    { label: 'Turnos RTM reales del rango', value: formatNumPdf(r.turnos_reales_total) },
+    { label: 'Con factura RTM confirmada', value: formatNumPdf(r.con_factura_confirmada_rtm) },
+    { label: 'Pendientes / incompletos', value: formatNumPdf(r.pendientes_total), color: r.pendientes_total > 0 ? SI_COLOR_GRIS : undefined },
+  ])
+  if (r.categorias.length > 0) {
+    doc.font('Helvetica').fontSize(8).fillColor(SI_COLOR_GRIS)
+    for (const c of r.categorias) {
+      doc.text(`•  ${c.label}: ${formatNumPdf(c.cantidad)}`, SI_MARGEN_X + 6, doc.y, { width: SI_ANCHO_UTIL - 6 })
+    }
+    doc.fillColor('#000000')
+  }
+  doc.moveDown(0.6)
+}
+
+/**
+ * Nota corta de reconciliación para secciones que dependen de facturación
+ * confirmada (Servicios, Retención) — remite al detalle completo de la
+ * sección 3 en vez de repetir la tabla.
+ */
+function siDibujarNotaReconciliacionRtm(
+  doc: any,
+  r: { turnos_reales_total: number; pendientes_total: number },
+  notaExtra?: string
+) {
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      `De los ${formatNumPdf(r.turnos_reales_total)} turnos RTM reales del rango, ${formatNumPdf(r.pendientes_total)} están pendientes de facturar o con ticket incompleto — ver detalle en sección 3 (Ingresos por Canal).` +
+        (notaExtra ? ` ${notaExtra}` : ''),
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+  doc.moveDown(0.4)
+}
+
 /** Título chico de sub-tabla dentro de una sección (ej. "Por Canal"). */
 function siDibujarSubtitulo(doc: any, texto: string) {
   if (doc.y > doc.page.height - 100) doc.addPage()
@@ -683,6 +735,9 @@ type SuperInformeDatos = {
     ReturnType<ReportesAdministrativosController['computeDescuentosPorAutorizador']>
   >
   produccionLider: Awaited<ReturnType<ReportesAdministrativosController['computeProduccionPorLider']>>
+  reconciliacionRtm: Awaited<
+    ReturnType<ReportesAdministrativosController['computeReconciliacionFacturacionRtm']>
+  >
 }
 
 /**
@@ -949,6 +1004,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     'Ingresos por Canal',
     'Vehículos facturados e ingresos por canal de captación (RTM, estado CONFIRMADA), comparado contra el período inmediatamente anterior de igual duración. Fuente: facturacion_tickets.'
   )
+  siDibujarReconciliacionRtm(doc, datos.reconciliacionRtm)
   const filasIngresosCanal = siCompletarCanales(datos.ingresosCanal.por_canal, (canal) => ({
     canal,
     cantidad: 0,
@@ -1108,6 +1164,11 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       { width: SI_ANCHO_UTIL }
     )
   doc.fillColor('#000000')
+  siDibujarNotaReconciliacionRtm(
+    doc,
+    datos.reconciliacionRtm,
+    'La columna "Turnos" de esta tabla ya incluye el total real (no está filtrada por factura) — son las columnas "Real Bruto"/"Real Neto" las que solo reflejan los turnos con ticket confirmado.'
+  )
 
   // ===== 5. Retención de Clientes =====
   doc.addPage()
@@ -1117,6 +1178,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     'Retención de Clientes',
     `Clientes Nuevos, Recurrentes y Recuperados en el rango, por canal y por mes. Meses mínimos para recurrencia: ${datos.retencion.meses_minimos}. Fuente: turnos_rtms + facturacion_tickets + clientes.`
   )
+  siDibujarNotaReconciliacionRtm(doc, datos.reconciliacionRtm)
   siDibujarKpis(doc, [
     { label: 'Nuevos', value: `${formatNumPdf(datos.retencion.resumen.nuevos.cantidad)} (${formatPctPdf(datos.retencion.resumen.nuevos.porcentaje)}) — ${formatPesoPdf(datos.retencion.resumen.nuevos.total_bruto)}` },
     { label: 'Recurrentes', value: `${formatNumPdf(datos.retencion.resumen.recurrentes.cantidad)} (${formatPctPdf(datos.retencion.resumen.recurrentes.porcentaje)}) — ${formatPesoPdf(datos.retencion.resumen.recurrentes.total_bruto)}` },
@@ -1485,8 +1547,11 @@ export default class ReportesAdministrativosController {
     // ticket en este entorno (ver reporteServicios), así que facturacion_tickets
     // no sirve para este conteo. Vehículos/Total Bruto/Total Neto de arriba
     // siguen siendo de facturacion_tickets — por eso pueden no coincidir.
+    // estado='finalizado': mismo filtro que obtenerConteoDiarioConFallback()
+    // (Meta Mensual) — sin esto se contaban también turnos cancelados/activos.
     const turnosPorServicio = (await Database.from('turnos_rtms as t')
       .join('servicios as s', 's.id', 't.servicio_id')
+      .where('t.estado', 'finalizado')
       .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
       .whereRaw("t.placa NOT LIKE 'TST%'")
       .select('t.sede_id', 's.codigo_servicio')
@@ -1534,6 +1599,119 @@ export default class ReportesAdministrativosController {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       por_sede: porSede,
+    }
+  }
+
+  /**
+   * GET /reportes-admin/super-informe/reconciliacion-rtm?fecha_inicio=&fecha_fin=
+   * Explica la diferencia entre "turnos RTM reales" (Meta Mensual /
+   * Producción por Líder) y "turnos con factura RTM confirmada" (Ingresos
+   * por Canal / Retención de Clientes) — para que ese desfase nunca quede
+   * sin explicación en el Súper Informe.
+   */
+  public async superInformeReconciliacionRtm({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+    return await this.computeReconciliacionFacturacionRtm(fechaInicio, fechaFin)
+  }
+
+  /**
+   * Cálculo compartido por superInformeReconciliacionRtm() y el Súper
+   * Informe (secciones 3/4/5). NO modifica computeIngresosPorCanal(),
+   * computeReporteServicios() ni computeRetencionClientes() — es un
+   * cálculo independiente que se agrega como bloque de contexto.
+   *
+   * Partición jerárquica MUTUAMENTE EXCLUYENTE de cada turno RTM real
+   * (mismos filtros que Meta Mensual/Producción por Líder: estado
+   * finalizado, codigo_servicio RTM, sin placas TST, dentro del rango):
+   *   1. Tiene ticket CONFIRMADA con servicio_codigo='RTM'   → CON_FACTURA_RTM
+   *   2. Si no, tiene ticket CONFIRMADA de otro servicio      → TICKET_OTRO_SERVICIO
+   *   3. Si no, tiene algún ticket (no confirmado)            → su estado (BORRADOR/OCR_LISTO/LISTA_CONFIRMAR/REVERTIDA)
+   *   4. Si no, no tiene ningún ticket                        → SIN_TICKET
+   * Cada turno cae en EXACTAMENTE una categoría (el CASE es exhaustivo),
+   * así que `pendientes_total + con_factura_confirmada_rtm ===
+   * turnos_reales_total` es una garantía matemática, no una suma que haya
+   * que confiar a mano.
+   */
+  private async computeReconciliacionFacturacionRtm(fechaInicio: string, fechaFin: string) {
+    const sql = `
+      SELECT categoria, COUNT(*) AS cantidad
+      FROM (
+        SELECT
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM facturacion_tickets ft
+              WHERE ft.turno_id = t.id AND ft.estado = 'CONFIRMADA' AND ft.servicio_codigo = 'RTM'
+            ) THEN 'CON_FACTURA_RTM'
+            WHEN EXISTS (
+              SELECT 1 FROM facturacion_tickets ft
+              WHERE ft.turno_id = t.id AND ft.estado = 'CONFIRMADA'
+            ) THEN 'TICKET_OTRO_SERVICIO'
+            WHEN EXISTS (
+              SELECT 1 FROM facturacion_tickets ft WHERE ft.turno_id = t.id
+            ) THEN (
+              SELECT ft2.estado FROM facturacion_tickets ft2
+              WHERE ft2.turno_id = t.id
+              ORDER BY ft2.id DESC
+              LIMIT 1
+            )
+            ELSE 'SIN_TICKET'
+          END AS categoria
+        FROM turnos_rtms t
+        JOIN servicios s ON s.id = t.servicio_id
+        WHERE t.estado = 'finalizado'
+          AND s.codigo_servicio = 'RTM'
+          AND t.placa NOT LIKE 'TST%'
+          AND DATE(t.fecha) BETWEEN ? AND ?
+      ) x
+      GROUP BY categoria
+    `
+    const result = (await Database.rawQuery(sql, [fechaInicio, fechaFin])) as unknown as [
+      { categoria: string; cantidad: number | string }[],
+    ]
+    const rows = result[0]
+
+    const CATEGORIA_LABELS: Record<string, string> = {
+      SIN_TICKET: 'Sin ticket (pendiente de facturar)',
+      BORRADOR: 'Ticket en borrador (incompleto)',
+      OCR_LISTO: 'Ticket con OCR pendiente de revisión',
+      LISTA_CONFIRMAR: 'Ticket listo, pendiente de confirmar',
+      REVERTIDA: 'Ticket revertido',
+      TICKET_OTRO_SERVICIO: 'Ticket confirmado de otro servicio (sin valor RTM)',
+    }
+    // Orden fijo de presentación — independiente del orden que devuelva el GROUP BY.
+    const ORDEN_CATEGORIAS = [
+      'SIN_TICKET',
+      'BORRADOR',
+      'OCR_LISTO',
+      'LISTA_CONFIRMAR',
+      'REVERTIDA',
+      'TICKET_OTRO_SERVICIO',
+    ]
+
+    const cantidadPorCategoria = new Map<string, number>()
+    for (const r of rows) {
+      cantidadPorCategoria.set(r.categoria, Number(r.cantidad))
+    }
+
+    const turnosRealesTotal = Array.from(cantidadPorCategoria.values()).reduce((a, b) => a + b, 0)
+    const conFacturaConfirmadaRtm = cantidadPorCategoria.get('CON_FACTURA_RTM') ?? 0
+
+    const categorias = ORDEN_CATEGORIAS.map((categoria) => ({
+      categoria,
+      label: CATEGORIA_LABELS[categoria],
+      cantidad: cantidadPorCategoria.get(categoria) ?? 0,
+    })).filter((c) => c.cantidad > 0)
+
+    const pendientesTotal = categorias.reduce((acc, c) => acc + c.cantidad, 0)
+
+    return {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      turnos_reales_total: turnosRealesTotal,
+      con_factura_confirmada_rtm: conFacturaConfirmadaRtm,
+      pendientes_total: pendientesTotal,
+      categorias,
     }
   }
 
@@ -3758,6 +3936,127 @@ export default class ReportesAdministrativosController {
   }
 
   /**
+   * GET /reportes-admin/meta-comercial/config?mes=&anio=&asesor_id=
+   * Lee la(s) meta(s) ya configuradas en meta_comercial_asesor para ese
+   * mes/año. Con asesor_id: precarga el formulario de edición de ESE
+   * asesor (meta_pesos/meta_vehiculos en null si no tiene fila todavía,
+   * no es error). Sin asesor_id: lista todas las filas configuradas ese
+   * mes/año.
+   */
+  public async metaComercialConfigGet({ request, response }: HttpContext) {
+    const { mes, anio, error } = this.parseMesAnio(request)
+    if (error) return response.badRequest({ message: error })
+
+    const asesorIdRaw = request.input('asesor_id')
+    if (asesorIdRaw !== undefined && asesorIdRaw !== null && asesorIdRaw !== '') {
+      const asesorId = Number(asesorIdRaw)
+      if (!Number.isInteger(asesorId) || asesorId <= 0) {
+        return response.badRequest({ message: 'asesor_id inválido' })
+      }
+      const asesor = await AgenteCaptacion.find(asesorId)
+      if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
+
+      const row = (await Database.from('meta_comercial_asesor')
+        .where({ asesor_id: asesorId, mes, anio })
+        .select('meta_pesos', 'meta_vehiculos')
+        .first()) as { meta_pesos: string; meta_vehiculos: number | null } | null
+
+      return response.ok({
+        mes,
+        anio,
+        asesor_id: asesorId,
+        asesor_nombre: asesor.nombre,
+        meta_pesos: row ? Number(row.meta_pesos) : null,
+        meta_vehiculos: row && row.meta_vehiculos !== null ? Number(row.meta_vehiculos) : null,
+      })
+    }
+
+    const rows = (await Database.from('meta_comercial_asesor')
+      .where({ mes, anio })
+      .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
+      asesor_id: number
+      meta_pesos: string
+      meta_vehiculos: number | null
+    }[]
+
+    return response.ok({
+      mes,
+      anio,
+      metas: rows.map((r) => ({
+        asesor_id: Number(r.asesor_id),
+        meta_pesos: Number(r.meta_pesos),
+        meta_vehiculos: r.meta_vehiculos === null ? null : Number(r.meta_vehiculos),
+      })),
+    })
+  }
+
+  /**
+   * POST /reportes-admin/meta-comercial/config
+   * body: { asesor_id, mes, anio, meta_pesos, meta_vehiculos }
+   * Upsert por (asesor_id, mes, anio) — mismo patrón atómico
+   * (INSERT ... ON DUPLICATE KEY UPDATE) que obtenerOCrearConfigMensual(),
+   * apoyado en el UNIQUE(asesor_id, mes, anio) de la tabla.
+   */
+  public async metaComercialConfigUpsert({ request, response }: HttpContext) {
+    const payload = request.only(['asesor_id', 'mes', 'anio', 'meta_pesos', 'meta_vehiculos'])
+
+    const asesorId = Number(payload.asesor_id)
+    if (!Number.isInteger(asesorId) || asesorId <= 0) {
+      return response.badRequest({ message: 'asesor_id inválido' })
+    }
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
+
+    const mes = Number(payload.mes)
+    const anio = Number(payload.anio)
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) {
+      return response.badRequest({ message: 'mes inválido (1-12)' })
+    }
+    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) {
+      return response.badRequest({ message: 'anio inválido' })
+    }
+
+    const metaPesosNum = Number(payload.meta_pesos)
+    if (!Number.isFinite(metaPesosNum) || metaPesosNum < 0) {
+      return response.badRequest({ message: 'meta_pesos debe ser un número >= 0' })
+    }
+    const metaPesos = Math.round(metaPesosNum * 100) / 100
+
+    let metaVehiculos: number | null = null
+    if (
+      payload.meta_vehiculos !== undefined &&
+      payload.meta_vehiculos !== null &&
+      String(payload.meta_vehiculos).trim() !== ''
+    ) {
+      const v = Number(payload.meta_vehiculos)
+      if (!Number.isInteger(v) || v < 0) {
+        return response.badRequest({ message: 'meta_vehiculos debe ser un entero >= 0' })
+      }
+      metaVehiculos = v
+    }
+
+    await Database.rawQuery(
+      `INSERT INTO meta_comercial_asesor
+         (asesor_id, mes, anio, meta_pesos, meta_vehiculos, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE
+         meta_pesos = VALUES(meta_pesos),
+         meta_vehiculos = VALUES(meta_vehiculos),
+         updated_at = NOW()`,
+      [asesorId, mes, anio, metaPesos, metaVehiculos]
+    )
+
+    return response.ok({
+      mes,
+      anio,
+      asesor_id: asesorId,
+      asesor_nombre: asesor.nombre,
+      meta_pesos: metaPesos,
+      meta_vehiculos: metaVehiculos,
+    })
+  }
+
+  /**
    * GET /reportes-admin/meta-comercial/resumen?mes=&anio=
    * Meta Comercial por Asesor: cantidad/pesos por asesor para el mes
    * consultado, con el mismo patrón de corte real/histórico que Meta
@@ -5588,6 +5887,7 @@ export default class ReportesAdministrativosController {
       descuentosCanal,
       descuentosAutorizador,
       produccionLider,
+      reconciliacionRtm,
     ] = await Promise.all([
       this.computeMetaMensualSuperInforme(fechaInicio, fechaFin),
       this.computeMetaComercialSuperInforme(fechaInicio, fechaFin),
@@ -5599,6 +5899,7 @@ export default class ReportesAdministrativosController {
       this.computeDescuentosPorCanal(fechaInicio, fechaFin),
       this.computeDescuentosPorAutorizador(fechaInicio, fechaFin),
       this.computeProduccionPorLider(fechaInicio, fechaFin),
+      this.computeReconciliacionFacturacionRtm(fechaInicio, fechaFin),
     ])
 
     const generadoPor = auth.user ? `${auth.user.nombres} ${auth.user.apellidos}` : 'Usuario del sistema'
@@ -5617,6 +5918,7 @@ export default class ReportesAdministrativosController {
       descuentosCanal,
       descuentosAutorizador,
       produccionLider,
+      reconciliacionRtm,
     })
 
     const fileName = `Super_Informe_${fechaInicio}_${fechaFin}.pdf`
