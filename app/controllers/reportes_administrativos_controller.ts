@@ -1046,7 +1046,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     doc,
     2,
     'Meta Comercial por Asesor',
-    'Avance de meta comercial (en pesos) por asesor tipo Asesor Comercial, con proyección de cierre individual y desglose de comisión pagada vs. pendiente de pago. Fuente: comisiones (o histórico en meses cerrados) vs. meta_comercial_asesor.'
+    'Comisión ganada por asesor tipo Asesor Comercial (pagada vs. pendiente, sin comparar contra meta) y avance de meta comercial comparado contra el Ingreso RTM Generado — lo que el asesor realmente facturó, no su comisión. Fuente: comisiones y facturacion_tickets (o histórico en meses cerrados) vs. meta_comercial_asesor.'
   )
   doc.font('Helvetica-Oblique').fontSize(8).fillColor(SI_COLOR_GRIS).text(CASO_LABEL[mc.caso], SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
   doc.fillColor('#000000')
@@ -1062,18 +1062,20 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   }
   siDibujarKpis(doc, [
     {
-      label: 'Total General',
-      value: `${formatPesoPdf(mc.kpis.pesos_total)} / ${mc.kpis.meta_pesos === null ? 'Sin meta' : formatPesoPdf(mc.kpis.meta_pesos)}`,
+      label: 'Ingreso RTM Generado / Meta',
+      value: `${formatPesoPdf(mc.kpis.ingreso_rtm_generado)} / ${mc.kpis.meta_pesos === null ? 'Sin meta' : formatPesoPdf(mc.kpis.meta_pesos)}`,
     },
-    { label: 'Convenio', value: formatPesoPdf(mc.kpis.pesos_convenio) },
-    { label: 'Propio (Comercial)', value: formatPesoPdf(mc.kpis.pesos_comercial) },
+    { label: 'Convenio (Comisión)', value: formatPesoPdf(mc.kpis.pesos_convenio) },
+    { label: 'Propio (Comisión)', value: formatPesoPdf(mc.kpis.pesos_comercial) },
     {
-      label: 'Proyección de cierre',
-      value: mc.kpis.proyeccion_cierre === null ? '—' : formatPesoPdf(mc.kpis.proyeccion_cierre),
+      label: 'Proyección de cierre (Ingreso RTM)',
+      value: mc.kpis.proyeccion_cierre_ingreso === null ? '—' : formatPesoPdf(mc.kpis.proyeccion_cierre_ingreso),
     },
   ])
   doc.moveDown(0.5)
-  siDibujarSubtitulo(doc, 'Detalle por asesor')
+
+  // ===== 2a. Comisión (Tabla A) — puramente informativa, sin meta =====
+  siDibujarSubtitulo(doc, 'Comisión')
   if (!mc.comision_estado_disponible) {
     doc
       .font('Helvetica-Oblique')
@@ -1091,24 +1093,14 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   await siDibujarTabla(
     doc,
     [
-      { label: 'Asesor', property: 'asesor', width: 78 },
-      { label: 'Total', property: 'total', width: 55, align: 'right' },
-      { label: 'Meta', property: 'meta', width: 55, align: 'right' },
-      { label: '% Avance', property: 'pctAvance', width: 40, align: 'right' },
-      { label: 'Cumplió', property: 'cumplio', width: 36, align: 'center' },
-      { label: 'Faltante', property: 'faltante', width: 55, align: 'right' },
-      { label: 'Proy. Cierre', property: 'proyeccion', width: 55, align: 'right' },
-      { label: 'Com. Pagada', property: 'comisionPagada', width: 55, align: 'right' },
-      { label: 'Com. Pendiente', property: 'comisionPendiente', width: 58, align: 'right' },
+      { label: 'Asesor', property: 'asesor', width: 220 },
+      { label: 'Total (Comisión)', property: 'total', width: 100, align: 'right' },
+      { label: 'Com. Pagada', property: 'comisionPagada', width: 96, align: 'right' },
+      { label: 'Com. Pendiente', property: 'comisionPendiente', width: 96, align: 'right' },
     ],
     mc.asesores.map((a) => ({
       asesor: a.asesor_nombre,
       total: formatPesoPdf(a.pesos_total),
-      meta: a.meta_pesos === null ? 'Sin meta' : formatPesoPdf(a.meta_pesos),
-      pctAvance: a.pct_avance === null ? '—' : formatPctPdf(a.pct_avance),
-      cumplio: a.cumplio === null ? '—' : a.cumplio ? 'Sí' : 'No',
-      faltante: a.faltante === null ? '—' : formatPesoPdf(a.faltante),
-      proyeccion: formatPesoPdf(a.proyeccion_cierre),
       comisionPagada: mc.comision_estado_disponible ? formatPesoPdf(a.comision_pagada) : 'N/D',
       comisionPendiente: mc.comision_estado_disponible ? formatPesoPdf(a.comision_pendiente) : 'N/D',
     }))
@@ -1118,62 +1110,34 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .fontSize(7)
     .fillColor(SI_COLOR_GRIS)
     .text(
-      'Desglose Convenio vs. Propio disponible en el reporte individual "Meta Comercial por Asesor". "Faltante" se limita a 0 cuando ya se cumplió la meta.',
+      'Comisión ganada por el asesor — no se compara contra meta (la meta se compara contra Ingreso RTM Generado, ver tabla "Avance de Meta Comercial" más abajo). Desglose Convenio vs. Propio disponible en el reporte individual "Meta Comercial por Asesor".',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
     )
   doc.fillColor('#000000')
 
-  // ===== 2b. Meta Comercial por Asesor — Unidades (vehículos) =====
+  // ===== 2b. Unidades e Ingreso RTM Generado por Asesor (Tabla B) =====
   doc.moveDown(0.8)
-  siDibujarSubtitulo(doc, 'Unidades (vehículos)')
+  siDibujarSubtitulo(doc, 'Unidades e Ingreso RTM Generado por Asesor')
   await siDibujarTabla(
     doc,
     [
-      { label: 'Asesor', property: 'asesor', width: 160 },
-      { label: 'Meta (Veh)', property: 'meta', width: 88, align: 'right' },
-      { label: 'Motos', property: 'motos', width: 88, align: 'right' },
-      { label: 'Vehículos', property: 'vehiculos', width: 88, align: 'right' },
-      { label: 'Faltante (Veh)', property: 'faltante', width: 88, align: 'right' },
+      { label: 'Asesor', property: 'asesor', width: 80 },
+      { label: 'Meta (Veh)', property: 'metaVeh', width: 55, align: 'right' },
+      { label: 'Motos', property: 'motos', width: 45, align: 'right' },
+      { label: 'Vehículos', property: 'vehiculos', width: 50, align: 'right' },
+      { label: 'Faltante (Veh)', property: 'faltanteVeh', width: 55, align: 'right' },
+      { label: 'Costo Base Moto', property: 'costoBaseMoto', width: 72, align: 'right' },
+      { label: 'Costo Base Vehículo', property: 'costoBaseVehiculo', width: 72, align: 'right' },
+      { label: 'Ingreso RTM Generado', property: 'ingreso', width: 83, align: 'right' },
     ],
     mc.asesores.map((a) => ({
       asesor: a.asesor_nombre,
-      meta: a.meta_vehiculos === null ? 'Sin meta' : formatNumPdf(a.meta_vehiculos),
+      metaVeh: a.meta_vehiculos === null ? 'Sin meta' : formatNumPdf(a.meta_vehiculos),
       motos: formatNumPdf(a.logrado_motos),
       vehiculos: formatNumPdf(a.logrado_vehiculos),
-      faltante: a.faltante_vehiculos === null ? '—' : formatNumPdf(a.faltante_vehiculos),
-    }))
-  )
-  doc
-    .font('Helvetica-Oblique')
-    .fontSize(7)
-    .fillColor(SI_COLOR_GRIS)
-    .text(
-      'Motos/Vehículos = unidades facturadas atribuidas al asesor (facturacion_tickets), no filas de comisiones. En meses históricos sin detalle por tipo de vehículo cargado, ese mes no aporta a este desglose (sí sigue sumando en el total $ de arriba).',
-      SI_MARGEN_X,
-      doc.y,
-      { width: SI_ANCHO_UTIL }
-    )
-  doc.fillColor('#000000')
-
-  // ===== 2c. Meta Comercial por Asesor — Ingreso RTM Generado por Asesor =====
-  doc.moveDown(0.8)
-  siDibujarSubtitulo(doc, 'Ingreso RTM Generado por Asesor')
-  await siDibujarTabla(
-    doc,
-    [
-      { label: 'Asesor', property: 'asesor', width: 120 },
-      { label: 'Motos', property: 'motos', width: 62, align: 'right' },
-      { label: 'Vehículos', property: 'vehiculos', width: 62, align: 'right' },
-      { label: 'Costo Base Moto', property: 'costoBaseMoto', width: 90, align: 'right' },
-      { label: 'Costo Base Vehículo', property: 'costoBaseVehiculo', width: 90, align: 'right' },
-      { label: 'Ingreso RTM Generado', property: 'ingreso', width: 88, align: 'right' },
-    ],
-    mc.asesores.map((a) => ({
-      asesor: a.asesor_nombre,
-      motos: formatNumPdf(a.logrado_motos),
-      vehiculos: formatNumPdf(a.logrado_vehiculos),
+      faltanteVeh: a.faltante_vehiculos === null ? '—' : formatNumPdf(a.faltante_vehiculos),
       costoBaseMoto: a.costo_base_moto === null ? '—' : formatPesoPdf(a.costo_base_moto),
       costoBaseVehiculo: a.costo_base_vehiculo === null ? '—' : formatPesoPdf(a.costo_base_vehiculo),
       ingreso: formatPesoPdf(a.ingreso_rtm_generado),
@@ -1184,7 +1148,43 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     .fontSize(7)
     .fillColor(SI_COLOR_GRIS)
     .text(
-      'Ingreso RTM Generado = el ingreso real que el asesor trajo al negocio (unidades × Costo Base), NO su comisión — la comisión ganada sigue en la tabla de arriba, sin cambios. Costo Base: en meses reales, config individual del asesor (con fallback al valor Global si no tiene override propio); en meses históricos, la tarifa real de ese asesor/mes. En rangos que cruzan varios meses con tarifas distintas, las columnas Costo Base muestran el valor del mes más reciente tocado — el Ingreso sí se calcula mes a mes con la tarifa correspondiente.',
+      'Motos/Vehículos = unidades facturadas atribuidas al asesor (facturacion_tickets), no filas de comisiones. Ingreso RTM Generado = unidades × Costo Base, NO comisión. Costo Base: en meses reales, config individual del asesor (con fallback al valor Global si no tiene override propio); en meses históricos, la tarifa real de ese asesor/mes — en rangos que cruzan varios meses con tarifas distintas, estas columnas muestran el valor del mes más reciente tocado (el Ingreso sí se calcula mes a mes con la tarifa correspondiente). En meses históricos sin detalle por tipo de vehículo cargado, ese mes no aporta a Motos/Vehículos/Ingreso (sí sigue sumando en la Comisión de la tabla anterior).',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
+
+  // ===== 2c. Avance de Meta Comercial — Ingreso RTM (Tabla C) =====
+  doc.moveDown(0.8)
+  siDibujarSubtitulo(doc, 'Avance de Meta Comercial (Ingreso RTM)')
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Asesor', property: 'asesor', width: 95 },
+      { label: 'Ingreso RTM Generado', property: 'ingreso', width: 80, align: 'right' },
+      { label: 'Meta ($)', property: 'meta', width: 75, align: 'right' },
+      { label: '% Avance', property: 'pctAvance', width: 45, align: 'right' },
+      { label: 'Cumplió', property: 'cumplio', width: 40, align: 'center' },
+      { label: 'Faltante', property: 'faltante', width: 75, align: 'right' },
+      { label: 'Proy. Cierre', property: 'proyeccion', width: 75, align: 'right' },
+    ],
+    mc.asesores.map((a) => ({
+      asesor: a.asesor_nombre,
+      ingreso: formatPesoPdf(a.ingreso_rtm_generado),
+      meta: a.meta_pesos === null ? 'Sin meta' : formatPesoPdf(a.meta_pesos),
+      pctAvance: a.pct_avance === null ? '—' : formatPctPdf(a.pct_avance),
+      cumplio: a.cumplio === null ? '—' : a.cumplio ? 'Sí' : 'No',
+      faltante: a.faltante === null ? '—' : formatPesoPdf(a.faltante),
+      proyeccion: formatPesoPdf(a.proyeccion_cierre_ingreso),
+    }))
+  )
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      'Meta comparada contra el Ingreso RTM Generado (lo que el asesor facturó), NO contra su comisión. "Faltante" se limita a 0 cuando ya se cumplió la meta.',
       SI_MARGEN_X,
       doc.y,
       { width: SI_ANCHO_UTIL }
@@ -5045,10 +5045,101 @@ export default class ReportesAdministrativosController {
       // extrapolación), igual que el KPI agregado.
     }
 
+    // ── Proyección de cierre EN INGRESO RTM (misma fórmula de arriba, pero
+    // sobre facturacion_tickets en vez de comisiones) — ahora la meta se
+    // compara contra ingreso generado, no contra comisión, así que la
+    // proyección relevante para el KPI card y la Tabla C también debe ser de
+    // ingreso. A propósito NO se reutiliza calcularIngresoRtmGeneradoPorAsesorPorDia():
+    // ese helper filtra además t.estado='finalizado' y placa NOT LIKE 'TST%',
+    // que acc.ingresoRtmGenerado (arriba, líneas ~4848-4879) NO aplica — usar
+    // el helper aquí daría un "avance mes actual" más chico que su porción
+    // dentro de acc.ingresoRtmGenerado, e inflaría "avance ya cerrado" al
+    // restar (avanceCerradosAsesor = total - avanceMesActualAsesor). Se repite
+    // la misma consulta/filtro del acumulado de arriba, solo que bucketizada
+    // por día.
+    const proyeccionIngresoPorAsesor = new Map<number, number>()
+    if (caso !== 'solo_cerrados' && idsPermitidos.length > 0) {
+      const mesActual = meses[mesActualIdx]
+      const inicioMesActual = DateTime.fromObject({
+        year: mesActual.anio,
+        month: mesActual.mes,
+        day: 1,
+      }).toISODate() as string
+      const finMesActual = (
+        DateTime.fromObject({ year: mesActual.anio, month: mesActual.mes, day: 1 }).endOf('month').toISODate()
+      ) as string
+      const ventanaActualInicio = fechaInicio > inicioMesActual ? fechaInicio : inicioMesActual
+      const ventanaActualFin = fechaFin < finMesActual ? fechaFin : finMesActual
+
+      if (esFuenteRealComercial(mesActual.mes, mesActual.anio)) {
+        const hoyISO = now.toISODate() as string
+        const finParaPromedio = ventanaActualFin > hoyISO ? hoyISO : ventanaActualFin
+        const diasParaPromedio =
+          finParaPromedio < ventanaActualInicio
+            ? 0
+            : Math.floor(
+                DateTime.fromISO(finParaPromedio).diff(DateTime.fromISO(ventanaActualInicio), 'days').days
+              ) + 1
+        const diasDelMesActual = DateTime.fromObject({
+          year: mesActual.anio,
+          month: mesActual.mes,
+        }).daysInMonth as number
+
+        const ingresoDiarioRows = (await Database.from('facturacion_tickets as ft')
+          .join('turnos_rtms as t', 't.id', 'ft.turno_id')
+          .whereIn('ft.agente_id', idsPermitidos)
+          .where('ft.estado', 'CONFIRMADA')
+          .where('ft.servicio_codigo', 'RTM')
+          .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [ventanaActualInicio, ventanaActualFin])
+          .select(
+            Database.raw("DATE_FORMAT(ft.created_at, '%Y-%m-%d') as dia"),
+            'ft.agente_id',
+            Database.raw(
+              "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
+            )
+          )
+          .count('* as cantidad')
+          .groupBy('dia', 'ft.agente_id', 'tipo_clasificado')) as {
+          dia: string
+          agente_id: number
+          tipo_clasificado: 'MOTO' | 'VEHICULO'
+          cantidad: string
+        }[]
+
+        const avanceVentanaPromedioPorAsesor = new Map<number, number>()
+        const avanceMesActualAgregadoPorAsesor = new Map<number, number>()
+        for (const r of ingresoDiarioRows) {
+          const id = Number(r.agente_id)
+          const cantidad = Number(r.cantidad) || 0
+          const costoBase = obtenerCostoBaseAsesor(id)
+          const monto = cantidad * (r.tipo_clasificado === 'MOTO' ? costoBase.moto : costoBase.vehiculo)
+          avanceMesActualAgregadoPorAsesor.set(id, (avanceMesActualAgregadoPorAsesor.get(id) ?? 0) + monto)
+          if (r.dia <= finParaPromedio) {
+            avanceVentanaPromedioPorAsesor.set(id, (avanceVentanaPromedioPorAsesor.get(id) ?? 0) + monto)
+          }
+        }
+
+        for (const [id, acc] of acumPorAsesor) {
+          const ingresoTotalAsesor = acc.ingresoRtmGenerado
+          const avanceVentanaAsesor = avanceVentanaPromedioPorAsesor.get(id) ?? 0
+          const avanceMesActualAsesor = avanceMesActualAgregadoPorAsesor.get(id) ?? 0
+          const promedioDiarioAsesor = diasParaPromedio > 0 ? avanceVentanaAsesor / diasParaPromedio : 0
+          const proyeccionMesActualAsesor = Math.round(promedioDiarioAsesor * diasDelMesActual)
+          const avanceCerradosAsesor = ingresoTotalAsesor - avanceMesActualAsesor
+          proyeccionIngresoPorAsesor.set(id, avanceCerradosAsesor + proyeccionMesActualAsesor)
+        }
+      }
+    }
+
     const asesoresOut = [...acumPorAsesor.entries()]
       .map(([id, acc]) => {
         const pesosTotal = acc.pesosConvenio + acc.pesosComercial
-        const pctAvance = acc.metaPesos !== null ? calcularPct(pesosTotal, acc.metaPesos) : null
+        // Meta/%Avance/Cumplió/Faltante se comparan contra el INGRESO RTM
+        // GENERADO (lo que el asesor trajo al negocio), no contra su
+        // comisión — mismo criterio ya usado en metaComercialResumen()
+        // (MetaComercialAsesorResumen.pct_avance). La comisión (pesosTotal)
+        // sigue disponible sin comparación de meta en la Tabla A.
+        const pctAvance = acc.metaPesos !== null ? calcularPct(acc.ingresoRtmGenerado, acc.metaPesos) : null
         return {
           asesor_id: id,
           asesor_nombre: nombreMap.get(id) ?? '—',
@@ -5058,8 +5149,12 @@ export default class ReportesAdministrativosController {
           meta_pesos: acc.metaPesos,
           pct_avance: pctAvance,
           cumplio: pctAvance !== null ? pctAvance >= 100 : null,
-          faltante: acc.metaPesos !== null ? Math.max(acc.metaPesos - pesosTotal, 0) : null,
+          faltante: acc.metaPesos !== null ? Math.max(acc.metaPesos - acc.ingresoRtmGenerado, 0) : null,
+          // proyeccion_cierre (comisión) se conserva sin cambios en el dato
+          // — ya no se usa en el KPI card ni en la Tabla A del PDF/preview,
+          // pero queda disponible en la respuesta JSON.
           proyeccion_cierre: proyeccionPorAsesor.get(id) ?? pesosTotal,
+          proyeccion_cierre_ingreso: proyeccionIngresoPorAsesor.get(id) ?? acc.ingresoRtmGenerado,
           comision_pagada: acc.comisionPagada,
           comision_pendiente: acc.comisionPendiente,
           meta_vehiculos: acc.metaVehiculos,
@@ -5085,17 +5180,27 @@ export default class ReportesAdministrativosController {
       null
     )
     const totalPesos = totalConvenio + totalComercial
-    const pctAvanceTotal = totalMeta !== null ? calcularPct(totalPesos, totalMeta) : null
+    const totalIngresoRtmGenerado = asesoresOut.reduce((acc, a) => acc + a.ingreso_rtm_generado, 0)
+    // % Avance agregado ahora contra ingreso generado, no comisión — mismo
+    // criterio que pct_avance por asesor arriba.
+    const pctAvanceTotal = totalMeta !== null ? calcularPct(totalIngresoRtmGenerado, totalMeta) : null
 
-    // Proyección global = suma de las proyecciones por asesor ya calculadas
-    // arriba (matemáticamente idéntico al cálculo agregado anterior, que
-    // sumaba una sola consulta global en vez de N filas por asesor).
+    // Proyección global de COMISIÓN = suma de las proyecciones por asesor ya
+    // calculadas arriba. Se conserva en el dato aunque ya no alimente el KPI
+    // card superior (que ahora usa la proyección de ingreso, ver abajo).
     const proyeccionCierreTotal: number | null =
       caso !== 'solo_cerrados' && proyeccionPorAsesor.size > 0
         ? asesoresOut.reduce((acc, a) => acc + a.proyeccion_cierre, 0)
         : totalPesos
-    const pctProyeccionTotal = totalMeta !== null && proyeccionCierreTotal !== null
-      ? calcularPct(proyeccionCierreTotal, totalMeta)
+
+    // Proyección global de INGRESO RTM — esta es la que alimenta el KPI card
+    // "Proyección de cierre" y su % contra meta, consistente con la Tabla C.
+    const proyeccionCierreIngresoTotal: number | null =
+      caso !== 'solo_cerrados' && proyeccionIngresoPorAsesor.size > 0
+        ? asesoresOut.reduce((acc, a) => acc + a.proyeccion_cierre_ingreso, 0)
+        : totalIngresoRtmGenerado
+    const pctProyeccionTotal = totalMeta !== null && proyeccionCierreIngresoTotal !== null
+      ? calcularPct(proyeccionCierreIngresoTotal, totalMeta)
       : null
 
     let nota: string | null = null
@@ -5121,7 +5226,11 @@ export default class ReportesAdministrativosController {
         pct_avance: pctAvanceTotal,
         pesos_convenio: totalConvenio,
         pesos_comercial: totalComercial,
+        ingreso_rtm_generado: totalIngresoRtmGenerado,
+        // proyeccion_cierre (comisión) se conserva sin cambios en el dato —
+        // el KPI card superior ya no la usa, ver proyeccion_cierre_ingreso.
         proyeccion_cierre: proyeccionCierreTotal,
+        proyeccion_cierre_ingreso: proyeccionCierreIngresoTotal,
         pct_proyeccion: pctProyeccionTotal,
       },
       asesores: asesoresOut,
