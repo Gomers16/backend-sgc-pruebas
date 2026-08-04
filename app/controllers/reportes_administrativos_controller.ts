@@ -557,6 +557,111 @@ async function calcularIngresoRtmGeneradoPorAsesor(
   return resultado
 }
 
+/**
+ * Variante de calcularIngresoRtmGeneradoPorAsesor() con bucketing por día
+ * (DATE(ft.created_at)) en la MISMA query — 1 sola consulta, evita N+1 al
+ * pedir un query por día para metaComercialDiario/Semanal/Proyectado (rama
+ * real). asesorIds=null → SIN whereIn, agrega TODOS los agente_id que
+ * aparezcan en el rango (equivalente al modo "todos los asesores" que ya
+ * usaban esos 3 endpoints con comisiones, donde el universo lo descubre el
+ * propio GROUP BY, sin lista previa).
+ *
+ * Cada fecha del mapa devuelto SOLO existe si tuvo al menos un vehículo/moto
+ * facturado ese día — el llamador ya tiene el patrón `get(fecha) ?? 0` para
+ * los días sin datos (igual que antes con comisiones).
+ */
+async function calcularIngresoRtmGeneradoPorAsesorPorDia(
+  asesorIds: number[] | null,
+  fechaInicio: string,
+  fechaFin: string
+): Promise<Map<string, Map<number, IngresoRtmGeneradoAsesor>>> {
+  const resultado = new Map<string, Map<number, IngresoRtmGeneradoAsesor>>()
+  if (asesorIds !== null && asesorIds.length === 0) return resultado
+
+  const baseQuery = Database.from('facturacion_tickets as ft')
+    .join('turnos_rtms as t', 't.id', 'ft.turno_id')
+    .where('ft.estado', 'CONFIRMADA')
+    .where('ft.servicio_codigo', 'RTM')
+    .where('t.estado', 'finalizado')
+    .whereRaw("t.placa NOT LIKE 'TST%'")
+    .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+  if (asesorIds !== null) baseQuery.whereIn('ft.agente_id', asesorIds)
+
+  // Alias 'dia' (no 'fecha'): turnos_rtms.fecha es una columna real
+  // alcanzable por el JOIN — con sql_mode=only_full_group_by, MySQL
+  // resuelve un alias de GROUP BY contra una columna real del FROM antes
+  // que contra el alias del SELECT, así que `GROUP BY fecha` terminaba
+  // agrupando por t.fecha (no relacionado) en vez de por el alias.
+  const rows = (await baseQuery
+    .select(
+      Database.raw("DATE_FORMAT(ft.created_at, '%Y-%m-%d') as dia"),
+      'ft.agente_id',
+      Database.raw(
+        "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
+      ),
+      Database.raw("CASE WHEN ft.convenio_nombre IS NULL THEN 'PROPIO' ELSE 'CONVENIO' END as canal")
+    )
+    .count('* as cantidad')
+    .groupBy('dia', 'ft.agente_id', 'tipo_clasificado', 'canal')) as {
+    dia: string
+    agente_id: number
+    tipo_clasificado: 'MOTO' | 'VEHICULO'
+    canal: 'PROPIO' | 'CONVENIO'
+    cantidad: string
+  }[]
+
+  if (rows.length === 0) return resultado
+
+  // Costo Base solo para los asesores que REALMENTE aparecen en los
+  // resultados — evita pedirlo para todo el universo cuando asesorIds=null.
+  const idsEncontrados = Array.from(new Set(rows.map((r) => Number(r.agente_id))))
+  const costoBaseGlobal = await obtenerCostoBaseRtmGlobal()
+  const costoBaseConfigRows = await Comision.query()
+    .where('es_config', true)
+    .whereIn('asesor_id', idsEncontrados)
+    .where((wb) => wb.where('valor_rtm_moto', '>', 0).orWhere('valor_rtm_vehiculo', '>', 0))
+  const costoBasePorAsesor = new Map<number, { moto: number; vehiculo: number }>()
+  for (const c of costoBaseConfigRows) {
+    if (c.asesorId === null) continue
+    costoBasePorAsesor.set(c.asesorId, {
+      moto: Number(c.valorRtmMoto) || costoBaseGlobal.moto,
+      vehiculo: Number(c.valorRtmVehiculo) || costoBaseGlobal.vehiculo,
+    })
+  }
+  const obtenerCostoBase = (asesorId: number) => costoBasePorAsesor.get(asesorId) ?? costoBaseGlobal
+
+  const asegurarAsesor = (fecha: string, id: number): IngresoRtmGeneradoAsesor => {
+    if (!resultado.has(fecha)) resultado.set(fecha, new Map())
+    const porAsesor = resultado.get(fecha)!
+    if (!porAsesor.has(id)) {
+      const costoBase = obtenerCostoBase(id)
+      porAsesor.set(id, {
+        costoBaseMoto: costoBase.moto,
+        costoBaseVehiculo: costoBase.vehiculo,
+        convenio: { motos: 0, vehiculos: 0, pesosMotos: 0, pesosVehiculos: 0 },
+        comercial: { motos: 0, vehiculos: 0, pesosMotos: 0, pesosVehiculos: 0 },
+      })
+    }
+    return porAsesor.get(id)!
+  }
+
+  for (const r of rows) {
+    const id = Number(r.agente_id)
+    const cantidad = Number(r.cantidad) || 0
+    const acc = asegurarAsesor(r.dia, id)
+    const bucket = r.canal === 'CONVENIO' ? acc.convenio : acc.comercial
+    if (r.tipo_clasificado === 'MOTO') {
+      bucket.motos += cantidad
+      bucket.pesosMotos += cantidad * acc.costoBaseMoto
+    } else {
+      bucket.vehiculos += cantidad
+      bucket.pesosVehiculos += cantidad * acc.costoBaseVehiculo
+    }
+  }
+
+  return resultado
+}
+
 /* ======================== SÚPER INFORME — PDF ======================== */
 // Mismo patrón visual que liquidacion_pagos_controller.ts / tramite_liquidaciones_controller.ts
 // (pdfkit + pdfkit-table, color de marca #1a3c5e).
@@ -5079,59 +5184,18 @@ export default class ReportesAdministrativosController {
       })
     }
 
-    const query = Database.from('comisiones as c')
-      .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
-      .where('c.es_config', false)
-      .where('c.tipo_servicio', 'RTM')
-      .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
-      .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
-      .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo', 'c.tipo_vehiculo')
-      .count('* as cantidad')
-      .sum('c.monto_asesor as total')
-      .groupBy('fecha', 'a.tipo', 'c.tipo_vehiculo')
-
-    if (asesorId) query.andWhere('c.asesor_id', asesorId)
-
-    const rows = (await query) as {
-      fecha: string
-      tipo: string
-      tipo_vehiculo: string | null
-      total: string
-      cantidad: string
-    }[]
-
-    const porDia = new Map<
-      string,
-      {
-        convenio: number
-        comercial: number
-        cantidadConvenio: number
-        cantidadComercial: number
-        motos: number
-        carros: number
-      }
-    >()
-    for (const r of rows) {
-      const cur = porDia.get(r.fecha) ?? {
-        convenio: 0,
-        comercial: 0,
-        cantidadConvenio: 0,
-        cantidadComercial: 0,
-        motos: 0,
-        carros: 0,
-      }
-      const cantidad = Number(r.cantidad)
-      if (r.tipo === 'ASESOR_CONVENIO') {
-        cur.convenio += Number(r.total)
-        cur.cantidadConvenio += cantidad
-      } else {
-        cur.comercial += Number(r.total)
-        cur.cantidadComercial += cantidad
-      }
-      if (r.tipo_vehiculo === 'MOTO') cur.motos += cantidad
-      else if (r.tipo_vehiculo === 'VEHICULO') cur.carros += cantidad
-      porDia.set(r.fecha, cur)
-    }
+    // Ingreso RTM Generado por día (facturacion_tickets), NO comisión —
+    // mismo bug ya corregido en metaComercialResumen(): antes usaba
+    // SUM(comisiones.monto_asesor).
+    const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
+    const fechaFinMes = (
+      DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
+    ) as string
+    const ingresoPorDia = await calcularIngresoRtmGeneradoPorAsesorPorDia(
+      asesorId ? [asesorId] : null,
+      fechaInicioMes,
+      fechaFinMes
+    )
 
     const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
     let acumConvenio = 0
@@ -5139,27 +5203,36 @@ export default class ReportesAdministrativosController {
     const dias = []
     for (let d = 1; d <= diasDelMes; d++) {
       const fechaStr = DateTime.fromObject({ year: anio, month: mes, day: d }).toISODate() as string
-      const v = porDia.get(fechaStr) ?? {
-        convenio: 0,
-        comercial: 0,
-        cantidadConvenio: 0,
-        cantidadComercial: 0,
-        motos: 0,
-        carros: 0,
+      const porAsesorDelDia = ingresoPorDia.get(fechaStr)
+      let convenio = 0
+      let comercial = 0
+      let cantidadConvenio = 0
+      let cantidadComercial = 0
+      let motos = 0
+      let carros = 0
+      if (porAsesorDelDia) {
+        for (const ing of porAsesorDelDia.values()) {
+          convenio += ing.convenio.pesosMotos + ing.convenio.pesosVehiculos
+          comercial += ing.comercial.pesosMotos + ing.comercial.pesosVehiculos
+          cantidadConvenio += ing.convenio.motos + ing.convenio.vehiculos
+          cantidadComercial += ing.comercial.motos + ing.comercial.vehiculos
+          motos += ing.convenio.motos + ing.comercial.motos
+          carros += ing.convenio.vehiculos + ing.comercial.vehiculos
+        }
       }
-      acumConvenio += v.convenio
-      acumComercial += v.comercial
+      acumConvenio += convenio
+      acumComercial += comercial
       const acumuladoTotal = acumConvenio + acumComercial
       dias.push({
         fecha: fechaStr,
-        cantidad_total: v.motos + v.carros,
-        cantidad_motos: v.motos,
-        cantidad_carros: v.carros,
-        cantidad_convenio: v.cantidadConvenio,
-        cantidad_comercial: v.cantidadComercial,
-        pesos_convenio: v.convenio,
-        pesos_comercial: v.comercial,
-        pesos_total: v.convenio + v.comercial,
+        cantidad_total: motos + carros,
+        cantidad_motos: motos,
+        cantidad_carros: carros,
+        cantidad_convenio: cantidadConvenio,
+        cantidad_comercial: cantidadComercial,
+        pesos_convenio: convenio,
+        pesos_comercial: comercial,
+        pesos_total: convenio + comercial,
         acumulado_convenio: acumConvenio,
         acumulado_comercial: acumComercial,
         acumulado_total: acumuladoTotal,
@@ -5431,29 +5504,35 @@ export default class ReportesAdministrativosController {
     }[] = []
 
     if (esReal) {
-      const query = Database.from('comisiones as c')
-        .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
-        .where('c.es_config', false)
-        .where('c.tipo_servicio', 'RTM')
-        .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
-        .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
-        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"), 'a.tipo', 'c.tipo_vehiculo')
-        .select('c.monto_asesor')
-      if (asesorId) query.andWhere('c.asesor_id', asesorId)
-
-      const rows = (await query) as {
-        fecha: string
-        tipo: string
-        tipo_vehiculo: string | null
-        monto_asesor: string
-      }[]
+      // Ingreso RTM Generado por día (facturacion_tickets), re-agrupado en
+      // semanas sábado-viernes en JS — NO comisión. Mismo bug ya corregido
+      // en metaComercialResumen()/metaComercialDiario().
+      const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
+      const fechaFinMes = (
+        DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
+      ) as string
+      const ingresoPorDia = await calcularIngresoRtmGeneradoPorAsesorPorDia(
+        asesorId ? [asesorId] : null,
+        fechaInicioMes,
+        fechaFinMes
+      )
 
       const semanasMap = new Map<
         string,
         { inicio: string; fin: string; convenio: number; comercial: number; motos: number; carros: number }
       >()
-      for (const r of rows) {
-        const { inicio, fin } = semanaSabadoViernes(DateTime.fromISO(r.fecha))
+      for (const [fechaStr, porAsesorDelDia] of ingresoPorDia) {
+        let convenio = 0
+        let comercial = 0
+        let motos = 0
+        let carros = 0
+        for (const ing of porAsesorDelDia.values()) {
+          convenio += ing.convenio.pesosMotos + ing.convenio.pesosVehiculos
+          comercial += ing.comercial.pesosMotos + ing.comercial.pesosVehiculos
+          motos += ing.convenio.motos + ing.comercial.motos
+          carros += ing.convenio.vehiculos + ing.comercial.vehiculos
+        }
+        const { inicio, fin } = semanaSabadoViernes(DateTime.fromISO(fechaStr))
         const key = inicio.toISODate() as string
         if (!semanasMap.has(key)) {
           semanasMap.set(key, {
@@ -5466,10 +5545,10 @@ export default class ReportesAdministrativosController {
           })
         }
         const s = semanasMap.get(key)!
-        if (r.tipo === 'ASESOR_CONVENIO') s.convenio += Number(r.monto_asesor)
-        else s.comercial += Number(r.monto_asesor)
-        if (r.tipo_vehiculo === 'MOTO') s.motos += 1
-        else if (r.tipo_vehiculo === 'VEHICULO') s.carros += 1
+        s.convenio += convenio
+        s.comercial += comercial
+        s.motos += motos
+        s.carros += carros
       }
 
       let acumConvenioReal = 0
@@ -5580,18 +5659,29 @@ export default class ReportesAdministrativosController {
     const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
 
     if (esReal) {
-      const query = Database.from('comisiones as c')
-        .where('c.es_config', false)
-        .where('c.tipo_servicio', 'RTM')
-        .whereIn('c.estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
-        .whereRaw('MONTH(c.fecha_calculo) = ? AND YEAR(c.fecha_calculo) = ?', [mes, anio])
-        .select(Database.raw("DATE_FORMAT(c.fecha_calculo, '%Y-%m-%d') as fecha"))
-        .sum('c.monto_asesor as total')
-        .groupBy('fecha')
-      if (asesorId) query.andWhere('c.asesor_id', asesorId)
-
-      const rows = (await query) as { fecha: string; total: string }[]
-      const porDia = new Map(rows.map((r) => [r.fecha, Number(r.total)]))
+      // Ingreso RTM Generado por día (facturacion_tickets), NO comisión —
+      // mismo bug ya corregido en metaComercialResumen()/Diario()/Semanal().
+      const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
+      const fechaFinMes = (
+        DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
+      ) as string
+      const ingresoPorDia = await calcularIngresoRtmGeneradoPorAsesorPorDia(
+        asesorId ? [asesorId] : null,
+        fechaInicioMes,
+        fechaFinMes
+      )
+      const porDia = new Map<string, number>()
+      for (const [fechaStr, porAsesorDelDia] of ingresoPorDia) {
+        let total = 0
+        for (const ing of porAsesorDelDia.values()) {
+          total +=
+            ing.convenio.pesosMotos +
+            ing.convenio.pesosVehiculos +
+            ing.comercial.pesosMotos +
+            ing.comercial.pesosVehiculos
+        }
+        porDia.set(fechaStr, total)
+      }
 
       const now = DateTime.now()
       const esMesActual = mes === now.month && anio === now.year
