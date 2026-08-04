@@ -16,6 +16,11 @@ import AgenteCaptacion from '#models/agente_captacion'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import { buildReserva } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
+import {
+  computeEtapasTurno,
+  getEtapasRequeridas,
+  type EstadoVisualTurno,
+} from '#services/turno_etapas_service'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -245,22 +250,36 @@ export default class TurnosRtmController {
    * show() para que el modal de detalle de turno se vea idéntico sin
    * importar si se abre desde Estado de Turnos o desde Comisiones.
    */
-  private async computeCamposDerivados(turnos: TurnoRtm[]): Promise<Map<number, {
-    tieneFacturacion: boolean
-    tieneCertificacion: boolean
-    visitaVehiculoNumero: number | null
-    visitaVehiculoTexto: string
-    visitaVehiculoUltimasFechas: string[]
-    visitasVehiculoDetalle: HistItem[]
-  }>> {
-    const resultado = new Map<number, {
-      tieneFacturacion: boolean
-      tieneCertificacion: boolean
-      visitaVehiculoNumero: number | null
-      visitaVehiculoTexto: string
-      visitaVehiculoUltimasFechas: string[]
-      visitasVehiculoDetalle: HistItem[]
-    }>()
+  private async computeCamposDerivados(turnos: TurnoRtm[]): Promise<
+    Map<
+      number,
+      {
+        tieneFacturacion: boolean
+        tieneCertificacion: boolean
+        visitaVehiculoNumero: number | null
+        visitaVehiculoTexto: string
+        visitaVehiculoUltimasFechas: string[]
+        visitasVehiculoDetalle: HistItem[]
+        etapasRequeridas: number
+        etapasCompletadas: number
+        estadoVisual: EstadoVisualTurno
+      }
+    >
+  > {
+    const resultado = new Map<
+      number,
+      {
+        tieneFacturacion: boolean
+        tieneCertificacion: boolean
+        visitaVehiculoNumero: number | null
+        visitaVehiculoTexto: string
+        visitaVehiculoUltimasFechas: string[]
+        visitasVehiculoDetalle: HistItem[]
+        etapasRequeridas: number
+        etapasCompletadas: number
+        estadoVisual: EstadoVisualTurno
+      }
+    >()
     if (turnos.length === 0) return resultado
 
     // ====== FACTURACIÓN CONFIRMADA ======
@@ -325,13 +344,25 @@ export default class TurnosRtmController {
         visitasDetalle = hist
       }
 
+      const tieneFacturacion = turnosConFactura.has(t.id)
+      const etapasInfo = computeEtapasTurno({
+        servicioCodigo: t.servicio ? (t.servicio as any).codigoServicio : null,
+        estado: t.estado,
+        horaIngreso: t.horaIngreso,
+        tieneFacturacion,
+        horaSalida: t.horaSalida,
+      })
+
       resultado.set(t.id, {
-        tieneFacturacion: turnosConFactura.has(t.id),
+        tieneFacturacion,
         tieneCertificacion: (t.certificaciones ?? []).length > 0,
         visitaVehiculoNumero: visitaNumero,
         visitaVehiculoTexto: visitaLabel(visitaNumero),
         visitaVehiculoUltimasFechas: ultimasFechas,
         visitasVehiculoDetalle: visitasDetalle,
+        etapasRequeridas: etapasInfo.totalRequeridas,
+        etapasCompletadas: etapasInfo.totalCompletadas,
+        estadoVisual: etapasInfo.estadoVisual,
       })
     })
 
@@ -1560,10 +1591,11 @@ export default class TurnosRtmController {
 
         const conductor = (t as any).conductor ? `${(t as any).conductor.nombre}` : '-'
 
-        // Mismo mapeo de etapas que getEtapas() en EstadoDeTurnos.vue (Puerta ya
-        // cubierta por Hora Ingreso/Usuario): Certificación no aplica a SOAT, y
-        // los responsables se ocultan si el turno quedó cancelado/inactivo.
-        const esSOAT = (t.servicio?.codigoServicio ?? '').toUpperCase() === 'SOAT'
+        // Mismo mapeo de etapas que getEtapas() en TurnosDelDia.vue (Puerta ya
+        // cubierta por Hora Ingreso/Usuario), fuente única: turno_etapas_service.
+        // Certificación no aplica a SOAT, y los responsables se ocultan si el
+        // turno quedó cancelado/inactivo.
+        const esSOAT = !getEtapasRequeridas(t.servicio?.codigoServicio).includes('certificacion')
         const facturacionFuncionario = (t as any).facturacionFuncionario
         const certificacionFuncionario = (t as any).certificacionFuncionario
 
