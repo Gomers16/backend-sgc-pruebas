@@ -13,6 +13,7 @@ import Convenio from '#models/convenio'
 import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
 import Liquidacion from '#models/liquidacion'
 import Comision from '#models/comision'
+import InformeDiscrepanciaRtm from '#models/informe_discrepancia_rtm'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -6286,6 +6287,363 @@ export default class ReportesAdministrativosController {
 
     const fileName = `Super_Informe_${fechaInicio}_${fechaFin}.pdf`
     response.header('Content-Type', 'application/pdf')
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
+  }
+
+  /* ==================== DISCREPANCIAS RTM (SGC vs TECNOINGENIERÍA) ==================== */
+
+  /**
+   * GET /reportes-admin/discrepancias-rtm?page=&per_page=&fecha_inicio=&fecha_fin=
+   * Lista paginada de informes generados (uno por cada importación de
+   * RepGeneral que no fue TECNOBASE) — mismo shape que historialLiquidaciones().
+   * El filtro de fecha opcional aplica sobre fecha_inicio/fecha_fin del
+   * PERÍODO del informe (el rango de fechas del CSV), no sobre generado_at.
+   */
+  public async discrepanciasRtmHistorial({ request }: HttpContext) {
+    const page = Math.max(1, Number(request.input('page', 1)) || 1)
+    const perPage = Math.min(100, Math.max(1, Number(request.input('per_page', 20)) || 20))
+    const fechaInicio = request.input('fecha_inicio') as string | undefined
+    const fechaFin = request.input('fecha_fin') as string | undefined
+
+    const query = InformeDiscrepanciaRtm.query().preload('generadoPor').orderBy('id', 'desc')
+    if (fechaInicio && fechaFin) {
+      query.whereRaw('fecha_inicio <= ? AND fecha_fin >= ?', [fechaFin, fechaInicio])
+    }
+
+    const paginated = await query.paginate(page, perPage)
+    const meta = paginated.getMeta()
+    const data = paginated.all().map((informe) => ({
+      id: informe.id,
+      fechaInicio: informe.fechaInicio.toISODate(),
+      fechaFin: informe.fechaFin.toISODate(),
+      archivoNombre: informe.archivoNombre,
+      filasCsvTotal: informe.filasCsvTotal,
+      generadoAt: informe.generadoAt.toISO(),
+      generadoPor: informe.generadoPor
+        ? `${informe.generadoPor.nombres} ${informe.generadoPor.apellidos}`.trim()
+        : null,
+      resumen: {
+        totalTecnoValido: informe.totalTecnoValido,
+        totalSgcFinalizados: informe.totalSgcFinalizados,
+        totalCoinciden: informe.totalCoinciden,
+        totalTipo1PlacaMalDigitada: informe.totalTipo1PlacaMalDigitada,
+        totalTipo2ActivoDebeFinalizar: informe.totalTipo2ActivoDebeFinalizar,
+        totalTipo3TurnoFantasma: informe.totalTipo3TurnoFantasma,
+        totalTipo4ServicioMalAsignado: informe.totalTipo4ServicioMalAsignado,
+        totalTipo5FaltaEnSgc: informe.totalTipo5FaltaEnSgc,
+        totalTipo6AlertaCobroNoRegistrado: informe.totalTipo6AlertaCobroNoRegistrado,
+        totalTipo7FinalizadoSinRastroTecno: informe.totalTipo7FinalizadoSinRastroTecno,
+        totalDuplicadosFinalizado: informe.totalDuplicadosFinalizado,
+        totalAmbiguosRevisarManual: informe.totalAmbiguosRevisarManual,
+      },
+    }))
+
+    return {
+      data,
+      total: meta.total,
+      page: meta.currentPage,
+      perPage: meta.perPage,
+    }
+  }
+
+  /**
+   * GET /reportes-admin/discrepancias-rtm/:id/excel
+   * Exporta a Excel el informe generado por DiscrepanciasRtmService tras una
+   * importación de RepGeneral — una pestaña por cada uno de los 7 tipos +
+   * Resumen + Duplicados + Ambiguos. Enriquece funcionarioId (tipo3/tipo7)
+   * con el nombre del funcionario para que el Excel sea legible sin tener
+   * que cruzar contra la tabla usuarios a mano.
+   */
+  public async discrepanciasRtmExcel({ params, response }: HttpContext) {
+    const id = Number(params.id)
+    if (!Number.isInteger(id) || id <= 0) {
+      return response.badRequest({ message: 'id inválido' })
+    }
+
+    const informe = await InformeDiscrepanciaRtm.query()
+      .where('id', id)
+      .preload('generadoPor')
+      .first()
+    if (!informe) return response.notFound({ message: 'Informe de discrepancias no encontrado' })
+
+    // Fallback a [] por informes generados antes de que existiera cada tipo
+    // (p.ej. tipo7 se agregó después de que ya hubiera informes guardados).
+    const detalle = informe.detalleJson
+
+    const tipo1 = (detalle.tipo1_placa_mal_digitada ?? []) as any[]
+    const tipo2 = (detalle.tipo2_activo_debe_finalizar ?? []) as any[]
+    const tipo3 = (detalle.tipo3_turno_fantasma ?? []) as any[]
+    const tipo4 = (detalle.tipo4_servicio_mal_asignado ?? []) as any[]
+    const tipo5 = (detalle.tipo5_falta_en_sgc ?? []) as any[]
+    const tipo6 = (detalle.tipo6_alerta_cobro_no_registrado ?? []) as any[]
+    const tipo7 = (detalle.tipo7_finalizado_sin_rastro_tecno ?? []) as any[]
+    const duplicados = (detalle.duplicados_finalizado ?? []) as any[]
+    const ambiguos = (detalle.ambiguos_revisar_manual ?? []) as any[]
+
+    const funcionarioIds = new Set<number>()
+    for (const fila of [...tipo3, ...tipo7]) {
+      if (fila.funcionarioId) funcionarioIds.add(fila.funcionarioId)
+    }
+    const funcionarios = funcionarioIds.size
+      ? await Usuario.query().whereIn('id', [...funcionarioIds]).select('id', 'nombres', 'apellidos')
+      : []
+    const nombreFuncionario = new Map(
+      funcionarios.map((u) => [u.id, `${u.nombres} ${u.apellidos}`.trim()])
+    )
+
+    const workbook = new ExcelJS.Workbook()
+
+    const addSheet = (
+      nombre: string,
+      columnas: { header: string; width: number }[],
+      filas: (string | number)[][]
+    ) => {
+      const ws = workbook.addWorksheet(nombre)
+      ws.columns = columnas.map((c) => ({ width: c.width }))
+      ws.addRow(columnas.map((c) => c.header)).font = { bold: true }
+      filas.forEach((f) => ws.addRow(f))
+      return ws
+    }
+
+    // ---- Resumen ----
+    const wsResumen = workbook.addWorksheet('Resumen')
+    wsResumen.columns = [{ width: 44 }, { width: 30 }]
+    wsResumen.addRow(['Informe de Discrepancias RTM']).font = { bold: true, size: 13 }
+    wsResumen.addRow([])
+    wsResumen.addRow([
+      'Período',
+      `${informe.fechaInicio.toISODate()} a ${informe.fechaFin.toISODate()}`,
+    ])
+    wsResumen.addRow(['Archivo importado', informe.archivoNombre ?? '—'])
+    wsResumen.addRow(['Filas en el CSV', informe.filasCsvTotal ?? '—'])
+    wsResumen.addRow(['Generado', informe.generadoAt.toFormat('dd/MM/yyyy HH:mm')])
+    wsResumen.addRow([
+      'Generado por',
+      informe.generadoPor
+        ? `${informe.generadoPor.nombres} ${informe.generadoPor.apellidos}`.trim()
+        : '—',
+    ])
+    wsResumen.addRow([])
+    wsResumen.addRow(['Total válido en Tecnoingeniería', informe.totalTecnoValido]).font = {
+      bold: true,
+    }
+    wsResumen.addRow(['Total finalizados en SGC (período)', informe.totalSgcFinalizados])
+    wsResumen.addRow(['Coinciden exacto', informe.totalCoinciden])
+    wsResumen.addRow(['Tipo 1 — Placa mal digitada', informe.totalTipo1PlacaMalDigitada])
+    wsResumen.addRow(['Tipo 2 — Activo en SGC, debe finalizarse', informe.totalTipo2ActivoDebeFinalizar])
+    wsResumen.addRow(['Tipo 3 — Turno fantasma (activo sin rastro)', informe.totalTipo3TurnoFantasma])
+    wsResumen.addRow(['Tipo 4 — Servicio mal asignado', informe.totalTipo4ServicioMalAsignado])
+    wsResumen.addRow(['Tipo 5 — Falta en SGC', informe.totalTipo5FaltaEnSgc])
+    wsResumen.addRow(['Tipo 6 — Alerta: cobro no registrado', informe.totalTipo6AlertaCobroNoRegistrado])
+    wsResumen.addRow([
+      'Tipo 7 — Finalizado sin rastro en Tecno',
+      informe.totalTipo7FinalizadoSinRastroTecno,
+    ])
+    wsResumen.addRow(['Duplicados (2+ finalizado misma placa)', informe.totalDuplicadosFinalizado])
+    wsResumen.addRow(['Ambiguos — revisar manualmente', informe.totalAmbiguosRevisarManual])
+
+    // ---- Tipo 1: placa mal digitada ----
+    addSheet(
+      'Tipo1 - Placa mal digitada',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa SGC', width: 14 },
+        { header: 'Placa Tecno', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Estado Tecno', width: 16 },
+      ],
+      tipo1.map((r) => [r.turnoId, r.turnoCodigo, r.placaSgc, r.placaTecno, r.fecha, r.estadoTecno])
+    )
+
+    // Trazabilidad por etapa — presente desde que existe enrichConResponsables()
+    // en DiscrepanciasRtmService; informes generados antes de eso no la traen,
+    // por eso cada campo cae a '—' en vez de romper el Excel.
+    const columnasResponsables = [
+      { header: 'Responsable Puerta', width: 24 },
+      { header: 'Responsable Facturación', width: 24 },
+      { header: 'Responsable Certificación', width: 24 },
+      { header: 'Etapa donde se quedó', width: 20 },
+    ]
+    const celdasResponsables = (r: any) => [
+      r.responsablePuerta ?? '—',
+      r.responsableFacturacion ?? '—',
+      r.responsableCertificacion ?? '—',
+      r.etapaDondeSeQuedo ?? '—',
+    ]
+
+    // ---- Tipo 2: activo en SGC, debe finalizarse ----
+    addSheet(
+      'Tipo2 - Debe finalizarse',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Estado Tecno', width: 16 },
+        ...columnasResponsables,
+      ],
+      tipo2.map((r) => [r.turnoId, r.turnoCodigo, r.placa, r.fecha, r.estadoTecno, ...celdasResponsables(r)])
+    )
+
+    // ---- Tipo 3: turno fantasma (activo sin rastro) ----
+    addSheet(
+      'Tipo3 - Turno fantasma',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Funcionario', width: 26 },
+        ...columnasResponsables,
+      ],
+      tipo3.map((r) => [
+        r.turnoId,
+        r.turnoCodigo,
+        r.placa,
+        r.fecha,
+        nombreFuncionario.get(r.funcionarioId) ?? '—',
+        ...celdasResponsables(r),
+      ])
+    )
+
+    // ---- Tipo 4: servicio mal asignado ----
+    addSheet(
+      'Tipo4 - Servicio mal asignado',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Tipo servicio Tecno', width: 34 },
+      ],
+      tipo4.map((r) => [r.turnoId, r.turnoCodigo, r.placa, r.fecha, r.tipoServicioTecno])
+    )
+
+    // ---- Tipo 5: falta en SGC ----
+    addSheet(
+      'Tipo5 - Falta en SGC',
+      [
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Estado Tecno', width: 16 },
+      ],
+      tipo5.map((r) => [r.placa, r.fecha, r.estadoTecno])
+    )
+
+    // ---- Tipo 6: alerta cobro no registrado ----
+    addSheet(
+      'Tipo6 - Cobro no registrado',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Estado Tecno', width: 16 },
+        { header: 'Tiene facturación', width: 18 },
+        ...columnasResponsables,
+      ],
+      tipo6.map((r) => [
+        r.turnoId,
+        r.turnoCodigo,
+        r.placa,
+        r.fecha,
+        r.estadoTecno,
+        r.tieneFacturacion ? 'Sí' : 'No',
+        ...celdasResponsables(r),
+      ])
+    )
+
+    // ---- Tipo 7: finalizado sin rastro en Tecno ----
+    addSheet(
+      'Tipo7 - Finalizado sin rastro',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa', width: 14 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Funcionario', width: 26 },
+        ...columnasResponsables,
+      ],
+      tipo7.map((r) => [
+        r.turnoId,
+        r.turnoCodigo,
+        r.placa,
+        r.fecha,
+        nombreFuncionario.get(r.funcionarioId) ?? '—',
+        ...celdasResponsables(r),
+      ])
+    )
+
+    // ---- Duplicados: 2+ finalizado misma placa ----
+    const filasDuplicados: (string | number)[][] = []
+    for (const grupo of duplicados) {
+      for (const t of grupo.turnos as any[]) {
+        filasDuplicados.push([
+          grupo.placa,
+          t.turnoId,
+          t.turnoCodigo,
+          t.fecha,
+          t.tieneFacturacionConfirmada ? 'Sí' : 'No',
+          t.tieneMatchTecno ? 'Sí' : 'No',
+          t.turnoId === grupo.sugeridoId ? 'Sí' : 'No',
+          grupo.motivo,
+          ...celdasResponsables(t),
+        ])
+      }
+    }
+    addSheet(
+      'Duplicados',
+      [
+        { header: 'Placa', width: 14 },
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Fecha', width: 14 },
+        { header: 'Facturación confirmada', width: 20 },
+        { header: 'Match Tecno', width: 14 },
+        { header: 'Sugerido', width: 12 },
+        { header: 'Motivo', width: 44 },
+        ...columnasResponsables,
+      ],
+      filasDuplicados
+    )
+
+    // ---- Ambiguos: revisar manualmente ----
+    const filasAmbiguos: (string | number)[][] = []
+    for (const caso of ambiguos) {
+      for (const c of caso.candidatosTecno as any[]) {
+        filasAmbiguos.push([
+          caso.turnoId,
+          caso.turnoCodigo,
+          caso.placaSgc,
+          caso.fecha,
+          c.placa,
+          c.fecha,
+          c.estado,
+        ])
+      }
+    }
+    addSheet(
+      'Ambiguos',
+      [
+        { header: 'Turno ID', width: 10 },
+        { header: 'Turno código', width: 20 },
+        { header: 'Placa SGC', width: 14 },
+        { header: 'Fecha turno', width: 14 },
+        { header: 'Placa candidata Tecno', width: 20 },
+        { header: 'Fecha candidata', width: 16 },
+        { header: 'Estado candidata', width: 16 },
+      ],
+      filasAmbiguos
+    )
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const fileName = `Discrepancias_RTM_${informe.fechaInicio.toISODate()}_${informe.fechaFin.toISODate()}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
     response.header('Content-Disposition', `attachment; filename="${fileName}"`)
     return response.send(buffer)
   }

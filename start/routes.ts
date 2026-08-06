@@ -2324,11 +2324,35 @@ router
           )
           return new ReportesAdministrativosController().superInformeReconciliacionRtm(ctx)
         })
+        router.get('/discrepancias-rtm', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().discrepanciasRtmHistorial(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
+    // Roles ampliados respecto al resto de /reportes-admin: OPERATIVO_TURNOS
+    // necesita descargar el Excel del informe que se genera justo al importar
+    // RepGeneral (misma pantalla /rtm/estado-turnos), no solo desde el
+    // historial que ven SUPER_ADMIN/GERENCIA/CONTABILIDAD.
+    router
+      .get('/reportes-admin/discrepancias-rtm/:id/excel', async (ctx) => {
+        const { default: ReportesAdministrativosController } = await import(
+          '#controllers/reportes_administrativos_controller'
+        )
+        return new ReportesAdministrativosController().discrepanciasRtmExcel(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'OPERATIVO_TURNOS'],
+        }),
       ])
 
     /* ======================== TARIFAS POR SERVICIO ====================== */

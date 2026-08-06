@@ -46,7 +46,8 @@ export interface TurnoEtapasResult {
   estadoVisual: EstadoVisualTurno
 }
 
-function etapaCompletada(key: EtapaKey, input: TurnoEtapasInput): boolean {
+/** Exportada para consumidores que necesitan el detalle por etapa (no solo el agregado), p.ej. DiscrepanciasRtmService. */
+export function etapaCompletada(key: EtapaKey, input: TurnoEtapasInput): boolean {
   switch (key) {
     case 'puerta':
       return !!input.horaIngreso

@@ -12,6 +12,7 @@ import Conductor from '#models/conductor'
 import TurnoRtm from '#models/turno_rtm'
 import Comision from '#models/comision'
 import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
+import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
 
 type TipoVehiculoDB = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
 
@@ -52,7 +53,7 @@ export default class RepGeneralImportController {
 
   // ==================== MÉTODO PRINCIPAL ====================
 
-  public async import({ request, response }: HttpContext) {
+  public async import({ request, response, auth }: HttpContext) {
     try {
       const file = request.file('file', {
         size: '50mb',
@@ -274,6 +275,23 @@ export default class RepGeneralImportController {
         }
       }
 
+      // Cruce de discrepancias RTM contra Tecnoingeniería — solo aplica al
+      // archivo RepGeneral diario (TECNOBASE es una carga histórica masiva,
+      // sin relación con un lote de certificación puntual).
+      let informeDiscrepancias: Awaited<
+        ReturnType<typeof DiscrepanciasRtmService.generarInforme>
+      > | null = null
+      if (!esTECNOBASE) {
+        try {
+          informeDiscrepancias = await DiscrepanciasRtmService.generarInforme(rows, {
+            archivoNombre: file.clientName ?? null,
+            generadoPorId: auth.user?.id ?? null,
+          })
+        } catch (errorDiscrepancias) {
+          logger.error(errorDiscrepancias, '❌ Error generando informe de discrepancias RTM')
+        }
+      }
+
       const mensaje = esTECNOBASE
         ? 'Importación TECNOBASE (histórico) finalizada.'
         : 'Importación RepGeneral (clasificación + empalme) finalizada.'
@@ -313,6 +331,29 @@ export default class RepGeneralImportController {
           erroresDetalle,
           primerError: erroresDetalle[0] ?? null,
         },
+        informeDiscrepancias: informeDiscrepancias
+          ? {
+              id: informeDiscrepancias.id,
+              fechaInicio: informeDiscrepancias.fechaInicio.toISODate(),
+              fechaFin: informeDiscrepancias.fechaFin.toISODate(),
+              resumen: {
+                totalTecnoValido: informeDiscrepancias.totalTecnoValido,
+                totalSgcFinalizados: informeDiscrepancias.totalSgcFinalizados,
+                totalCoinciden: informeDiscrepancias.totalCoinciden,
+                totalTipo1PlacaMalDigitada: informeDiscrepancias.totalTipo1PlacaMalDigitada,
+                totalTipo2ActivoDebeFinalizar: informeDiscrepancias.totalTipo2ActivoDebeFinalizar,
+                totalTipo3TurnoFantasma: informeDiscrepancias.totalTipo3TurnoFantasma,
+                totalTipo4ServicioMalAsignado: informeDiscrepancias.totalTipo4ServicioMalAsignado,
+                totalTipo5FaltaEnSgc: informeDiscrepancias.totalTipo5FaltaEnSgc,
+                totalTipo6AlertaCobroNoRegistrado:
+                  informeDiscrepancias.totalTipo6AlertaCobroNoRegistrado,
+                totalTipo7FinalizadoSinRastroTecno:
+                  informeDiscrepancias.totalTipo7FinalizadoSinRastroTecno,
+                totalDuplicadosFinalizado: informeDiscrepancias.totalDuplicadosFinalizado,
+                totalAmbiguosRevisarManual: informeDiscrepancias.totalAmbiguosRevisarManual,
+              },
+            }
+          : null,
       })
     } catch (error) {
       logger.error(error, 'Error importando archivo')
