@@ -591,6 +591,55 @@ export default class TurnosRtmController {
         }
       }
 
+      // ── Regla 1: turno anterior 'activo' (abierto) para la misma
+      // placa+servicio+sede, de cualquier día anterior. No cubierto por
+      // DUPLICATE_DAY (que solo mira hoy) ni por WINDOW_BLOCK (que solo
+      // mira turnos ya 'finalizado').
+      const turnoAbierto = await TurnoRtm.query({ client: trx })
+        .where('sede_id', usuarioCreador.sedeId!)
+        .andWhere('servicio_id', servicio.id)
+        .andWhere('placa', placa)
+        .andWhere('estado', 'activo')
+        .andWhereNot('fecha', hoyISO)
+        .orderBy('fecha', 'desc')
+        .first()
+
+      if (turnoAbierto) {
+        const tieneFacturacion = !!turnoAbierto.tieneFacturacion
+        const tieneCertificacion = !!turnoAbierto.horaSalida
+        const fechaAbierta = (turnoAbierto.fecha as DateTime).toISODate()
+
+        if (!tieneFacturacion && !tieneCertificacion) {
+          await trx.rollback()
+          return response.conflict({
+            code: 'OPEN_TURNO_SIN_EVIDENCIA',
+            message: `Ya existe un turno abierto (${turnoAbierto.turnoCodigo}, ${fechaAbierta}) sin evidencia para esta placa y servicio. Puedes cancelarlo (indicando el motivo) para continuar.`,
+            turnoAbiertoId: turnoAbierto.id,
+            turnoAbiertoCodigo: turnoAbierto.turnoCodigo,
+            turnoAbiertoFecha: fechaAbierta,
+          })
+        }
+
+        await trx.rollback()
+        let detalleEvidencia: string
+        if (tieneFacturacion && !tieneCertificacion) {
+          detalleEvidencia = 'tiene facturación pero le falta certificación'
+        } else if (!tieneFacturacion && tieneCertificacion) {
+          detalleEvidencia = 'tiene certificación pero le falta facturación'
+        } else {
+          detalleEvidencia = 'tiene facturación y certificación registradas'
+        }
+        return response.conflict({
+          code: 'OPEN_TURNO_BLOQUEADO',
+          message: `El turno anterior de esta placa (${turnoAbierto.turnoCodigo}, ${fechaAbierta}) ${detalleEvidencia} y sigue sin finalizar. Para continuar, complétalo en su pantalla correspondiente o cancélalo indicando el motivo desde la pantalla de turnos.`,
+          turnoAbiertoId: turnoAbierto.id,
+          turnoAbiertoCodigo: turnoAbierto.turnoCodigo,
+          turnoAbiertoFecha: fechaAbierta,
+          tieneFacturacion,
+          tieneCertificacion,
+        })
+      }
+
       // ── Reasignación: slots liberados por cancelados del mismo día ──────
       // Subquery: IDs de cancelados cuyo slot global ya fue reclamado
       const slotsClamados = trx
@@ -1032,8 +1081,55 @@ export default class TurnosRtmController {
     }
   }
 
+  /**
+   * Busca el turno no-cancelado que choca con (sedeId, servicioId, fecha, placa)
+   * y devuelve el 409 DUPLICATE_DAY enriquecido con datos del turno en
+   * conflicto. Compartido entre el pre-chequeo de update() y el catch de
+   * ER_DUP_ENTRY, para que ambos caminos den al operador la misma info.
+   */
+  private async responderConflictoDuplicado(
+    response: HttpContext['response'],
+    opts: {
+      sedeId: number
+      servicioId: number
+      fechaISO: string
+      placa: string
+      excludeTurnoId?: number
+    }
+  ) {
+    let query = Database.from('turnos_rtms as t')
+      .leftJoin('usuarios as u', 'u.id', 't.funcionario_id')
+      .where('t.sede_id', opts.sedeId)
+      .andWhere('t.servicio_id', opts.servicioId)
+      .andWhere('t.fecha', opts.fechaISO)
+      .andWhere('t.placa', opts.placa)
+      .whereNot('t.estado', 'cancelado')
+
+    if (opts.excludeTurnoId !== undefined) {
+      query = query.whereNot('t.id', opts.excludeTurnoId)
+    }
+
+    const turnoConflicto = await query
+      .select('t.id as id', 't.turno_codigo as turno_codigo', 'u.nombres', 'u.apellidos')
+      .first()
+
+    if (!turnoConflicto) return null
+
+    const nombreFuncionario =
+      [turnoConflicto.nombres, turnoConflicto.apellidos].filter(Boolean).join(' ').trim() || null
+
+    return response.conflict({
+      code: 'DUPLICATE_DAY',
+      message: `Ya existe el turno ${turnoConflicto.turno_codigo} para esta placa y servicio hoy, creado por ${nombreFuncionario ?? 'otro usuario'}. Si ese turno es un error, cancélalo en la pantalla de turnos en vez de editarle el servicio a este.`,
+      conflictoConTurnoId: turnoConflicto.id,
+      conflictoConTurnoCodigo: turnoConflicto.turno_codigo,
+      conflictoConFuncionario: nombreFuncionario,
+    })
+  }
+
   /** Actualizar turno */
   public async update({ params, request, response }: HttpContext) {
+    let turno: TurnoRtm | null = null
     try {
       const raw = request.only([
         'placa',
@@ -1078,7 +1174,7 @@ export default class TurnosRtmController {
       if (!usuarioActualizador)
         return response.unauthorized({ message: `Usuario ${idNumericoUsuario} no encontrado` })
 
-      const turno = await TurnoRtm.find(params.id)
+      turno = await TurnoRtm.find(params.id)
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
 
       let tipoVehiculoNext: TipoVehiculoDB | undefined
@@ -1092,6 +1188,7 @@ export default class TurnosRtmController {
       }
 
       let servicioIdNext: number | undefined
+      let servicioCodigoNext: string | undefined
       if (raw.servicioId) {
         const sid = Number(raw.servicioId)
         if (Number.isNaN(sid))
@@ -1099,6 +1196,7 @@ export default class TurnosRtmController {
         const s = await Servicio.find(sid)
         if (!s) return response.badRequest({ message: `Servicio id ${sid} no existe` })
         servicioIdNext = s.id
+        servicioCodigoNext = s.codigoServicio
       } else if (raw.servicioCodigo) {
         const s = await Servicio.query()
           .where('codigo_servicio', String(raw.servicioCodigo))
@@ -1108,6 +1206,7 @@ export default class TurnosRtmController {
             message: `Servicio código '${raw.servicioCodigo}' no existe`,
           })
         servicioIdNext = s.id
+        servicioCodigoNext = s.codigoServicio
       }
 
       // ✅ FIX: Recalcular turno_numero_servicio cuando cambia el servicio
@@ -1186,8 +1285,41 @@ export default class TurnosRtmController {
         }
       }
 
+      const placaNext = raw.placa ? normalizePlaca(raw.placa)! : turno.placa
+      const fechaEfectiva = fechaNext ?? (turno.fecha as DateTime)
+      const servicioIdEfectivo = servicioIdNext ?? turno.servicioId
+      const estadoEfectivo = estadoVal ?? turno.estado
+
+      // ✅ FIX: si cambia servicioId, placa o fecha, revalidar que la nueva
+      // combinación sede+fecha+servicio+placa no choque con otro turno no
+      // cancelado (mismo criterio que dupDiario en store()).
+      const cambiaClaveDedupe =
+        servicioIdEfectivo !== turno.servicioId ||
+        placaNext !== turno.placa ||
+        fechaEfectiva.toISODate() !== (turno.fecha as DateTime).toISODate()
+
+      if (cambiaClaveDedupe && estadoEfectivo !== 'cancelado') {
+        const respuestaConflicto = await this.responderConflictoDuplicado(response, {
+          sedeId: turno.sedeId,
+          servicioId: servicioIdEfectivo,
+          fechaISO: fechaEfectiva.toISODate()!,
+          placa: placaNext,
+          excludeTurnoId: turno.id,
+        })
+        if (respuestaConflicto) return respuestaConflicto
+      }
+
+      // ✅ FIX: regenerar turno_codigo cuando cambia el servicio, conservando
+      // el sufijo/timestamp original y sustituyendo solo el prefijo.
+      let turnoCodigoNext: string | undefined
+      if (servicioIdNext && servicioIdNext !== turno.servicioId && servicioCodigoNext) {
+        const partes = turno.turnoCodigo.split('-')
+        const sufijo = partes.length > 1 ? partes.slice(1).join('-') : turno.turnoCodigo
+        turnoCodigoNext = `${servicioCodigoNext}-${sufijo}`
+      }
+
       turno.merge({
-        placa: raw.placa ? normalizePlaca(raw.placa)! : turno.placa,
+        placa: placaNext,
         tipoVehiculo: tipoVehiculoNext ?? turno.tipoVehiculo,
         observaciones: raw.observaciones ?? turno.observaciones ?? null,
         horaSalida: raw.horaSalida ?? turno.horaSalida ?? null,
@@ -1209,6 +1341,7 @@ export default class TurnosRtmController {
         ...(turnoNumeroServicioNext !== undefined
           ? { turnoNumeroServicio: turnoNumeroServicioNext }
           : {}),
+        ...(turnoCodigoNext ? { turnoCodigo: turnoCodigoNext } : {}),
       })
 
       await turno.save()
@@ -1222,7 +1355,29 @@ export default class TurnosRtmController {
       await turno.load('captacionDateo', (q) => q.preload('agente').preload('convenio'))
 
       return response.ok(turno)
-    } catch (error) {
+    } catch (error: any) {
+      if (
+        error?.code === 'ER_DUP_ENTRY' &&
+        String(error?.sqlMessage ?? error?.message ?? '').includes(
+          'uq_turno_activo_por_placa_servicio_dia'
+        )
+      ) {
+        if (turno) {
+          const respuestaConflicto = await this.responderConflictoDuplicado(response, {
+            sedeId: turno.sedeId,
+            servicioId: turno.servicioId,
+            fechaISO: (turno.fecha as DateTime).toISODate()!,
+            placa: turno.placa,
+            excludeTurnoId: turno.id,
+          })
+          if (respuestaConflicto) return respuestaConflicto
+        }
+        return response.conflict({
+          code: 'DUPLICATE_DAY',
+          message:
+            'Ya existe otro turno activo o finalizado hoy para esta placa y servicio en esta sede.',
+        })
+      }
       console.error('Error al actualizar turno:', error)
       return response.internalServerError({ message: 'Error al actualizar el turno' })
     }
@@ -1256,7 +1411,7 @@ export default class TurnosRtmController {
   /** Cancelar turno */
   public async cancelar({ params, response, request }: HttpContext) {
     try {
-      const { usuarioId } = request.only(['usuarioId'])
+      const { usuarioId, motivoCancelacion } = request.only(['usuarioId', 'motivoCancelacion'])
       if (!usuarioId) return response.unauthorized({ message: 'usuarioId requerido' })
 
       const idNumericoUsuario = Number(usuarioId)
@@ -1266,10 +1421,20 @@ export default class TurnosRtmController {
       if (!usuarioOperador)
         return response.unauthorized({ message: `Usuario ${idNumericoUsuario} no encontrado` })
 
+      const motivo = typeof motivoCancelacion === 'string' ? motivoCancelacion.trim() : ''
+      if (motivo.length < 5) {
+        return response.badRequest({
+          message: 'Debes indicar el motivo de la cancelación (mínimo 5 caracteres).',
+        })
+      }
+
       const turno = await TurnoRtm.find(params.id)
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
 
       turno.estado = 'cancelado'
+      turno.motivoCancelacion = motivo
+      turno.canceladoPorId = idNumericoUsuario
+      turno.canceladoAt = DateTime.local().setZone('America/Bogota')
 
       if (turno.turnoNumero && turno.turnoNumero > 0) {
         turno.turnoNumero = -turno.turnoNumero

@@ -155,6 +155,18 @@ export default class TurnoRtm extends BaseModel {
   @column()
   declare estado: EstadoTurno
 
+  // ── Cancelación (trazabilidad + motivo obligatorio)
+  @column({ columnName: 'motivo_cancelacion' })
+  declare motivoCancelacion: string | null
+
+  @column({ columnName: 'cancelado_por_id' })
+  declare canceladoPorId: number | null
+  @belongsTo(() => Usuario, { foreignKey: 'canceladoPorId' })
+  declare canceladoPor: BelongsTo<typeof Usuario>
+
+  @column.dateTime({ columnName: 'cancelado_at' })
+  declare canceladoAt: DateTime | null
+
   // ── 🆕 Campos de recurrencia y recuperación
   /**
    * 🔄 RECURRENTE: el cliente vino hace MENOS de mesesMinimos (ej. < 24 meses)
