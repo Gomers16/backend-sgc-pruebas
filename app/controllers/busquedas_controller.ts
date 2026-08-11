@@ -180,6 +180,7 @@ export default class BusquedasController {
       .preload('agente')
       .preload('convenio')
       .preload('prospecto')
+      .preload('servicio')
       .orderBy('created_at', 'desc')
       .first()
 
@@ -209,6 +210,8 @@ export default class BusquedasController {
           dateoReciente: {
             id: dateo.id,
             canal: canalSimple(dateo.canal) ?? 'FACHADA',
+            servicioId: dateo.servicioId ?? null,
+            servicioCodigo: (dateo as any).servicio?.codigoServicio ?? null,
             agente: (dateo as any).agente
               ? {
                   id: (dateo as any).agente.id,
