@@ -545,6 +545,7 @@ export default class TurnosRtmController {
         .andWhere('servicio_id', servicio.id)
         .andWhere('fecha', hoyISO)
         .andWhere('placa', placa)
+        .whereNot('estado', 'cancelado')
         .count('* as total')
         .first()
 
@@ -1007,10 +1008,22 @@ export default class TurnosRtmController {
       await turno.load('captacionDateo', (q) => q.preload('agente').preload('convenio'))
 
       return response.created(turno)
-    } catch (error) {
+    } catch (error: any) {
       try {
         await (trx as any).rollback()
       } catch {}
+      if (
+        error?.code === 'ER_DUP_ENTRY' &&
+        String(error?.sqlMessage ?? error?.message ?? '').includes(
+          'uq_turno_activo_por_placa_servicio_dia'
+        )
+      ) {
+        return response.conflict({
+          code: 'DUPLICATE_DAY',
+          message:
+            'Ya existe un turno activo o finalizado hoy para esta placa y servicio en esta sede.',
+        })
+      }
       console.error('Error al crear turno:', error)
       return response.internalServerError({
         message: 'Error al crear el turno',
