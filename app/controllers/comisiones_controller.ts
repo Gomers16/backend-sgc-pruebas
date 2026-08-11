@@ -1201,108 +1201,152 @@ export default class ComisionesController {
     const turnoId = Number(payload.turno_id)
     if (!turnoId) return response.badRequest({ message: 'turno_id es requerido' })
 
-    const turno = await TurnoRtm.query().where('id', turnoId).preload('servicio').first()
-
-    if (!turno) return response.notFound({ message: 'Turno no encontrado' })
-
-    const { default: CaptacionDateo } = await import('#models/captacion_dateo')
-
-    let captacionDateoId: number | null = (turno as any).captacionDateoId ?? null
-
-    if (!captacionDateoId) {
-      // Detectar canal según tipo de asesor
-      let canalNuevo: string = 'ASESOR_COMERCIAL'
-      if (payload.asesor_id) {
-        const asesorNuevo = await AgenteCaptacion.find(Number(payload.asesor_id))
-        const tipoNuevo = String(asesorNuevo?.tipo ?? '').toUpperCase()
-        if (tipoNuevo.includes('CONVENIO')) canalNuevo = 'ASESOR_CONVENIO'
-      }
-
-      const nuevaDateo = await CaptacionDateo.create({
-        canal: canalNuevo as any,
-        agenteId: payload.asesor_id ? Number(payload.asesor_id) : null,
-        convenioId: payload.convenio_id ? Number(payload.convenio_id) : null,
-        placa: turno.placa,
-        origen: 'UI',
-        resultado: 'EN_PROCESO',
-        consumidoTurnoId: turno.id,
-        consumidoAt: DateTime.now(),
-        observacion: payload.dateo_observacion || null,
-        esAvance: Boolean(payload.es_avance),
-      } as any)
-      captacionDateoId = nuevaDateo.id
-      ;(turno as any).captacionDateoId = captacionDateoId
-      await turno.save()
-    } else {
-      // Corregir el canal si quedó mal (FACHADA) por creaciones anteriores
-      let canalCorrecto: string = 'ASESOR_COMERCIAL'
-      if (payload.asesor_id) {
-        const asesorExistente = await AgenteCaptacion.find(Number(payload.asesor_id))
-        const tipoAsesor = String(asesorExistente?.tipo ?? '').toUpperCase()
-        if (tipoAsesor.includes('CONVENIO')) canalCorrecto = 'ASESOR_CONVENIO'
-      }
-
-      const updateData: Record<string, unknown> = { canal: canalCorrecto }
-      if (payload.dateo_observacion !== undefined) {
-        updateData.observacion = payload.dateo_observacion || null
-      }
-
-      await CaptacionDateo.query()
-        .where('id', captacionDateoId)
-        .update(updateData as any)
-    }
-
-    const comisionExistente = await Comision.query()
-      .where('captacion_dateo_id', captacionDateoId!)
-      .where('es_config', false)
-      .whereNot('estado', 'ANULADA')
-      .first()
-
-    if (comisionExistente) {
-      return response.unprocessableEntity({
-        message: `Ya existe una comisión activa (id: ${comisionExistente.id}, estado: ${comisionExistente.estado}) para este turno.`,
-      })
-    }
-
-    if (payload.tipo_cliente) {
-      ;(turno as any).esRecurrente = payload.tipo_cliente === 'RECURRENTE'
-      ;(turno as any).esRecuperacion = payload.tipo_cliente === 'RECUPERACION'
-      await turno.save()
-    }
-
-    const tipoVehiculo = turno.tipoVehiculo?.includes('Motocicleta') ? 'MOTO' : 'VEHICULO'
-    const tipoServicio = ((turno as any).servicio?.codigoServicio ?? 'RTM').toUpperCase()
-    const montoAsesor = Math.max(0, toNumber(payload.monto_asesor ?? 0))
-    const montoConvenio = Math.max(0, toNumber(payload.monto_convenio ?? 0))
-
-    const comision = new Comision()
-    comision.esConfig = false
-    comision.captacionDateoId = captacionDateoId
-    comision.asesorId = payload.asesor_id ? Number(payload.asesor_id) : null
-    comision.convenioId = payload.convenio_id ? Number(payload.convenio_id) : null
-    comision.montoAsesor = String(montoAsesor)
-    comision.montoConvenio = String(montoConvenio)
-    comision.monto = String(montoAsesor)
-    comision.base = String(montoConvenio)
-    comision.porcentaje = '0'
-    comision.tipoServicio = tipoServicio as any
-    ;(comision as any).tipoVehiculo = tipoVehiculo
-    comision.estado = 'PENDIENTE'
-    comision.fechaCalculo = DateTime.now()
-    ;(comision as any).esAvance = Boolean(payload.es_avance)
-
-    if (payload.descuento_id) {
-      const { default: Descuento } = await import('#models/descuento')
-      const desc = await Descuento.query()
-        .where('id', Number(payload.descuento_id))
-        .where('activo', true)
+    const trx = await Database.transaction()
+    try {
+      const turno = await TurnoRtm.query({ client: trx })
+        .where('id', turnoId)
+        .preload('servicio')
         .first()
-      if (!desc) return response.badRequest({ message: 'Descuento no válido o inactivo' })
-      ;(comision as any).descuentoId = Number(payload.descuento_id)
-    }
 
-    await comision.save()
-    return this.show({ params: { id: comision.id }, response } as any)
+      if (!turno) {
+        await trx.rollback()
+        return response.notFound({ message: 'Turno no encontrado' })
+      }
+      turno.useTransaction(trx)
+
+      const { default: CaptacionDateo } = await import('#models/captacion_dateo')
+
+      let captacionDateoId: number | null = (turno as any).captacionDateoId ?? null
+
+      if (!captacionDateoId) {
+        // Detectar canal según tipo de asesor
+        let canalNuevo: string = 'ASESOR_COMERCIAL'
+        if (payload.asesor_id) {
+          const asesorNuevo = await AgenteCaptacion.find(Number(payload.asesor_id), {
+            client: trx,
+          })
+          const tipoNuevo = String(asesorNuevo?.tipo ?? '').toUpperCase()
+          if (tipoNuevo.includes('CONVENIO')) canalNuevo = 'ASESOR_CONVENIO'
+        }
+
+        const nuevaDateo = await CaptacionDateo.create(
+          {
+            canal: canalNuevo as any,
+            agenteId: payload.asesor_id ? Number(payload.asesor_id) : null,
+            convenioId: payload.convenio_id ? Number(payload.convenio_id) : null,
+            placa: turno.placa,
+            origen: 'UI',
+            resultado: 'EN_PROCESO',
+            consumidoTurnoId: turno.id,
+            consumidoAt: DateTime.now(),
+            observacion: payload.dateo_observacion || null,
+            esAvance: Boolean(payload.es_avance),
+          } as any,
+          { client: trx }
+        )
+        captacionDateoId = nuevaDateo.id
+        ;(turno as any).captacionDateoId = captacionDateoId
+        await turno.save()
+      } else {
+        // Corregir el canal si quedó mal (FACHADA) por creaciones anteriores
+        let canalCorrecto: string = 'ASESOR_COMERCIAL'
+        if (payload.asesor_id) {
+          const asesorExistente = await AgenteCaptacion.find(Number(payload.asesor_id), {
+            client: trx,
+          })
+          const tipoAsesor = String(asesorExistente?.tipo ?? '').toUpperCase()
+          if (tipoAsesor.includes('CONVENIO')) canalCorrecto = 'ASESOR_CONVENIO'
+        }
+
+        const updateData: Record<string, unknown> = { canal: canalCorrecto }
+        if (payload.dateo_observacion !== undefined) {
+          updateData.observacion = payload.dateo_observacion || null
+        }
+
+        await CaptacionDateo.query({ client: trx })
+          .where('id', captacionDateoId)
+          .update(updateData as any)
+      }
+
+      // 🆕 Si se asignó un asesor (Comercial o Convenio) Y el turno ya está
+      // finalizado, el dateo queda EXITOSO automáticamente en la misma
+      // operación — evita el paso manual de ir a Dateos después. Mismo
+      // criterio que turnos_cierre_controller.ts. Con turno no finalizado,
+      // el dateo se crea/actualiza igual que arriba, pero no se marca éxito
+      // aquí (queda para cuando el turno cierre, o para marcarlo a mano).
+      if (payload.asesor_id && turno.estado === 'finalizado') {
+        const dateoParaMarcar = await CaptacionDateo.find(captacionDateoId, { client: trx })
+        if (dateoParaMarcar && dateoParaMarcar.resultado !== 'EXITOSO') {
+          dateoParaMarcar.resultado = 'EXITOSO'
+          if (!dateoParaMarcar.consumidoTurnoId) {
+            dateoParaMarcar.consumidoTurnoId = turno.id
+            dateoParaMarcar.consumidoAt = DateTime.now()
+          }
+          await dateoParaMarcar.save()
+        }
+      }
+
+      const comisionExistente = await Comision.query({ client: trx })
+        .where('captacion_dateo_id', captacionDateoId!)
+        .where('es_config', false)
+        .whereNot('estado', 'ANULADA')
+        .first()
+
+      if (comisionExistente) {
+        await trx.rollback()
+        return response.unprocessableEntity({
+          message: `Ya existe una comisión activa (id: ${comisionExistente.id}, estado: ${comisionExistente.estado}) para este turno.`,
+        })
+      }
+
+      if (payload.tipo_cliente) {
+        ;(turno as any).esRecurrente = payload.tipo_cliente === 'RECURRENTE'
+        ;(turno as any).esRecuperacion = payload.tipo_cliente === 'RECUPERACION'
+        await turno.save()
+      }
+
+      const tipoVehiculo = turno.tipoVehiculo?.includes('Motocicleta') ? 'MOTO' : 'VEHICULO'
+      const tipoServicio = ((turno as any).servicio?.codigoServicio ?? 'RTM').toUpperCase()
+      const montoAsesor = Math.max(0, toNumber(payload.monto_asesor ?? 0))
+      const montoConvenio = Math.max(0, toNumber(payload.monto_convenio ?? 0))
+
+      const comision = new Comision()
+      comision.useTransaction(trx)
+      comision.esConfig = false
+      comision.captacionDateoId = captacionDateoId
+      comision.asesorId = payload.asesor_id ? Number(payload.asesor_id) : null
+      comision.convenioId = payload.convenio_id ? Number(payload.convenio_id) : null
+      comision.montoAsesor = String(montoAsesor)
+      comision.montoConvenio = String(montoConvenio)
+      comision.monto = String(montoAsesor)
+      comision.base = String(montoConvenio)
+      comision.porcentaje = '0'
+      comision.tipoServicio = tipoServicio as any
+      ;(comision as any).tipoVehiculo = tipoVehiculo
+      comision.estado = 'PENDIENTE'
+      comision.fechaCalculo = DateTime.now()
+      ;(comision as any).esAvance = Boolean(payload.es_avance)
+
+      if (payload.descuento_id) {
+        const { default: Descuento } = await import('#models/descuento')
+        const desc = await Descuento.query({ client: trx })
+          .where('id', Number(payload.descuento_id))
+          .where('activo', true)
+          .first()
+        if (!desc) {
+          await trx.rollback()
+          return response.badRequest({ message: 'Descuento no válido o inactivo' })
+        }
+        ;(comision as any).descuentoId = Number(payload.descuento_id)
+      }
+
+      await comision.save()
+      await trx.commit()
+      return this.show({ params: { id: comision.id }, response } as any)
+    } catch (error) {
+      await trx.rollback()
+      throw error
+    }
   }
   /* ============================================================
    *          CONFIGURACIONES DE COMISIONES (es_config = true)
