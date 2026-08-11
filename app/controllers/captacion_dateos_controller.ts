@@ -70,6 +70,12 @@ function toSnake(row: any) {
     consumido_at: row.consumidoAt ?? null,
     // 🆕
     descuento_id: row.descuentoId ?? null,
+    // 🆕 Alias snake_case explícitos: item.serialize() por defecto devuelve
+    // camelCase, y estos 3 campos los necesita el frontend para prellenar
+    // el formulario de edición (agente/convenio/servicio editables).
+    agente_id: row.agenteId ?? null,
+    convenio_id: row.convenioId ?? null,
+    servicio_id: row.servicioId ?? null,
     // ========== 🆕 AVANCE ==========
     es_avance: row.esAvance ?? false,
     comprobante_avance_url: row.comprobanteAvanceUrl ?? null,
@@ -363,6 +369,7 @@ export default class CaptacionDateosController {
       .preload('agente')
       .preload('convenio', (qb) => qb.select(['id', 'nombre']))
       .preload('descuento') // 🆕
+      .preload('servicio') // 🆕 para mostrar/editar el servicio del dateo
       .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕
       .first()
 
@@ -853,6 +860,42 @@ export default class CaptacionDateosController {
           item.descuentoId = descuentoIdNum
         }
       }
+    }
+
+    // 🆕 Campos sensibles (agente/convenio/servicio) — editables solo por
+    // SUPER_ADMIN/GERENCIA. La ruta PUT ya está protegida por checkRole a
+    // nivel de router (start/routes.ts), no hace falta repetir el chequeo
+    // de rol aquí.
+    const agenteIdInput = readOptionalNumber(
+      (request.input('agente_id') ?? request.input('agenteId')) as unknown
+    )
+    if (agenteIdInput !== null) {
+      const agenteExiste = await AgenteCaptacion.find(agenteIdInput)
+      if (!agenteExiste) return response.badRequest({ message: 'agente_id no existe' })
+      item.agenteId = agenteIdInput
+    }
+
+    const convenioIdInput = request.input('convenio_id')
+    if (convenioIdInput !== undefined) {
+      if (convenioIdInput === null || convenioIdInput === '') {
+        item.convenioId = null
+      } else {
+        const convenioIdNum = readOptionalNumber(convenioIdInput as unknown)
+        if (convenioIdNum !== null) {
+          const convenioExiste = await Convenio.find(convenioIdNum)
+          if (!convenioExiste) return response.badRequest({ message: 'convenio_id no existe' })
+          item.convenioId = convenioIdNum
+        }
+      }
+    }
+
+    const servicioIdInput = readOptionalNumber(
+      (request.input('servicio_id') ?? request.input('servicioId')) as unknown
+    )
+    if (servicioIdInput !== null) {
+      const servicioExiste = await Servicio.find(servicioIdInput)
+      if (!servicioExiste) return response.badRequest({ message: 'servicio_id no existe' })
+      item.servicioId = servicioIdInput
     }
 
     // ========== 🆕 AVANCE: actualizar es_avance y comprobante ==========
