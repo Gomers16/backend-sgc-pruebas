@@ -13,6 +13,7 @@ import Prospecto from '#models/prospecto'
 import Descuento from '#models/descuento' // 🆕
 import Servicio from '#models/servicio' // 🆕 servicio del dateo
 import Comision from '#models/comision'
+import FacturacionTicket from '#models/facturacion_ticket'
 import { buildReserva, invalidateHorasExclusividadCache } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
@@ -401,8 +402,36 @@ export default class CaptacionDateosController {
       turnoInfo = serializeTurnoInfo(t)
     }
 
+    // 🆕 Documentos de descuentos informativos (ej. INFORMATIVO_POLICIA: carnet,
+    // tarjeta de propiedad, cédula) subidos desde Facturación para tickets
+    // vinculados a este dateo. Vínculo directo por dateo_id, con el mismo
+    // fallback por turno_id que usa getTicketDTOById() en facturacion_tickets_controller.
+    const ticketsInformativos = await FacturacionTicket.query()
+      .where((q) => {
+        q.where('dateo_id', item.id)
+        if (item.consumidoTurnoId) {
+          q.orWhere('turno_id', item.consumidoTurnoId)
+        }
+      })
+      .preload('descuento')
+
+    const documentosInformativos = ticketsInformativos
+      .filter((t) => {
+        const codigo = (t as any).descuento?.codigo as string | undefined
+        const esInformativo = !!codigo && codigo.startsWith('INFORMATIVO')
+        const tieneDocumento = !!(t.docCarnetPath || t.docTarjetaPropiedadPath || t.docCedulaPath)
+        return esInformativo && tieneDocumento
+      })
+      .map((t) => ({
+        ticketId: t.id,
+        descuentoCodigo: (t as any).descuento?.codigo ?? null,
+        docCarnetPath: t.docCarnetPath ?? null,
+        docTarjetaPropiedadPath: t.docTarjetaPropiedadPath ?? null,
+        docCedulaPath: t.docCedulaPath ?? null,
+      }))
+
     const reserva = await buildReserva(item)
-    return { ...toSnake(out), reserva, turnoInfo }
+    return { ...toSnake(out), reserva, turnoInfo, documentosInformativos }
   }
   /**
    * POST /captacion-dateos
