@@ -8,7 +8,7 @@ import Prospecto from '#models/prospecto'
 import Convenio from '#models/convenio'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import TurnoRtm from '#models/turno_rtm'
-import { buildReserva } from '#services/reserva_dateo_service'
+import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
 
 type CanalSimple = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
 
@@ -273,6 +273,16 @@ export default class BusquedasController {
       let asesorAsignado: AgenteInstance | null = null
       const info = await getAsesorActivoDeConvenio(prospecto.convenioId)
       if (info?.asesor) asesorAsignado = info.asesor
+
+      // 🆕 Bug fix: cierra dateo(s) viejos en RE_DATEAR de esta misma
+      // placa/teléfono antes de crear el nuevo automático — mismo criterio
+      // que en captacion_dateos_controller.ts::store(). Sin transacción
+      // propia: esta rama tampoco envuelve la creación en una.
+      await cerrarDateosViejosPorPlacaTelefono(
+        placa ?? null,
+        telefono ?? null,
+        'Reemplazado — se creó un dateo automático nuevo (captación por convenio) para la misma placa/teléfono.'
+      )
 
       // Crear dateo automático (canal BD correcto)
       dateo = await CaptacionDateo.create({

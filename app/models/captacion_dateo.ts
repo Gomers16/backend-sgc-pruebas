@@ -15,7 +15,13 @@ import Servicio from '#models/servicio'
 
 export type Canal = 'FACHADA' | 'ASESOR_COMERCIAL' | 'ASESOR_CONVENIO' | 'TELE' | 'REDES'
 export type Origen = 'UI' | 'WHATSAPP' | 'IMPORT'
-export type ResultadoDateo = 'PENDIENTE' | 'EN_PROCESO' | 'EXITOSO' | 'NO_EXITOSO' | 'RE_DATEAR'
+export type ResultadoDateo =
+  | 'PENDIENTE'
+  | 'EN_PROCESO'
+  | 'EXITOSO'
+  | 'NO_EXITOSO'
+  | 'RE_DATEAR'
+  | 'REEMPLAZADO'
 
 // === Helpers TTL usados por controladores y computados ===
 function ttlSinConsumir(): number {
@@ -162,6 +168,17 @@ export default class CaptacionDateo extends BaseModel {
   @column.dateTime({ columnName: 'aprobado_excepcion_at' })
   declare aprobadoExcepcionAt: DateTime | null
   // ========== FIN EXCEPCIÓN ==========
+
+  // ========== 🆕 RE-DATEAR CON EVIDENCIA ==========
+  @column({ columnName: 'numero_redateos_usados' })
+  declare numeroRedateosUsados: number
+
+  @column.dateTime({ columnName: 'redateado_at' })
+  declare redateadoAt: DateTime | null
+
+  @column({ columnName: 'limite_alcanzado' })
+  declare limiteAlcanzado: boolean
+  // ========== FIN RE-DATEAR ==========
 
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime

@@ -45,7 +45,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -55,7 +57,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -75,7 +79,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -832,10 +838,60 @@ router
         )
         return new CaptacionDateosController().exclusividadConfigUpsert(ctx)
       })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    // 🆕 Configuración de máximo de re-dateos (global + override por asesor)
+    router
+      .get('/captacion-dateos/config/max-redateos', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().maxRedateosConfigGet(ctx)
+      })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
       ])
+
+    router
+      .post('/captacion-dateos/config/max-redateos', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().maxRedateosConfigUpsert(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .get('/captacion-dateos/config/max-redateos/asesores', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().maxRedateosAsesoresIndex(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ])
+
+    router
+      .post('/captacion-dateos/config/max-redateos/asesores', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().maxRedateosAsesoresUpsert(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .delete('/captacion-dateos/config/max-redateos/asesores/:id', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().maxRedateosAsesoresDelete(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
 
     router
       .get('/captacion-dateos/:id', async (ctx) => {
@@ -874,6 +930,37 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'COMERCIAL'] }),
+      ])
+
+    // 🆕 Re-datear con evidencia: SUPER_ADMIN/GERENCIA acceso directo,
+    // COMERCIAL solo si es el dueño del dateo (validado dentro del controller).
+    router
+      .post('/captacion-dateos/:id/redatear', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().redatear(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'COMERCIAL'] }),
+      ])
+
+    // 🆕 Historial de re-dateos de un dateo
+    router
+      .get('/captacion-dateos/:id/redateos', async (ctx) => {
+        const { default: CaptacionDateosController } = await import(
+          '#controllers/captacion_dateos_controller'
+        )
+        return new CaptacionDateosController().redateos(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'],
+        }),
       ])
 
     router
@@ -1676,7 +1763,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ================================ TRÁMITES ========================= */
@@ -1688,7 +1777,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ========================== CHECKLIST DE DOCUMENTOS ================ */
@@ -1702,7 +1793,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1714,7 +1807,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1726,7 +1821,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1736,7 +1833,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1747,7 +1846,9 @@ router
       .where('id', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1757,7 +1858,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1768,7 +1871,9 @@ router
       .where('id', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1779,7 +1884,9 @@ router
       .where('id', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1790,7 +1897,9 @@ router
       .where('turnoNumero', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ========================== MANDATO ================================ */
@@ -1805,7 +1914,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ======================== PAQUETE COMPLETO ========================= */
@@ -1820,7 +1931,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ========================== FORMULARIO RUNT ======================== */
@@ -1835,7 +1948,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1848,7 +1963,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1861,7 +1978,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ============================ LIQUIDACIÓN ========================== */
@@ -1876,7 +1995,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1889,7 +2010,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1902,7 +2025,9 @@ router
       .where('tramiteId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1915,7 +2040,9 @@ router
       .where('tramiteLiquidacionId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1928,7 +2055,9 @@ router
       .where('liquidacionPagoId', /^[0-9]+$/)
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     router
@@ -1940,7 +2069,9 @@ router
       })
       .use([
         middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'] }),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS', 'TRAMITADOR'],
+        }),
       ])
 
     /* ============================ CERTIFICACIONES ====================== */

@@ -14,7 +14,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import FacturacionTicket from '#models/facturacion_ticket'
 import AgenteCaptacion from '#models/agente_captacion'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
-import { buildReserva } from '#services/reserva_dateo_service'
+import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   computeEtapasTurno,
@@ -1016,6 +1016,17 @@ export default class TurnosRtmController {
                   .first()
                 if (asignacion) convenioId = asignacion.convenioId
               }
+
+              // 🆕 Bug fix: cierra dateo(s) viejos en RE_DATEAR de esta misma
+              // placa (típicamente de OTRO asesor, ya que este camino solo
+              // reutiliza dateoExistente cuando coincide agente_id) antes de
+              // crear el nuevo auto-dateo. Reutiliza la trx en curso.
+              await cerrarDateosViejosPorPlacaTelefono(
+                placa,
+                telefono || null,
+                'Reemplazado automáticamente — nuevo dateo detectado para otro asesor.',
+                trx
+              )
 
               const nuevoDateo = await CaptacionDateo.create(
                 {

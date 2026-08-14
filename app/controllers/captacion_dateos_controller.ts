@@ -5,6 +5,7 @@ import db from '@adonisjs/lucid/services/db'
 import app from '@adonisjs/core/services/app'
 import fs from 'node:fs/promises'
 import CaptacionDateo, { Canal, Origen } from '#models/captacion_dateo'
+import CaptacionDateoRedateo from '#models/captacion_dateo_redateo'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import TurnoRtm from '#models/turno_rtm'
@@ -14,7 +15,13 @@ import Descuento from '#models/descuento' // 🆕
 import Servicio from '#models/servicio' // 🆕 servicio del dateo
 import Comision from '#models/comision'
 import FacturacionTicket from '#models/facturacion_ticket'
-import { buildReserva, invalidateHorasExclusividadCache } from '#services/reserva_dateo_service'
+import {
+  buildReserva,
+  cerrarDateosViejosPorPlacaTelefono,
+  getHorasExclusividad,
+  getMaxRedateos,
+  invalidateHorasExclusividadCache,
+} from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -34,7 +41,14 @@ const CANAL_ALIAS_ASESOR = ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'] as const
 const ORIGENES = ['UI', 'WHATSAPP', 'IMPORT'] as const
 type OrigenVal = (typeof ORIGENES)[number]
 
-const RESULTADOS = ['PENDIENTE', 'EN_PROCESO', 'EXITOSO', 'NO_EXITOSO', 'RE_DATEAR'] as const
+const RESULTADOS = [
+  'PENDIENTE',
+  'EN_PROCESO',
+  'EXITOSO',
+  'NO_EXITOSO',
+  'RE_DATEAR',
+  'REEMPLAZADO',
+] as const
 type Resultado = (typeof RESULTADOS)[number]
 
 function normalizePlaca(v?: string | null) {
@@ -88,6 +102,10 @@ function toSnake(row: any) {
       ? `${row.aprobadoExcepcionUsuario.nombres ?? ''} ${row.aprobadoExcepcionUsuario.apellidos ?? ''}`.trim() ||
         null
       : null,
+    // 🆕 Re-datear con evidencia
+    numero_redateos_usados: row.numeroRedateosUsados ?? 0,
+    redateado_at: row.redateadoAt ?? null,
+    limite_alcanzado: row.limiteAlcanzado ?? false,
   }
 }
 
@@ -169,27 +187,168 @@ export default class CaptacionDateosController {
   }
 
   /**
+   * GET /captacion-dateos/config/max-redateos
+   * Límite global de re-dateos (fallback cuando no hay override por asesor).
+   */
+  public async maxRedateosConfigGet({ response }: HttpContext) {
+    const { default: ConfiguracionRedateoGlobal } = await import(
+      '#models/configuracion_redateo_global'
+    )
+
+    let config = await ConfiguracionRedateoGlobal.query().first()
+    if (!config) {
+      config = await ConfiguracionRedateoGlobal.create({ maxRedateos: 3 } as any)
+    }
+
+    return response.ok({ max_redateos: config.maxRedateos })
+  }
+
+  /**
+   * POST /captacion-dateos/config/max-redateos
+   * Actualiza el límite global. body: { max_redateos }
+   */
+  public async maxRedateosConfigUpsert({ request, response }: HttpContext) {
+    const { default: ConfiguracionRedateoGlobal } = await import(
+      '#models/configuracion_redateo_global'
+    )
+
+    const raw = request.input('max_redateos')
+    const maxRedateos = Math.trunc(Number(raw))
+    if (!Number.isFinite(maxRedateos) || maxRedateos <= 0) {
+      return response.badRequest({
+        message: 'max_redateos debe ser un número entero mayor a 0',
+      })
+    }
+
+    let config = await ConfiguracionRedateoGlobal.query().first()
+    if (!config) {
+      config = await ConfiguracionRedateoGlobal.create({ maxRedateos } as any)
+    } else {
+      config.maxRedateos = maxRedateos
+      await config.save()
+    }
+
+    return response.ok({ max_redateos: config.maxRedateos })
+  }
+
+  /**
+   * GET /captacion-dateos/config/max-redateos/asesores?asesorId=
+   * Lista los overrides por asesor (NULL = usa el global).
+   */
+  public async maxRedateosAsesoresIndex({ request, response }: HttpContext) {
+    const { default: ConfiguracionRedateoAsesor } = await import(
+      '#models/configuracion_redateo_asesor'
+    )
+
+    const asesorId = request.input('asesorId') as number | undefined
+    const query = ConfiguracionRedateoAsesor.query().preload('asesor')
+    if (asesorId) query.where('asesor_id', asesorId)
+
+    const configs = await query
+    const data = configs.map((c) => {
+      const asesor = (c as any).$preloaded?.asesor || null
+      return {
+        id: c.id,
+        asesor_id: c.asesorId,
+        asesor_nombre: asesor ? asesor.nombre : null,
+        max_redateos: c.maxRedateos,
+      }
+    })
+
+    return response.ok({ data })
+  }
+
+  /**
+   * POST /captacion-dateos/config/max-redateos/asesores
+   * Crea/actualiza el override de un asesor. body: { asesor_id, max_redateos }
+   * max_redateos null/vacío = elimina el override (vuelve a usar el global).
+   */
+  public async maxRedateosAsesoresUpsert({ request, response }: HttpContext) {
+    const { default: ConfiguracionRedateoAsesor } = await import(
+      '#models/configuracion_redateo_asesor'
+    )
+
+    const payload = request.only(['asesor_id', 'max_redateos'])
+
+    const asesorId = Number(payload.asesor_id)
+    if (!asesorId) return response.badRequest({ message: 'asesor_id es requerido' })
+
+    let maxRedateos: number | null = null
+    if (
+      payload.max_redateos !== null &&
+      payload.max_redateos !== undefined &&
+      payload.max_redateos !== ''
+    ) {
+      maxRedateos = Math.trunc(Number(payload.max_redateos))
+      if (!Number.isFinite(maxRedateos) || maxRedateos <= 0) {
+        return response.badRequest({
+          message: 'max_redateos debe ser un número entero mayor a 0, o null para usar el global',
+        })
+      }
+    }
+
+    let config = await ConfiguracionRedateoAsesor.query().where('asesor_id', asesorId).first()
+
+    if (!config) {
+      config = await ConfiguracionRedateoAsesor.create({ asesorId, maxRedateos } as any)
+    } else {
+      config.maxRedateos = maxRedateos
+      await config.save()
+    }
+
+    return response.ok({
+      id: config.id,
+      asesor_id: config.asesorId,
+      max_redateos: config.maxRedateos,
+    })
+  }
+
+  /**
+   * DELETE /captacion-dateos/config/max-redateos/asesores/:id
+   * Elimina el override — el asesor vuelve a usar el límite global.
+   */
+  public async maxRedateosAsesoresDelete({ params, response }: HttpContext) {
+    const { default: ConfiguracionRedateoAsesor } = await import(
+      '#models/configuracion_redateo_asesor'
+    )
+
+    const config = await ConfiguracionRedateoAsesor.find(params.id)
+    if (!config) return response.notFound({ message: 'Configuración no encontrada' })
+
+    await config.delete()
+    return response.ok({ message: 'Configuración eliminada correctamente' })
+  }
+
+  /**
    * POST /captacion-dateos/verificar-vencidos
    *
    * 🎯 PROPÓSITO:
    * Revisa dateos que cumplen TODAS estas condiciones:
    * 1. Estado PENDIENTE
    * 2. NO liberados (liberado = false)
-   * 3. Llevan más de 72 horas desde su creación
+   * 3. Llevan más de N horas desde su creación (N = horas de exclusividad
+   *    configuradas en ConfiguracionReservaDateo, misma fuente que buildReserva())
    *
    * COMPORTAMIENTO:
    * - Si tiene prospecto_id → desarchiva prospecto + ELIMINA dateo
    * - Si NO tiene prospecto_id → marca como RE_DATEAR + libera
    */
   public async verificarVencidos({ response }: HttpContext) {
-    const minutosVencimiento = 72 * 60
+    const horasExclusividad = await getHorasExclusividad()
+    const minutosVencimiento = horasExclusividad * 60
 
     console.log(`🔍 Buscando dateos vencidos (>= ${minutosVencimiento} minutos)`)
 
     const dateosVencidos = await CaptacionDateo.query()
       .where('resultado', 'PENDIENTE')
       .where('liberado', false)
-      .whereRaw('TIMESTAMPDIFF(MINUTE, created_at, NOW()) >= ?', [minutosVencimiento])
+      // 🆕 Igual que buildReserva(): la base es redateado_at si el dateo ya
+      // fue re-dateado alguna vez, si no created_at — si no se hiciera así,
+      // un dateo recién re-dateado (redateado_at reciente) volvería a
+      // vencer de inmediato por su created_at original, viejo.
+      .whereRaw('TIMESTAMPDIFF(MINUTE, COALESCE(redateado_at, created_at), NOW()) >= ?', [
+        minutosVencimiento,
+      ])
       .preload('prospecto')
 
     console.log(`📊 Se encontraron ${dateosVencidos.length} dateo(s) vencido(s)`)
@@ -244,6 +403,160 @@ export default class CaptacionDateosController {
       fallidos: dateosVencidos.length - procesados,
       total: dateosVencidos.length,
     })
+  }
+
+  /**
+   * POST /captacion-dateos/:id/redatear
+   *
+   * Reactiva un dateo en RE_DATEAR: exige evidencia (imagen ya subida vía
+   * POST /api/uploads/images), valida el límite de re-dateos (override por
+   * asesor → global), y si pasa, vuelve a PENDIENTE con una ventana de
+   * exclusividad nueva (redateado_at, que buildReserva() usa como base en
+   * vez de created_at) + incrementa el contador.
+   *
+   * Permisos: SUPER_ADMIN/GERENCIA (acceso directo) o el usuario cuyo
+   * agente_id coincide con el dueño del dateo. Cualquier otro rol → 403.
+   */
+  public async redatear({ params, request, response, auth }: HttpContext) {
+    const dateoId = Number(params.id)
+
+    const dateoPreview = await CaptacionDateo.find(dateoId)
+    if (!dateoPreview) return response.notFound({ message: 'Dateo no encontrado' })
+
+    await auth.user!.load('rol')
+    const rolNombre = auth.user!.rol?.nombre ?? ''
+    const esPrivilegiado = ['SUPER_ADMIN', 'GERENCIA'].includes(rolNombre)
+
+    if (!esPrivilegiado) {
+      const agentePropio = await AgenteCaptacion.findBy('usuarioId', auth.user!.id)
+      if (!agentePropio || agentePropio.id !== dateoPreview.agenteId) {
+        return response.forbidden({
+          message: 'No tienes permiso para re-datear este dateo.',
+        })
+      }
+    }
+
+    const evidenciaUrl = (request.input('evidencia_url') as string | undefined)?.trim()
+    if (!evidenciaUrl) {
+      return response.badRequest({
+        message:
+          'evidencia_url es obligatoria para re-datear (sube la imagen primero vía POST /api/uploads/images).',
+      })
+    }
+    const observacion = (request.input('observacion') as string | undefined)?.trim() || null
+
+    const trx = await db.transaction()
+    try {
+      const item = await CaptacionDateo.query({ client: trx })
+        .where('id', dateoId)
+        .forUpdate()
+        .first()
+
+      if (!item) {
+        await trx.rollback()
+        return response.notFound({ message: 'Dateo no encontrado' })
+      }
+
+      if (item.resultado !== 'RE_DATEAR') {
+        await trx.rollback()
+        return response.conflict({
+          message: 'Este dateo no está en estado RE_DATEAR, no se puede re-datear.',
+          resultadoActual: item.resultado,
+        })
+      }
+
+      const maxRedateos = await getMaxRedateos(item.agenteId)
+
+      if (item.numeroRedateosUsados >= maxRedateos) {
+        // Auto-sanar el flag por si quedó desactualizado (ej. el admin bajó
+        // el límite global después del último re-dateo exitoso).
+        if (!item.limiteAlcanzado) {
+          item.limiteAlcanzado = true
+          await item.useTransaction(trx).save()
+        }
+        await trx.commit()
+        return response.conflict({
+          message: `Este dateo alcanzó el máximo de ${maxRedateos} re-dateo(s) permitido(s).`,
+          numeroRedateosUsados: item.numeroRedateosUsados,
+          maxRedateos,
+        })
+      }
+
+      const ahora = DateTime.now()
+      const nuevoNumero = item.numeroRedateosUsados + 1
+
+      await CaptacionDateoRedateo.create(
+        {
+          captacionDateoId: item.id,
+          numeroRedateo: nuevoNumero,
+          evidenciaUrl,
+          agenteId: item.agenteId,
+          usuarioId: auth.user!.id,
+          observacion,
+        } as any,
+        { client: trx }
+      )
+
+      item.resultado = 'PENDIENTE'
+      item.liberado = false
+      item.redateadoAt = ahora
+      item.numeroRedateosUsados = nuevoNumero
+      item.limiteAlcanzado = nuevoNumero >= maxRedateos
+
+      await item.useTransaction(trx).save()
+      await trx.commit()
+
+      const reserva = await buildReserva(item)
+      const out = toSnake(item.serialize() as any)
+
+      return response.ok({
+        ...out,
+        bloqueadoHasta: reserva.bloqueaHasta,
+        maxRedateos,
+      })
+    } catch (e) {
+      await trx.rollback()
+      throw e
+    }
+  }
+
+  /**
+   * GET /captacion-dateos/:id/redateos
+   * Historial de re-dateos de un dateo (timeline), más reciente primero.
+   */
+  public async redateos({ params, response }: HttpContext) {
+    const dateoId = Number(params.id)
+
+    const dateo = await CaptacionDateo.find(dateoId)
+    if (!dateo) return response.notFound({ message: 'Dateo no encontrado' })
+
+    const historial = await CaptacionDateoRedateo.query()
+      .where('captacion_dateo_id', dateoId)
+      .preload('usuario')
+      .preload('agente', (q) => q.select(['id', 'nombre', 'tipo']))
+      .orderBy('created_at', 'desc')
+
+    const data = historial.map((h) => {
+      const anyH: any = h
+      const usuario = anyH.$preloaded?.usuario || null
+      const agente = anyH.$preloaded?.agente || null
+      return {
+        id: h.id,
+        captacion_dateo_id: h.captacionDateoId,
+        numero_redateo: h.numeroRedateo,
+        evidencia_url: h.evidenciaUrl,
+        observacion: h.observacion,
+        created_at: h.createdAt,
+        agente_id: h.agenteId,
+        agente_nombre: agente?.nombre ?? null,
+        usuario_id: h.usuarioId,
+        usuario_nombre: usuario
+          ? `${usuario.nombres ?? ''} ${usuario.apellidos ?? ''}`.trim() || null
+          : null,
+      }
+    })
+
+    return response.ok({ data })
   }
 
   /** GET /captacion-dateos */
@@ -778,6 +1091,17 @@ export default class CaptacionDateosController {
     // FIN VALIDACIONES DE TURNO
     // ========================================
 
+    // 🆕 Bug fix: si había dateo(s) viejos en RE_DATEAR para esta misma
+    // placa/teléfono, se cierran como REEMPLAZADO antes de crear el nuevo —
+    // evita que queden huérfanos duplicados en RE_DATEAR. Sin transacción
+    // propia: store() no envuelve la creación en una (create() es una sola
+    // sentencia atómica), así que no hay una trx en curso que reutilizar.
+    await cerrarDateosViejosPorPlacaTelefono(
+      placa,
+      telefono,
+      'Reemplazado — se creó un dateo nuevo para la misma placa/teléfono.'
+    )
+
     const created = await CaptacionDateo.create({
       canal: canal as Canal,
       agenteId,
@@ -999,6 +1323,22 @@ export default class CaptacionDateosController {
     if (resultado !== undefined) {
       if (!(RESULTADOS as readonly string[]).includes(resultado)) {
         return response.badRequest({ message: 'resultado inválido' })
+      }
+      // 🔒 RE_DATEAR solo puede entrar vía el job verificar-vencidos y solo
+      // puede salir vía POST /captacion-dateos/:id/redatear — esas dos
+      // transiciones exigen evidencia/contador/límite que este endpoint
+      // general no valida. El resto de transiciones sigue igual.
+      if (resultado === 'RE_DATEAR') {
+        return response.unprocessableEntity({
+          message:
+            'No se puede establecer resultado=RE_DATEAR manualmente. Ese estado solo lo asigna el job de verificación de vencidos.',
+        })
+      }
+      if (item.resultado === 'RE_DATEAR') {
+        return response.unprocessableEntity({
+          message:
+            'No se puede sacar manualmente un dateo de RE_DATEAR. Usa POST /captacion-dateos/:id/redatear (requiere evidencia).',
+        })
       }
       item.resultado = resultado
     }

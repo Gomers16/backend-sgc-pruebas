@@ -1,5 +1,6 @@
 // app/services/reserva_dateo_service.ts
 import { DateTime } from 'luxon'
+import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 
 /**
  * Ventana de exclusividad de un dateo sobre placa/teléfono, compartida por
@@ -13,10 +14,24 @@ interface DateoComoReserva {
   consumidoTurnoId: number | null
   consumidoAt: DateTime | null
   createdAt: DateTime
+  /** Fecha del último re-dateo confirmado (con evidencia). Si existe, la
+   * ventana de exclusividad se recalcula desde acá en vez de desde createdAt. */
+  redateadoAt?: DateTime | null
 }
 
 function ttlPostConsumoDias(): number {
   return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
+}
+
+// Mismo criterio de normalización que CaptacionDateo.normalize() (beforeSave)
+// y captacion_dateos_controller.ts: sin espacios/guiones y en mayúsculas para
+// placa, solo dígitos para teléfono — así es exactamente como queda guardado
+// en BD, y cerrarDateosViejosPorPlacaTelefono() necesita comparar contra eso.
+function normalizePlaca(v?: string | null): string | null {
+  return v ? v.replace(/[\s-]/g, '').toUpperCase() : (v ?? null)
+}
+function normalizePhone(v?: string | null): string | null {
+  return v ? v.replace(/\D/g, '') : (v ?? null)
 }
 
 // Cache en memoria del proceso: evita una query por cada buildReserva() en
@@ -28,9 +43,7 @@ let cache: { horas: number; expiresAt: number } | null = null
 export async function getHorasExclusividad(): Promise<number> {
   if (cache && cache.expiresAt > Date.now()) return cache.horas
 
-  const { default: ConfiguracionReservaDateo } = await import(
-    '#models/configuracion_reserva_dateo'
-  )
+  const { default: ConfiguracionReservaDateo } = await import('#models/configuracion_reserva_dateo')
   let config = await ConfiguracionReservaDateo.query().first()
   if (!config) {
     config = await ConfiguracionReservaDateo.create({ horasExclusividad: 60 } as any)
@@ -56,9 +69,84 @@ export async function buildReserva(
     return { vigente: now < hasta, bloqueaHasta: hasta.toISO() }
   }
 
-  if (!d.createdAt) return { vigente: false, bloqueaHasta: null }
+  const base = d.redateadoAt ?? d.createdAt
+  if (!base) return { vigente: false, bloqueaHasta: null }
 
   const horasExclusividad = await getHorasExclusividad()
-  const hasta = d.createdAt.plus({ hours: horasExclusividad })
+  const hasta = base.plus({ hours: horasExclusividad })
   return { vigente: now < hasta, bloqueaHasta: hasta.toISO() }
+}
+
+/**
+ * Máximo de veces que un dateo puede re-datearse. Cascada: override por
+ * asesor (si existe y no es null) → config global (find-or-create con
+ * default 3). Sin cache — se llama solo dentro de POST /:id/redatear, bajo
+ * volumen, no es un hot-path como getHorasExclusividad().
+ */
+export async function getMaxRedateos(agenteId?: number | null): Promise<number> {
+  if (agenteId) {
+    const { default: ConfiguracionRedateoAsesor } = await import(
+      '#models/configuracion_redateo_asesor'
+    )
+    const override = await ConfiguracionRedateoAsesor.query().where('asesor_id', agenteId).first()
+    if (override && override.maxRedateos !== null) {
+      return override.maxRedateos
+    }
+  }
+
+  const { default: ConfiguracionRedateoGlobal } = await import(
+    '#models/configuracion_redateo_global'
+  )
+  let config = await ConfiguracionRedateoGlobal.query().first()
+  if (!config) {
+    config = await ConfiguracionRedateoGlobal.create({ maxRedateos: 3 } as any)
+  }
+  return config.maxRedateos
+}
+
+/**
+ * Cierra (RE_DATEAR → REEMPLAZADO) todos los dateos vencidos-y-no-consumidos
+ * de una placa/teléfono, justo antes de crear un dateo nuevo para esa misma
+ * placa/teléfono. Reutiliza la columna `observacion` ya existente en
+ * captacion_dateos (mismo patrón que ya usa verificarVencidos() para su nota
+ * "[AUTO] Vencido por inactividad...") — no agrega columna nueva.
+ *
+ * Normaliza placa/teléfono internamente (mismo criterio que el modelo y los
+ * controllers) para no depender de que el caller ya los mande normalizados.
+ *
+ * OJO: NO filtra por `liberado` — los dateos en RE_DATEAR ya tienen
+ * liberado=true, filtrar por liberado=false los dejaría fuera por completo.
+ */
+export async function cerrarDateosViejosPorPlacaTelefono(
+  placaRaw: string | null,
+  telefonoRaw: string | null,
+  motivo: string,
+  trx?: TransactionClientContract
+): Promise<number> {
+  const placa = normalizePlaca(placaRaw)
+  const telefono = normalizePhone(telefonoRaw)
+  if (!placa && !telefono) return 0
+
+  const { default: CaptacionDateo } = await import('#models/captacion_dateo')
+
+  const viejos = await CaptacionDateo.query({ client: trx })
+    .where('resultado', 'RE_DATEAR')
+    .where((qb) => {
+      if (placa) qb.orWhere('placa', placa)
+      if (telefono) qb.orWhere('telefono', telefono)
+    })
+
+  const nota = `[AUTO] ${motivo}`
+
+  for (const viejo of viejos) {
+    viejo.resultado = 'REEMPLAZADO'
+    viejo.observacion = viejo.observacion ? `${viejo.observacion}\n${nota}` : nota
+    if (trx) {
+      await viejo.useTransaction(trx).save()
+    } else {
+      await viejo.save()
+    }
+  }
+
+  return viejos.length
 }
