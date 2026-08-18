@@ -615,8 +615,14 @@ export default class CaptacionDateosController {
     if (agenteId !== null) q.andWhere('agente_id', agenteId)
     if (convenioId !== null) q.andWhere('convenio_id', convenioId)
 
-    if (resultado && (RESULTADOS as readonly string[]).includes(resultado))
+    if (resultado && (RESULTADOS as readonly string[]).includes(resultado)) {
       q.andWhere('resultado', resultado)
+    } else {
+      // REEMPLAZADO = historia muerta (dateo viejo sustituido por uno nuevo en
+      // la misma placa/teléfono): oculto por defecto salvo que se filtre por
+      // ese estado explícitamente.
+      q.andWhereNot('resultado', 'REEMPLAZADO')
+    }
     if (consumido === 'true') q.andWhereNotNull('consumido_turno_id')
     if (consumido === 'false') q.andWhereNull('consumido_turno_id')
     if (desde) q.andWhere('created_at', '>=', `${desde} 00:00:00`)
