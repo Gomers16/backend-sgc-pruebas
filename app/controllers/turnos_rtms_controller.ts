@@ -14,7 +14,11 @@ import CaptacionDateo from '#models/captacion_dateo'
 import FacturacionTicket from '#models/facturacion_ticket'
 import AgenteCaptacion from '#models/agente_captacion'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
-import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
+import {
+  buildReserva,
+  cerrarDateosViejosPorPlacaTelefono,
+  dateoAplicaAServicio,
+} from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   computeEtapasTurno,
@@ -794,9 +798,21 @@ export default class TurnosRtmController {
         agenteCaptacionId = raw.agenteCaptacionId ? Number(raw.agenteCaptacionId) || null : null
       }
 
+      // 🆕 Un dateo solo se vincula/hereda/consume si es del MISMO servicio
+      // que se está creando (dateoAplicaAServicio, reserva_dateo_service.ts).
+      // El frontend hoy solo muestra una alerta visual si el servicio no
+      // coincide, no bloquea — el backend es la fuente de verdad real.
       let dateo: CaptacionDateo | null = null
       if (raw.dateoId) {
-        dateo = await CaptacionDateo.query({ client: trx }).where('id', Number(raw.dateoId)).first()
+        const dateoExplicito = await CaptacionDateo.query({ client: trx })
+          .where('id', Number(raw.dateoId))
+          .first()
+        // No confiar ciegamente en el dateoId que manda el frontend: si su
+        // servicio no coincide, se trata como si no se hubiera mandado nada
+        // y se cae al fallback por placa/teléfono+servicio de abajo.
+        if (dateoExplicito && dateoAplicaAServicio(dateoExplicito, servicio.id)) {
+          dateo = dateoExplicito
+        }
       }
       if (!dateo) {
         dateo = await CaptacionDateo.query({ client: trx })
@@ -804,6 +820,7 @@ export default class TurnosRtmController {
             qb.where('placa', placa)
             if (telefono) qb.orWhere('telefono', telefono)
           })
+          .andWhere('servicio_id', servicio.id)
           .orderBy('created_at', 'desc')
           .first()
       }
@@ -1535,7 +1552,16 @@ export default class TurnosRtmController {
           const esRTM = codigoServicio.toUpperCase().includes('RTM')
           if (!esRTM) {
             const dateo = await CaptacionDateo.find((turno as any).captacionDateoId)
-            if (dateo && dateo.resultado !== 'EXITOSO') {
+            // 🆕 Defensa adicional: si por alguna vía captacionDateoId quedó
+            // seteado con un dateo de otro servicio, no marcar EXITOSO. La
+            // fuente principal de la validación es turnos_rtms_controller.ts
+            // ::store() (ya no vincula si el servicio no coincide), esto es
+            // un segundo seguro.
+            if (
+              dateo &&
+              dateo.resultado !== 'EXITOSO' &&
+              dateoAplicaAServicio(dateo, turno.servicioId)
+            ) {
               dateo.resultado = 'EXITOSO'
               await dateo.save()
               console.log(

@@ -18,6 +18,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 import {
   buildReserva,
   cerrarDateosViejosPorPlacaTelefono,
+  dateoAplicaAServicio,
   getHorasExclusividad,
   getMaxRedateos,
   invalidateHorasExclusividadCache,
@@ -854,6 +855,14 @@ export default class CaptacionDateosController {
         return response.badRequest({ message: 'servicio_id no existe' })
       }
     }
+    // 🆕 Mismo default que codigoServicioDateo más abajo ('RTM' si no viene
+    // servicio_id explícito) pero resuelto a id — lo necesita el filtro de
+    // exclusividad de abajo, que compara contra captacion_dateos.servicio_id.
+    let servicioDateoIdEfectivo: number | null = servicioDateo?.id ?? null
+    if (servicioDateoIdEfectivo === null) {
+      const servicioRtmDefault = await Servicio.query().where('codigo_servicio', 'RTM').first()
+      servicioDateoIdEfectivo = servicioRtmDefault?.id ?? null
+    }
     // ========== 🆕 AVANCE ==========
     /**
      * es_avance:
@@ -970,7 +979,12 @@ export default class CaptacionDateosController {
       }
     }
 
-    const ultimo = await CaptacionDateo.query()
+    // 🆕 La exclusividad es por placa/teléfono + SERVICIO, no solo por placa —
+    // dos asesores SÍ pueden datear la misma placa a la vez si son servicios
+    // distintos (ej. uno RTM, otro SOAT), no compiten entre sí. Mismo
+    // criterio que VALIDACIÓN 1 (turno activo hoy) unas líneas abajo, que ya
+    // solo bloquea si es el mismo servicio.
+    const ultimoQuery = CaptacionDateo.query()
       .andWhere((q) => {
         q.orWhere('placa', placa!)
         if (telefono) q.orWhere('telefono', telefono)
@@ -978,7 +992,12 @@ export default class CaptacionDateosController {
       .where('liberado', false)
       .preload('agente', (q) => q.select(['id', 'nombre', 'tipo']))
       .orderBy('created_at', 'desc')
-      .first()
+
+    if (servicioDateoIdEfectivo !== null) {
+      ultimoQuery.andWhere('servicio_id', servicioDateoIdEfectivo)
+    }
+
+    const ultimo = await ultimoQuery.first()
 
     if (ultimo) {
       const reserva = await buildReserva(ultimo)
@@ -1295,13 +1314,25 @@ export default class CaptacionDateosController {
       item.placa = normalizePlaca(placa)
 
       const hace7Dias = DateTime.now().setZone('America/Bogota').minus({ days: 7 }).toISODate()!
+      // 🆕 Antes solo filtraba por placa+fecha — podía traer CUALQUIER turno
+      // reciente de esa placa, ni siquiera el vinculado a este dateo. Ahora
+      // exige explícitamente que el turno sea el vinculado a ESTE dateo
+      // (captacion_dateo_id) — el filtro en la query ya lo garantiza, pero
+      // se deja también la comprobación explícita abajo (con
+      // dateoAplicaAServicio) por claridad y para detectar datos
+      // inconsistentes en el futuro.
       const turnoVinculado = await TurnoRtm.query()
         .where('placa', item.placa!)
+        .where('captacion_dateo_id', item.id)
         .where('fecha', '>=', hace7Dias)
         .orderBy('fecha', 'desc')
         .first()
 
-      if (turnoVinculado) {
+      if (
+        turnoVinculado &&
+        turnoVinculado.captacionDateoId === item.id &&
+        dateoAplicaAServicio(item, turnoVinculado.servicioId)
+      ) {
         item.consumidoTurnoId = turnoVinculado.id
         item.consumidoAt = DateTime.now()
         if (turnoVinculado.estado === 'finalizado') {

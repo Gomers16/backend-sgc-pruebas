@@ -78,6 +78,31 @@ export async function buildReserva(
 }
 
 /**
+ * ¿Este dateo aplica al servicio del turno que se está creando/cerrando?
+ *
+ * Regla de negocio (confirmada 2026-08-19): un dateo solo se hereda/consume/
+ * marca EXITOSO cuando el turno es del MISMO servicio que se dateó —
+ * comparación estricta `dateo.servicioId === servicioId`. Un dateo con
+ * `servicioId` en `null` (legacy o creado sin servicio explícito, la columna
+ * es nullable) NO aplica a ningún servicio bajo esta regla: al no haber
+ * dato con qué comparar, se trata como no-match en vez de asumir que aplica
+ * a cualquiera (más seguro para no marcar EXITOSO/pagar comisión de más).
+ *
+ * Única fuente de verdad para esta regla — reutilizar en cualquier punto que
+ * vincule/consuma/marque EXITOSO un dateo (turnos_rtms_controller.ts,
+ * turnos_cierre_controller.ts, captacion_dateos_controller.ts,
+ * comisiones_controller.ts), igual que buildReserva() para vigencia.
+ */
+export function dateoAplicaAServicio(
+  dateo: { servicioId?: number | null } | null | undefined,
+  servicioId: number | null | undefined
+): boolean {
+  if (!dateo) return false
+  if (!servicioId) return false
+  return dateo.servicioId === servicioId
+}
+
+/**
  * Máximo de veces que un dateo puede re-datearse. Cascada: override por
  * asesor (si existe y no es null) → config global (find-or-create con
  * default 3). Sin cache — se llama solo dentro de POST /:id/redatear, bajo

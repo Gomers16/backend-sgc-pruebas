@@ -9,6 +9,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Descuento from '#models/descuento'
 import Liquidacion, { type LiquidacionTipoOrigen, type LiquidacionTipoPeriodo } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
+import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -1235,6 +1236,11 @@ export default class ComisionesController {
             agenteId: payload.asesor_id ? Number(payload.asesor_id) : null,
             convenioId: payload.convenio_id ? Number(payload.convenio_id) : null,
             placa: turno.placa,
+            // 🆕 Se crea ya vinculado a este turno específico (consumidoTurnoId
+            // abajo) — no hay riesgo de mismatch de servicio, pero se persiste
+            // servicioId igual para que dateoAplicaAServicio() lo valide
+            // correctamente más abajo y en cualquier lectura futura.
+            servicioId: turno.servicioId,
             origen: 'UI',
             resultado: 'EN_PROCESO',
             consumidoTurnoId: turno.id,
@@ -1276,7 +1282,16 @@ export default class ComisionesController {
       // aquí (queda para cuando el turno cierre, o para marcarlo a mano).
       if (payload.asesor_id && turno.estado === 'finalizado') {
         const dateoParaMarcar = await CaptacionDateo.find(captacionDateoId, { client: trx })
-        if (dateoParaMarcar && dateoParaMarcar.resultado !== 'EXITOSO') {
+        // 🆕 Defensa adicional: no marcar EXITOSO un dateo de otro servicio.
+        // El caso de creación arriba ya persiste servicioId=turno.servicioId
+        // (siempre pasa), el caso de reutilizar un captacionDateoId ya
+        // existente en el turno es el que puede quedar desalineado si viene
+        // de datos previos a este fix.
+        if (
+          dateoParaMarcar &&
+          dateoParaMarcar.resultado !== 'EXITOSO' &&
+          dateoAplicaAServicio(dateoParaMarcar, turno.servicioId)
+        ) {
           dateoParaMarcar.resultado = 'EXITOSO'
           if (!dateoParaMarcar.consumidoTurnoId) {
             dateoParaMarcar.consumidoTurnoId = turno.id

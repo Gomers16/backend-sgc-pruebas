@@ -7,6 +7,7 @@ import TurnoRtm from '#models/turno_rtm'
 import CaptacionDateo from '#models/captacion_dateo'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
+import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 
 type EstadoComision = 'PENDIENTE' | 'APROBADA' | 'PAGADA' | 'ANULADA'
 
@@ -67,7 +68,11 @@ export default class TurnosCierreController {
 
       if (turno.captacionDateoId) {
         const dateo = await CaptacionDateo.find(turno.captacionDateoId, { client: trx })
-        if (dateo) {
+        // 🆕 Defensa adicional: no marcar EXITOSO/consumir un dateo de otro
+        // servicio. La fuente principal es turnos_rtms_controller.ts::store()
+        // (ya no vincula captacionDateoId si el servicio no coincide), esto
+        // es un segundo seguro por si algo más setea captacionDateoId.
+        if (dateo && dateoAplicaAServicio(dateo, turno.servicioId)) {
           // Marca éxito solo si no está ya exitoso
           if ((dateo as any).resultado !== 'EXITOSO') {
             ;(dateo as any).resultado = 'EXITOSO'
