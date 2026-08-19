@@ -234,6 +234,11 @@ test.group('E2E manual - fix mismatch servicio dateo<->turno', (group) => {
 
     assert.equal(res2.status(), 201, 'PRUEBA 3 (control positivo) FALLO: SOAT fue bloqueado por el RTM existente')
     assert.equal(res3.status(), 409, 'PRUEBA 3 (control negativo) FALLO: el segundo RTM NO fue bloqueado (se rompio el bloqueo legitimo)')
+    assert.equal(
+      res3.body().dateoId,
+      dateo1Id,
+      'PRUEBA 3 (control negativo) FALLO: el 409 no apunta al dateo RTM #1 (bloqueo por razon distinta a la esperada)'
+    )
     assert.equal(dateosFinal.length, 2, 'Deberian existir exactamente 2 dateos para la placa (RTM + SOAT), el tercer intento no debio crear nada')
   })
 })
