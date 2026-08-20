@@ -284,12 +284,12 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       if (tieneInformativo) {
         return {
           base: 0,
-          monto: 0,
-          montoAsesor: 0,
+          monto: recValues.valorRecurrente,
+          montoAsesor: recValues.valorRecurrente,
           montoConvenio: 0,
           valorNuevoDirectoFinal: 0,
           descuentoMontoAplicado: null,
-          reglaAplicada: `Caso 1 · Sin convenio · Nuevo + informativo (${codigoDescuento}) → $0`,
+          reglaAplicada: `Caso 1 · Sin convenio · Nuevo + informativo (${codigoDescuento}) → valor_dateo_recurrencia`,
         }
       }
       return {
@@ -378,12 +378,12 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
     if (esDescuentoEspecialCaja) {
       return {
         base: cfgValues.valorIncentivoCaso3,
-        monto: recValues.valorRecurrente,
-        montoAsesor: recValues.valorRecurrente,
+        monto: cfgValues.valorDateoNuevo,
+        montoAsesor: cfgValues.valorDateoNuevo,
         montoConvenio: 0,
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
-        reglaAplicada: `Caso 3 · Comercial+convenio · Nuevo + ${codigoDescuento} en caja → comercial dateo_recurrente | convenio $0`,
+        reglaAplicada: `Caso 3 · Comercial+convenio · Nuevo + ${codigoDescuento} en caja → comercial dateo_nuevo | convenio $0`,
       }
     }
     if (esAvance) {
