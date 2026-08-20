@@ -518,6 +518,7 @@ export default class FacturacionTicketsController {
       'autorizado_por_id',
       'descuento_monto_aplicado',
       'total_sin_descuento',
+      'descuento_observacion',
     ]) as Record<string, unknown>
 
     const esSOAT = isSOAT(ticket.servicioCodigo, ticket.servicioNombre)
@@ -606,6 +607,9 @@ export default class FacturacionTicketsController {
           ? toNumberOrZero(up.descuento_monto_aplicado)
           : null
     }
+    // 🆕 Nota de la cajera sobre por qué aplicó este descuento (opcional)
+    if ('descuento_observacion' in up)
+      ticket.descuentoObservacion = nullIfEmpty(up.descuento_observacion)
 
     // Recalcular total con descuento aplicado
     // Guardar total original y calcular total con descuento
@@ -1155,6 +1159,8 @@ export default class FacturacionTicketsController {
         c.asesorSecundarioId = null
         c.montoConvenio = '0'
         c.esAvance = false // Sin convenio: avance no aplica
+        c.descuentoCodigoAplicado = codigoDescuentoActivo
+        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
         const resultadoCaso1 = calcularComision({
@@ -1198,6 +1204,8 @@ export default class FacturacionTicketsController {
         c.valorNuevoDirecto = '0'
         c.montoConvenio = '0' // Siempre $0 en CASO 2
         c.esAvance = esAvance
+        c.descuentoCodigoAplicado = codigoDescuentoActivo
+        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
         const resultadoCaso2 = calcularComision({
@@ -1217,7 +1225,9 @@ export default class FacturacionTicketsController {
         if (resultadoCaso2.descuentoMontoAplicado !== null) {
           c.descuentoMontoAplicado = resultadoCaso2.descuentoMontoAplicado
         }
-        console.log(`✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`)
+        console.log(
+          `✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`
+        )
 
         await c.useTransaction(trx).save()
 
@@ -1243,6 +1253,8 @@ export default class FacturacionTicketsController {
         c.asesorSecundarioId = asesorConvenioIdReal
         c.valorNuevoDirecto = '0'
         c.esAvance = esAvance
+        c.descuentoCodigoAplicado = codigoDescuentoActivo
+        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
         if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
 
         const resultadoCaso3 = calcularComision({
@@ -1272,6 +1284,20 @@ export default class FacturacionTicketsController {
       if (dateo.resultado !== 'EXITOSO') {
         dateo.resultado = 'EXITOSO'
         await dateo.useTransaction(trx).save()
+      }
+
+      // 🆕 Snapshot de "lo que realmente pasó en caja" en el dateo — solo si
+      // el propio ticket trae un descuento_id (acción real de la cajera en
+      // ESTE ticket). Nunca toca dateo.descuentoId (el pre-marcado original
+      // del asesor) — son campos separados a propósito para poder comparar.
+      if (ticket.descuentoId) {
+        await CaptacionDateo.query({ client: trx })
+          .where('id', dateo.id)
+          .update({
+            descuento_caja_id: ticket.descuentoId,
+            descuento_caja_observacion: ticket.descuentoObservacion ?? null,
+            descuento_caja_aplicado_at: now.toSQL({ includeOffset: false }),
+          })
       }
 
       await trx.commit()

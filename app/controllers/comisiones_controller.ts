@@ -7,7 +7,10 @@ import Comision from '#models/comision'
 import AgenteCaptacion from '#models/agente_captacion'
 import TurnoRtm from '#models/turno_rtm'
 import Descuento from '#models/descuento'
-import Liquidacion, { type LiquidacionTipoOrigen, type LiquidacionTipoPeriodo } from '#models/liquidacion'
+import Liquidacion, {
+  type LiquidacionTipoOrigen,
+  type LiquidacionTipoPeriodo,
+} from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
@@ -946,9 +949,7 @@ export default class ComisionesController {
     }
 
     const idsNumericos = [
-      ...new Set(
-        (ids as unknown[]).map((id) => Number(id)).filter((id) => Number.isFinite(id))
-      ),
+      ...new Set((ids as unknown[]).map((id) => Number(id)).filter((id) => Number.isFinite(id))),
     ]
     if (idsNumericos.length === 0) {
       return response.badRequest({ message: 'ids no contiene valores numéricos válidos' })
@@ -1040,11 +1041,11 @@ export default class ComisionesController {
           const fechaInicio =
             fechaInicioModal && fechaInicioModal.isValid
               ? fechaInicioModal
-              : DateTime.min(...fechasCalculo) ?? ahora
+              : (DateTime.min(...fechasCalculo) ?? ahora)
           const fechaFin =
             fechaFinModal && fechaFinModal.isValid
               ? fechaFinModal
-              : DateTime.max(...fechasCalculo) ?? ahora
+              : (DateTime.max(...fechasCalculo) ?? ahora)
 
           const liquidacion = new Liquidacion()
           liquidacion.useTransaction(trx)
@@ -1155,12 +1156,20 @@ export default class ComisionesController {
           "SUM(CASE WHEN c.estado IN ('PENDIENTE','APROBADA') THEN c.monto ELSE 0 END) as total_por_pagar"
         )
       )
-      .select(Database.raw("SUM(CASE WHEN c.estado = 'PENDIENTE' THEN c.monto ELSE 0 END) as total_pendiente"))
-      .select(Database.raw("SUM(CASE WHEN c.estado = 'APROBADA' THEN c.monto ELSE 0 END) as total_aprobada"))
+      .select(
+        Database.raw(
+          "SUM(CASE WHEN c.estado = 'PENDIENTE' THEN c.monto ELSE 0 END) as total_pendiente"
+        )
+      )
+      .select(
+        Database.raw(
+          "SUM(CASE WHEN c.estado = 'APROBADA' THEN c.monto ELSE 0 END) as total_aprobada"
+        )
+      )
       .groupBy('a.id', 'a.nombre', 'a.tipo', 'conv.id', 'conv.nombre')
       .havingRaw(
         estado
-          ? "COUNT(CASE WHEN c.estado = ? THEN 1 END) > 0"
+          ? 'COUNT(CASE WHEN c.estado = ? THEN 1 END) > 0'
           : "COUNT(CASE WHEN c.estado = 'PENDIENTE' THEN 1 END) + COUNT(CASE WHEN c.estado = 'APROBADA' THEN 1 END) > 0",
         estado ? [estado] : []
       )
@@ -1197,6 +1206,7 @@ export default class ComisionesController {
       'descuento_id',
       'dateo_observacion',
       'es_avance',
+      'descuento_observacion',
     ])
 
     const turnoId = Number(payload.turno_id)
@@ -1342,6 +1352,10 @@ export default class ComisionesController {
       comision.fechaCalculo = DateTime.now()
       ;(comision as any).esAvance = Boolean(payload.es_avance)
 
+      const descuentoObservacion = payload.descuento_observacion
+        ? String(payload.descuento_observacion).trim()
+        : null
+
       if (payload.descuento_id) {
         const { default: Descuento } = await import('#models/descuento')
         const desc = await Descuento.query({ client: trx })
@@ -1353,6 +1367,21 @@ export default class ComisionesController {
           return response.badRequest({ message: 'Descuento no válido o inactivo' })
         }
         ;(comision as any).descuentoId = Number(payload.descuento_id)
+        // 🆕 Sincronización descuento real en caja (mismos campos que
+        // applyCommissionHook()): código en la comisión + snapshot en el
+        // dateo, sin tocar dateo.descuentoId (el pre-marcado del asesor).
+        comision.descuentoCodigoAplicado = desc.codigo
+        comision.descuentoObservacionCaja = descuentoObservacion
+
+        await CaptacionDateo.query({ client: trx })
+          .where('id', captacionDateoId!)
+          .update({
+            descuento_caja_id: Number(payload.descuento_id),
+            descuento_caja_observacion: descuentoObservacion,
+            descuento_caja_aplicado_at: DateTime.now().toSQL({ includeOffset: false }),
+          })
+      } else if (descuentoObservacion) {
+        comision.descuentoObservacionCaja = descuentoObservacion
       }
 
       await comision.save()
@@ -1483,7 +1512,8 @@ export default class ComisionesController {
         const tipoVehiculo = String(rawTipo).toUpperCase()
         if (!['MOTO', 'VEHICULO'].includes(tipoVehiculo))
           return response.badRequest({
-            message: 'tipo_vehiculo inválido (MOTO o VEHICULO o vacío para Comercial/sin distinción)',
+            message:
+              'tipo_vehiculo inválido (MOTO o VEHICULO o vacío para Comercial/sin distinción)',
           })
         ;(comision as any).tipoVehiculo = tipoVehiculo
       }
@@ -1568,19 +1598,25 @@ export default class ComisionesController {
     if (codigoDescuento) {
       const origenRaw = String(payload.origenDescuento || '').toUpperCase()
       if (!['DATEO', 'CAJA'].includes(origenRaw))
-        return response.badRequest({ message: 'origenDescuento debe ser DATEO o CAJA cuando hay descuento' })
+        return response.badRequest({
+          message: 'origenDescuento debe ser DATEO o CAJA cuando hay descuento',
+        })
       origenDescuento = origenRaw as 'DATEO' | 'CAJA'
       const descuentoExiste = await Descuento.query()
         .where('codigo', codigoDescuento)
         .where('activo', true)
         .first()
       if (!descuentoExiste)
-        return response.badRequest({ message: `Descuento "${codigoDescuento}" no existe o no está activo` })
+        return response.badRequest({
+          message: `Descuento "${codigoDescuento}" no existe o no está activo`,
+        })
     }
 
     const asesor = await AgenteCaptacion.find(asesorId)
     if (!asesor) return response.notFound({ message: 'Asesor no encontrado' })
-    const asesorEsConvenio = String(asesor.tipo || '').toUpperCase().includes('CONVENIO')
+    const asesorEsConvenio = String(asesor.tipo || '')
+      .toUpperCase()
+      .includes('CONVENIO')
     if (actor === 'COMERCIAL' && asesorEsConvenio)
       return response.badRequest({ message: 'El asesor elegido es Convenio, no Comercial' })
     if (actor === 'CONVENIO' && !asesorEsConvenio)

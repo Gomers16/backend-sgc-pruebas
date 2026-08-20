@@ -139,6 +139,23 @@ export default class CaptacionDateo extends BaseModel {
   @column({ columnName: 'descuento_id' })
   declare descuentoId: number | null
 
+  // ========== 🆕 SINCRONIZACIÓN DESCUENTO REAL EN CAJA ==========
+  /**
+   * Snapshot de "lo que realmente pasó en caja" — poblado por
+   * applyCommissionHook()/comisiones_controller::store(). NUNCA sobrescribe
+   * descuentoId (el pre-marcado original del asesor); son campos separados
+   * a propósito para poder comparar ambos.
+   */
+  @column({ columnName: 'descuento_caja_id' })
+  declare descuentoCajaId: number | null
+
+  @column({ columnName: 'descuento_caja_observacion' })
+  declare descuentoCajaObservacion: string | null
+
+  @column.dateTime({ columnName: 'descuento_caja_aplicado_at' })
+  declare descuentoCajaAplicadoAt: DateTime | null
+  // ========== FIN SINCRONIZACIÓN DESCUENTO EN CAJA ==========
+
   // ========== 🆕 AVANCE ==========
   /**
    * es_avance:

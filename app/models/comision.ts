@@ -191,6 +191,21 @@ export default class Comision extends BaseModel {
   declare descuentoMontoAplicado: number | null
   // ========== FIN AVANCE ==========
 
+  // ========== 🆕 SINCRONIZACIÓN DESCUENTO REAL EN CAJA ==========
+  /**
+   * Código real del descuento aplicado en caja (ej. 'AVANCE_PROPIETARIO'),
+   * copiado desde facturacion_tickets.descuento_id en applyCommissionHook()
+   * o desde el payload de POST /comisiones (creación manual). Snapshot —
+   * no se recalcula si el ticket cambia después.
+   */
+  @column({ columnName: 'descuento_codigo_aplicado' })
+  declare descuentoCodigoAplicado: string | null
+
+  /** Nota libre de la cajera, copiada desde facturacion_tickets.descuento_observacion. */
+  @column({ columnName: 'descuento_observacion_caja' })
+  declare descuentoObservacionCaja: string | null
+  // ========== FIN SINCRONIZACIÓN DESCUENTO EN CAJA ==========
+
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime
 

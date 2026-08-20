@@ -168,6 +168,15 @@ export default class FacturacionTicket extends BaseModel {
   @column({ columnName: 'total_sin_descuento' })
   declare totalSinDescuento: number | null
 
+  /**
+   * 🆕 Nota libre de la cajera sobre por qué se aplicó este descuento —
+   * dedicada al evento del descuento, distinta de `observaciones` (genérica
+   * del ticket). Se copia hacia comisiones/captacion_dateos en
+   * applyCommissionHook().
+   */
+  @column({ columnName: 'descuento_observacion' })
+  declare descuentoObservacion: string | null
+
   /* ============== 🆕 Documentos verificación INFORMATIVO_POLICIA ============== */
   // Las 3 fotos son obligatorias para poder aplicar el descuento policial/militar.
   // Se valida en el controller que existan antes de confirmar el descuento.
