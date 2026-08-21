@@ -251,6 +251,11 @@ function mapComisionToDto(c: Comision) {
     descuento_autorizado_por: descuentoAutorizadoPor,
     // monto del avance/descuento aplicado en caja
     descuento_monto_aplicado: descuentoMontoAplicado,
+    // 🆕 Snapshot del descuento real aplicado en caja (independiente de la
+    // relación ticket/dateo → descuento; poblado por applyCommissionHook()
+    // o por POST /comisiones manual).
+    descuento_codigo_aplicado: c.descuentoCodigoAplicado ?? null,
+    descuento_observacion_caja: c.descuentoObservacionCaja ?? null,
     dateo_observacion: dateo?.observacion ?? null,
   }
 }

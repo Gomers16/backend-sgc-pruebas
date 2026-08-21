@@ -27,6 +27,7 @@ const PLACAS = {
   caso2: 'TST992',
   caso3: 'TST993',
   storeManual: 'TST994',
+  listados: 'TST995',
 }
 
 test.group('Sincronización descuento real en caja (dateo <-> comisión)', (group) => {
@@ -64,25 +65,28 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
 
   group.teardown(async () => {
     await Database.rawQuery(
-      'DELETE FROM comisiones WHERE captacion_dateo_id IN (SELECT id FROM captacion_dateos WHERE placa IN (?, ?, ?, ?))',
-      [PLACAS.caso1, PLACAS.caso2, PLACAS.caso3, PLACAS.storeManual]
+      'DELETE FROM comisiones WHERE captacion_dateo_id IN (SELECT id FROM captacion_dateos WHERE placa IN (?, ?, ?, ?, ?))',
+      [PLACAS.caso1, PLACAS.caso2, PLACAS.caso3, PLACAS.storeManual, PLACAS.listados]
     )
-    await Database.rawQuery('DELETE FROM facturacion_tickets WHERE placa IN (?, ?, ?)', [
+    await Database.rawQuery('DELETE FROM facturacion_tickets WHERE placa IN (?, ?, ?, ?)', [
       PLACAS.caso1,
       PLACAS.caso2,
       PLACAS.caso3,
+      PLACAS.listados,
     ])
-    await Database.rawQuery('DELETE FROM turnos_rtms WHERE placa IN (?, ?, ?, ?)', [
+    await Database.rawQuery('DELETE FROM turnos_rtms WHERE placa IN (?, ?, ?, ?, ?)', [
       PLACAS.caso1,
       PLACAS.caso2,
       PLACAS.caso3,
       PLACAS.storeManual,
+      PLACAS.listados,
     ])
-    await Database.rawQuery('DELETE FROM captacion_dateos WHERE placa IN (?, ?, ?, ?)', [
+    await Database.rawQuery('DELETE FROM captacion_dateos WHERE placa IN (?, ?, ?, ?, ?)', [
       PLACAS.caso1,
       PLACAS.caso2,
       PLACAS.caso3,
       PLACAS.storeManual,
+      PLACAS.listados,
     ])
     if (convenio) await Database.rawQuery('DELETE FROM convenios WHERE id = ?', [convenio.id])
     if (convenioAsesor)
@@ -333,5 +337,94 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
     assert.equal(dateo.descuentoCajaId, DESCUENTO_INFORMATIVO_ID)
     assert.equal(dateo.descuentoCajaObservacion, OBS)
     assert.isNotNull(dateo.descuentoCajaAplicadoAt)
+  }).timeout(20000)
+
+  test('GET /captacion-dateos (listado) devuelve el descuento aplicado en caja con código y monto', async ({
+    assert,
+    client,
+  }) => {
+    // ASESOR_CONVENIO + es_avance:true + descuento AVANCE → el hook auto-resuelve
+    // un monto real (valor_carro/valor_moto del catálogo), no 0, dando una
+    // aserción de monto más fuerte que un descuento meramente informativo.
+    const dateo = await CaptacionDateo.create({
+      canal: 'ASESOR_CONVENIO',
+      agenteId: convenioAsesor.id,
+      convenioId: convenio.id,
+      asesorConvenioId: convenioAsesor.id,
+      placa: PLACAS.listados,
+      servicioId: SERVICIO_RTM_ID,
+      origen: 'UI',
+      resultado: 'EN_PROCESO',
+      descuentoId: null,
+      esAvance: true,
+    } as any)
+
+    const turno = await crearTurno(PLACAS.listados, usuarioTest.id, 900005)
+    turno.captacionDateoId = dateo.id
+    await turno.save()
+    dateo.consumidoTurnoId = turno.id
+    dateo.consumidoAt = DateTime.now()
+    await dateo.save()
+
+    const OBS = 'Descuento aplicado en caja para prueba de listado'
+    const ticket = await FacturacionTicket.create({
+      hash: `test-hash-${PLACAS.listados}-${Date.now()}`,
+      filePath: 'test/fixture.jpg',
+      estado: 'BORRADOR',
+      placa: PLACAS.listados,
+      total: 200000,
+      totalFactura: 200000,
+      fechaPago: DateTime.now(),
+      sedeId: SEDE_ID,
+      agenteId: convenioAsesor.id,
+      turnoId: turno.id,
+      dateoId: dateo.id,
+      servicioCodigo: 'RTM',
+      servicioNombre: 'RTM',
+      descuentoId: DESCUENTO_AVANCE_ID,
+      descuentoObservacion: OBS,
+    } as any)
+
+    const confirmRes = await client
+      .post(`/api/facturacion/tickets/${ticket.id}/confirmar`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({})
+    assert.equal(confirmRes.status(), 200)
+
+    const comision = await Comision.query()
+      .where('captacion_dateo_id', dateo.id)
+      .where('es_config', false)
+      .firstOrFail()
+    assert.equal(comision.descuentoCodigoAplicado, 'AVANCE')
+    const montoEsperado = Number(comision.descuentoMontoAplicado)
+    assert.isAbove(montoEsperado, 0, 'el monto de AVANCE debe auto-resolverse a un valor > 0')
+
+    // --- Listado de dateos: código + monto (resuelto desde la comisión) ---
+    const dateosListRes = await client
+      .get('/api/captacion-dateos')
+      .qs({ placa: PLACAS.listados, perPage: 5 })
+      .header('Authorization', `Bearer ${token}`)
+
+    assert.equal(dateosListRes.status(), 200)
+    const dateoRow = dateosListRes.body().data.find((r: any) => r.id === dateo.id)
+    assert.exists(dateoRow, 'el dateo debe aparecer en el listado')
+    assert.equal(dateoRow.descuento_caja_id, DESCUENTO_AVANCE_ID)
+    assert.equal(dateoRow.descuento_caja?.codigo, 'AVANCE')
+    assert.equal(dateoRow.descuento_caja_observacion, OBS)
+    assert.isNotNull(dateoRow.descuento_caja_aplicado_at)
+    assert.equal(Number(dateoRow.descuento_caja_monto), montoEsperado)
+
+    // --- Listado de comisiones: código + observación + monto ---
+    const comisionesListRes = await client
+      .get('/api/comisiones')
+      .qs({ placa: PLACAS.listados, perPage: 5 })
+      .header('Authorization', `Bearer ${token}`)
+
+    assert.equal(comisionesListRes.status(), 200)
+    const comisionRow = comisionesListRes.body().data.find((r: any) => r.dateo_id === dateo.id)
+    assert.exists(comisionRow, 'la comisión debe aparecer en el listado')
+    assert.equal(comisionRow.descuento_codigo_aplicado, 'AVANCE')
+    assert.equal(comisionRow.descuento_observacion_caja, OBS)
+    assert.equal(Number(comisionRow.descuento_monto_aplicado), montoEsperado)
   }).timeout(20000)
 })

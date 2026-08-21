@@ -233,6 +233,10 @@ export default class CaptacionDateo extends BaseModel {
   @belongsTo(() => Descuento, { foreignKey: 'descuentoId' })
   declare descuento: BelongsTo<typeof Descuento>
 
+  // 🆕 Descuento real aplicado en caja (snapshot, ver descuentoCajaId arriba)
+  @belongsTo(() => Descuento, { foreignKey: 'descuentoCajaId' })
+  declare descuentoCaja: BelongsTo<typeof Descuento>
+
   // 🆕 Servicio para el que se datéa
   @column({ columnName: 'servicio_id' })
   declare servicioId: number | null

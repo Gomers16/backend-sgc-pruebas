@@ -86,6 +86,11 @@ function toSnake(row: any) {
     consumido_at: row.consumidoAt ?? null,
     // 🆕
     descuento_id: row.descuentoId ?? null,
+    // 🆕 Descuento real aplicado en caja (snapshot, independiente del pre-marcado)
+    descuento_caja_id: row.descuentoCajaId ?? null,
+    descuento_caja: row.descuentoCaja ?? null,
+    descuento_caja_observacion: row.descuentoCajaObservacion ?? null,
+    descuento_caja_aplicado_at: row.descuentoCajaAplicadoAt ?? null,
     // 🆕 Alias snake_case explícitos: item.serialize() por defecto devuelve
     // camelCase, y estos 3 campos los necesita el frontend para prellenar
     // el formulario de edición (agente/convenio/servicio editables).
@@ -602,6 +607,7 @@ export default class CaptacionDateosController {
       .preload('agente')
       .preload('convenio', (qb) => qb.select(['id', 'nombre']))
       .preload('descuento') // 🆕
+      .preload('descuentoCaja') // 🆕 descuento real aplicado en caja
       .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕
 
     if (placa) q.andWhere('placa', placa)
@@ -674,8 +680,40 @@ export default class CaptacionDateosController {
       }
     })
 
+    // 🆕 Monto del descuento aplicado en caja: no vive en captacion_dateos,
+    // vive en comisiones.descuento_monto_aplicado (comisión asociada al
+    // dateo). Solo se consulta para los dateos que sí tienen descuento_caja_id,
+    // trayendo únicamente las 2 columnas necesarias (sin cargar comisiones completas).
+    const dateoIdsConDescuentoCaja = data
+      .filter((r: any) => r.descuento_caja_id)
+      .map((r: any) => r.id as number)
+
+    let montoDescuentoCajaByDateoId: Record<number, number | null> = {}
+    if (dateoIdsConDescuentoCaja.length) {
+      const comisionesConDescuento = await Comision.query()
+        .whereIn('captacion_dateo_id', dateoIdsConDescuentoCaja)
+        .where('es_config', false)
+        .select(['captacion_dateo_id', 'descuento_monto_aplicado'])
+
+      montoDescuentoCajaByDateoId = Object.fromEntries(
+        comisionesConDescuento
+          .filter((c) => c.captacionDateoId !== null)
+          .map((c) => [
+            c.captacionDateoId as number,
+            c.descuentoMontoAplicado !== null ? Number(c.descuentoMontoAplicado) : null,
+          ])
+      )
+    }
+
+    const dataConDescuentoCaja = data.map((row: any) => ({
+      ...row,
+      descuento_caja_monto: row.descuento_caja_id
+        ? (montoDescuentoCajaByDateoId[row.id] ?? null)
+        : null,
+    }))
+
     return {
-      data,
+      data: dataConDescuentoCaja,
       total: result.total,
       page: result.currentPage,
       perPage: result.perPage,
