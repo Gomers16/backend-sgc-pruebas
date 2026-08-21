@@ -204,6 +204,16 @@ export default class Comision extends BaseModel {
   /** Nota libre de la cajera, copiada desde facturacion_tickets.descuento_observacion. */
   @column({ columnName: 'descuento_observacion_caja' })
   declare descuentoObservacionCaja: string | null
+
+  /**
+   * Texto de la regla de comision_calculo_service.calcularComision() que
+   * determinó el monto de esta comisión — solo se persiste desde las 3
+   * ramas de applyCommissionHook() (facturacion_tickets_controller.ts).
+   * null en comisiones creadas manualmente (POST /comisiones) o antes de
+   * este campo existir.
+   */
+  @column({ columnName: 'regla_aplicada' })
+  declare reglaAplicada: string | null
   // ========== FIN SINCRONIZACIÓN DESCUENTO EN CAJA ==========
 
   @column.dateTime({ autoCreate: true })

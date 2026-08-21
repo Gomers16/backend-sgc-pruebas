@@ -1178,6 +1178,7 @@ export default class FacturacionTicketsController {
         c.monto = String(resultadoCaso1.monto)
         c.montoAsesor = String(resultadoCaso1.montoAsesor)
         c.valorNuevoDirecto = String(resultadoCaso1.valorNuevoDirectoFinal)
+        c.reglaAplicada = resultadoCaso1.reglaAplicada
         console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
 
         await c.useTransaction(trx).save()
@@ -1225,6 +1226,7 @@ export default class FacturacionTicketsController {
         if (resultadoCaso2.descuentoMontoAplicado !== null) {
           c.descuentoMontoAplicado = resultadoCaso2.descuentoMontoAplicado
         }
+        c.reglaAplicada = resultadoCaso2.reglaAplicada
         console.log(
           `✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`
         )
@@ -1275,6 +1277,7 @@ export default class FacturacionTicketsController {
         if (resultadoCaso3.descuentoMontoAplicado !== null) {
           c.descuentoMontoAplicado = resultadoCaso3.descuentoMontoAplicado
         }
+        c.reglaAplicada = resultadoCaso3.reglaAplicada
         console.log(
           `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
         )

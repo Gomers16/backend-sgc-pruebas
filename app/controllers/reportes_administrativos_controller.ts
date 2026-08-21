@@ -3223,6 +3223,10 @@ export default class ReportesAdministrativosController {
     // ===== Por canal de captación (facturación real, incluye FACHADA/TELE/REDES) =====
     const { porCanal } = await this.buildPorCanalFacturacionRtm(fechaInicio, fechaFin)
 
+    // ===== Descuentos aplicados (reusa la agregación ya existente para
+    // ReporteDescuentos.vue — mismo alcance RTM+período, no se duplica) =====
+    const { por_tipo: descuentos } = await this.computeDescuentosPorTipo(fechaInicio, fechaFin)
+
     // ===== 3 secciones individuales, filtradas a RTM, con ids =====
     const { comerciales, asesoresConvenio, convenios } = await this.buildDesgloseComisiones({
       fechaInicio,
@@ -3237,6 +3241,7 @@ export default class ReportesAdministrativosController {
       fecha_fin: fechaFin,
       resumen: { total_comisiones: totalComisiones, total_monto: totalMonto },
       por_canal: porCanal,
+      descuentos,
       comerciales,
       asesores_convenio: asesoresConvenio,
       convenios,
@@ -3258,6 +3263,536 @@ export default class ReportesAdministrativosController {
     const buffer = await this.buildLiquidacionWorkbookBuffer(data, 'Total generado RTM en el período')
 
     const fileName = `Liquidacion_RTM_${fechaInicio}_${fechaFin}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
+  }
+
+  /**
+   * Placas detrás de un set de comisiones (drill-down de las secciones
+   * Comerciales / Asesores Convenio / Convenios del modal Liquidación RTM).
+   * Reusa el mismo join que ya usa resumenPorAsesor() para su filtro de
+   * placa: comisiones -> captacion_dateos -> turnos_rtms (consumido_turno_id).
+   *
+   * Incluye la clasificación de negocio de la placa (Nuevo/Recurrente/
+   * Recuperación, con convenio, continuidad) a partir de columnas YA
+   * persistidas en turnos_rtms — no de reglaAplicada, que solo existe para
+   * comisiones posteriores a esa migración y dejaría sin clasificar todo
+   * el histórico. `escenario` replica exactamente la misma derivación que
+   * ya usa facturacion_tickets_controller.ts (esClienteNuevo/escenario)
+   * para no duplicar la regla con una lógica distinta.
+   */
+  private async resolvePlacasPorComisionIds(ids: number[]) {
+    if (!ids.length) return []
+    const rows = (await Database.from('comisiones as c')
+      .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
+      .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+      .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
+      .whereIn('c.id', ids)
+      .select(
+        'c.id as comision_id',
+        't.placa',
+        'c.tipo_vehiculo',
+        'c.estado',
+        'c.fecha_calculo',
+        'c.monto',
+        'c.monto_asesor',
+        'c.monto_convenio',
+        'c.convenio_id',
+        't.es_recurrente',
+        't.es_recuperacion',
+        't.estado_continuidad',
+        'a.nombre as asesor_nombre',
+        'conv.nombre as convenio_nombre'
+      )
+      .orderBy('t.placa', 'asc')) as any[]
+
+    return rows.map((r) => {
+      const esRecurrente = Boolean(r.es_recurrente)
+      const esRecuperacion = Boolean(r.es_recuperacion)
+      const esNuevo = !esRecurrente && !esRecuperacion
+      const escenario: 'NUEVO' | 'RECURRENTE' | 'RECUPERACION' = esNuevo
+        ? 'NUEVO'
+        : esRecurrente
+          ? 'RECURRENTE'
+          : 'RECUPERACION'
+      return {
+        comision_id: Number(r.comision_id),
+        placa: r.placa,
+        tipo_vehiculo: r.tipo_vehiculo,
+        estado: r.estado,
+        fecha_calculo: r.fecha_calculo,
+        monto: Number(r.monto) || 0,
+        monto_asesor: Number(r.monto_asesor) || 0,
+        monto_convenio: Number(r.monto_convenio) || 0,
+        escenario,
+        con_convenio: r.convenio_id != null,
+        estado_continuidad: r.estado_continuidad ?? null,
+        asesor_nombre: r.asesor_nombre ?? null,
+        convenio_nombre: r.convenio_nombre ?? null,
+      }
+    })
+  }
+
+  /**
+   * Placas detrás de un canal de captación en un rango (drill-down de la
+   * tabla "Por canal de captación"). A diferencia de las 3 secciones de
+   * comisiones, esta sale directo de facturacion_tickets (que ya trae
+   * `placa` en la propia fila, sin join) — misma fuente/filtros que
+   * buildPorCanalFacturacionRtm(), incluyendo el bucket de NULL -> FACHADA.
+   */
+  private async resolvePlacasPorCanal(canal: string, fechaInicio: string, fechaFin: string) {
+    const query = Database.from('facturacion_tickets as ft')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+
+    if (canal === 'FACHADA') {
+      query.where((q) => q.whereNull('ft.captacion_canal').orWhere('ft.captacion_canal', 'FACHADA'))
+    } else {
+      query.where('ft.captacion_canal', canal)
+    }
+
+    const rows = (await query
+      .select('ft.id as ticket_id', 'ft.placa', 'ft.tipo_vehiculo', 'ft.fecha_pago', 'ft.total')
+      .orderBy('ft.placa', 'asc')) as any[]
+
+    return rows.map((r) => ({
+      ticket_id: Number(r.ticket_id),
+      placa: r.placa,
+      tipo_vehiculo: r.tipo_vehiculo,
+      fecha_pago: r.fecha_pago,
+      monto: Number(r.total) || 0,
+    }))
+  }
+
+  /**
+   * Placas detrás de un tipo de descuento en un rango (drill-down de la
+   * sección "Descuentos aplicados"), cruzadas con la comisión real que le
+   * correspondió a esa placa — el objetivo no es solo listar dónde se
+   * aplicó el descuento, sino poder verificar cuánto se pagó de comisión y
+   * por qué (regla_aplicada), ya que el tipo de descuento cambia el cálculo
+   * (ver comision_calculo_service.ts).
+   *
+   * Une facturacion_tickets -> comisiones por el mismo captacion_dateo_id
+   * (ft.dateo_id = c.captacion_dateo_id) — no hace falta pasar por
+   * turnos_rtms para la placa, ft.placa ya la trae directo.
+   *
+   * El LEFT JOIN excluye c.estado='ANULADA' a propósito: store() permite
+   * crear una comisión de reemplazo para el mismo dateo si la anterior
+   * quedó anulada, así que sin este filtro un dateo con anulada+reemplazo
+   * activa duplicaría la fila de esa placa. hubo_comision_anulada (EXISTS
+   * aparte, sin ese filtro) es la señal para distinguir "nunca hubo
+   * comisión" de "hubo una comisión pero quedó anulada sin reemplazo" —
+   * son casos de negocio distintos que el frontend muestra diferente.
+   */
+  private async resolvePlacasPorDescuento(codigo: string, fechaInicio: string, fechaFin: string) {
+    const rows = (await Database.from('facturacion_tickets as ft')
+      .join('descuentos as d', 'd.id', 'ft.descuento_id')
+      .leftJoin('comisiones as c', (join) => {
+        join
+          .on('c.captacion_dateo_id', '=', 'ft.dateo_id')
+          .andOnVal('c.es_config', false)
+          .andOnVal('c.estado', '!=', 'ANULADA')
+      })
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .where('d.codigo', codigo)
+      .where('ft.descuento_monto_aplicado', '>', 0)
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .select(
+        'ft.id as ticket_id',
+        'ft.placa',
+        'ft.tipo_vehiculo',
+        'ft.fecha_pago',
+        'ft.descuento_monto_aplicado as monto_descuento',
+        'c.id as comision_id',
+        'c.estado as comision_estado',
+        'c.monto_asesor',
+        'c.monto_convenio',
+        'c.regla_aplicada',
+        Database.raw(
+          `EXISTS (
+            SELECT 1 FROM comisiones c2
+            WHERE c2.captacion_dateo_id = ft.dateo_id
+              AND c2.es_config = false
+              AND c2.estado = 'ANULADA'
+          ) as hubo_comision_anulada`
+        )
+      )
+      .orderBy('ft.placa', 'asc')) as any[]
+
+    return rows.map((r) => {
+      const tieneComision = r.comision_id != null
+      return {
+        ticket_id: Number(r.ticket_id),
+        placa: r.placa,
+        tipo_vehiculo: r.tipo_vehiculo,
+        fecha_pago: r.fecha_pago,
+        monto_descuento: Number(r.monto_descuento) || 0,
+        tiene_comision: tieneComision,
+        hubo_comision_anulada: Boolean(Number(r.hubo_comision_anulada)),
+        comision_estado: tieneComision ? r.comision_estado : null,
+        monto_asesor: tieneComision ? Number(r.monto_asesor) || 0 : null,
+        monto_convenio: tieneComision ? Number(r.monto_convenio) || 0 : null,
+        regla_aplicada: tieneComision ? (r.regla_aplicada ?? null) : null,
+      }
+    })
+  }
+
+  /**
+   * GET /reportes-admin/liquidacion-rtm/detalle-placas?comision_ids=1,2,3
+   * Drill-down lazy (se llama solo al expandir una fila en el modal) para
+   * Comerciales / Asesores Convenio / Convenios.
+   */
+  public async liquidacionRtmDetallePlacas({ request, response }: HttpContext) {
+    const ids = parseIdList(request.input('comision_ids'))
+    if (!ids.length) {
+      return response.badRequest({ message: 'comision_ids es requerido' })
+    }
+    const placas = await this.resolvePlacasPorComisionIds(ids)
+    return { placas }
+  }
+
+  /**
+   * GET /reportes-admin/liquidacion-rtm/detalle-placas-canal?canal=&fecha_inicio=&fecha_fin=
+   * Drill-down lazy para la tabla "Por canal de captación".
+   */
+  public async liquidacionRtmDetallePlacasCanal({ request, response }: HttpContext) {
+    const canal = String(request.input('canal') ?? '').trim()
+    if (!canal) return response.badRequest({ message: 'canal es requerido' })
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const placas = await this.resolvePlacasPorCanal(canal, fechaInicio, fechaFin)
+    return { placas }
+  }
+
+  /**
+   * GET /reportes-admin/liquidacion-rtm/detalle-placas-descuento?codigo=&fecha_inicio=&fecha_fin=
+   * Drill-down lazy para la sección "Descuentos aplicados".
+   */
+  public async liquidacionRtmDetallePlacasDescuento({ request, response }: HttpContext) {
+    const codigo = String(request.input('codigo') ?? '').trim()
+    if (!codigo) return response.badRequest({ message: 'codigo es requerido' })
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const placas = await this.resolvePlacasPorDescuento(codigo, fechaInicio, fechaFin)
+    return { placas }
+  }
+
+  /**
+   * Busca una placa dentro del período activo del modal Liquidación RTM y
+   * devuelve en qué sección(es) aparece — el buscador del modal (frontend)
+   * solo dispara esto cuando la búsqueda por nombre/canal en memoria no
+   * encontró nada. Devuelve CLAVES de negocio (asesor_id/convenio_id/canal/
+   * codigo), no índices de array: los índices dependen del orden con que
+   * el frontend ya cargó `liquidacion.value.data`, y esta es una query
+   * aparte — devolver un índice sería frágil si algún día difiere el orden.
+   *
+   * Una misma placa puede aparecer en varias secciones a la vez: si el
+   * asesor es ASESOR_COMERCIAL con convenio, esa comisión aparece tanto en
+   * "Comerciales" (agrupado solo por asesor) como en "Convenios" (agrupado
+   * por convenio+asesor) — mismo comportamiento dual que ya tienen esas 2
+   * tablas hoy (buildDesgloseComisiones), replicado acá para que el
+   * buscador encuentre la placa en ambas si corresponde.
+   */
+  private async buscarPlacaEnLiquidacion(placa: string, fechaInicio: string, fechaFin: string) {
+    const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+    const matches: Record<string, unknown>[] = []
+
+    const filasComisiones = (await Database.from('comisiones as c')
+      .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
+      .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
+      .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .where('c.es_config', false)
+      .where('c.tipo_servicio', 'RTM')
+      .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereRaw("REPLACE(REPLACE(UPPER(t.placa), '-', ''), ' ', '') = ?", [placaNorm])
+      .select('c.asesor_id', 'c.convenio_id', 'a.tipo as asesor_tipo')
+      .distinct()) as any[]
+
+    for (const r of filasComisiones) {
+      if (!r.asesor_id) continue
+      if (r.asesor_tipo === 'ASESOR_CONVENIO') {
+        matches.push({ seccion: 'asesoresConvenio', asesor_id: Number(r.asesor_id) })
+      } else if (r.asesor_tipo === 'ASESOR_COMERCIAL') {
+        matches.push({ seccion: 'comerciales', asesor_id: Number(r.asesor_id) })
+        if (r.convenio_id != null) {
+          matches.push({ seccion: 'convenios', convenio_id: Number(r.convenio_id) })
+        }
+      }
+    }
+
+    const filasCanal = (await Database.from('facturacion_tickets as ft')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereRaw("REPLACE(REPLACE(UPPER(ft.placa), '-', ''), ' ', '') = ?", [placaNorm])
+      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
+      .distinct()) as any[]
+    for (const r of filasCanal) {
+      matches.push({ seccion: 'canal', canal: r.canal })
+    }
+
+    const filasDescuento = (await Database.from('facturacion_tickets as ft')
+      .join('descuentos as d', 'd.id', 'ft.descuento_id')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .where('ft.descuento_monto_aplicado', '>', 0)
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+      .whereRaw("REPLACE(REPLACE(UPPER(ft.placa), '-', ''), ' ', '') = ?", [placaNorm])
+      .select('d.codigo')
+      .distinct()) as any[]
+    for (const r of filasDescuento) {
+      matches.push({ seccion: 'descuentos', codigo: r.codigo })
+    }
+
+    return matches
+  }
+
+  /**
+   * GET /reportes-admin/liquidacion-rtm/buscar-placa?placa=&fecha_inicio=&fecha_fin=
+   * Buscador del modal Liquidación RTM (fallback cuando la búsqueda en
+   * memoria por nombre/canal no encuentra nada).
+   */
+  public async liquidacionRtmBuscarPlaca({ request, response }: HttpContext) {
+    const placa = String(request.input('placa') ?? '').trim()
+    if (!placa) return response.badRequest({ message: 'placa es requerido' })
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+
+    const matches = await this.buscarPlacaEnLiquidacion(placa, fechaInicio, fechaFin)
+    return { matches }
+  }
+
+  /**
+   * Excel de placas exportadas del modal Liquidación RTM (botón "Exportar
+   * placas seleccionadas", transversal a las 4 tablas). Una sola hoja,
+   * agrupada en 2 niveles: encabezado grande por SECCIÓN (solo las que
+   * traigan grupos), y dentro un bloque por grupo/ítem (encabezado +
+   * columnas + placas + subtotal) — solo una fila de TOTAL GENERAL al
+   * final de todo el archivo, sumando los subtotales de todas las
+   * secciones incluidas.
+   */
+  private async buildPlacasExportWorkbookBuffer(params: {
+    fechaInicio: string
+    fechaFin: string
+    secciones: {
+      seccion: 'canal' | 'comerciales' | 'asesores_convenio' | 'convenios' | 'descuentos'
+      titulo: string
+      grupos: { nombre: string; placas: any[] }[]
+    }[]
+  }) {
+    const { fechaInicio, fechaFin, secciones } = params
+
+    const COLUMNAS: Record<string, string[]> = {
+      canal: ['Placa', 'Vehículo', 'Fecha pago', 'Monto'],
+      comerciales: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (asesor)'],
+      asesores_convenio: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (asesor)', 'Valor a pagar (convenio)'],
+      convenios: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (convenio)'],
+      descuentos: ['Placa', 'Vehículo', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada'],
+    }
+    const ANCHO_MONTO: Record<string, number> = {
+      canal: 4,
+      comerciales: 5,
+      asesores_convenio: 6,
+      convenios: 5,
+      descuentos: 4,
+    }
+    const MONEY_FMT = '$#,##0'
+
+    // Las fechas de la BD llegan en UTC (driver mysql2 las da como Date o
+    // string "YYYY-MM-DD HH:mm:ss" ya en UTC) — hay que forzar la zona de
+    // Bogotá (UTC-5, sin horario de verano), no solo formatear con la zona
+    // del server, que puede no ser Colombia.
+    const formatFechaBogota = (raw: unknown): string => {
+      if (!raw) return '—'
+      const dt = raw instanceof Date ? DateTime.fromJSDate(raw, { zone: 'utc' }) : DateTime.fromSQL(String(raw), { zone: 'utc' })
+      const enBogota = dt.isValid ? dt.setZone('America/Bogota') : DateTime.fromISO(String(raw)).setZone('America/Bogota')
+      return enBogota.isValid ? enBogota.toFormat('dd/MM/yyyy hh:mm a').toLowerCase() : String(raw)
+    }
+
+    const filaValores = (seccion: string, p: any): (string | number)[] => {
+      if (seccion === 'canal') return [p.placa ?? '—', p.tipo_vehiculo ?? '—', formatFechaBogota(p.fecha_pago), p.monto]
+      if (seccion === 'comerciales')
+        return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_asesor]
+      if (seccion === 'convenios')
+        return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_convenio]
+      if (seccion === 'descuentos') {
+        const sinComision = p.hubo_comision_anulada ? 'Comisión anulada, sin reemplazo' : 'Sin comisión asociada'
+        return [
+          p.placa ?? '—',
+          p.tipo_vehiculo ?? '—',
+          formatFechaBogota(p.fecha_pago),
+          p.monto_descuento,
+          p.tiene_comision ? p.monto_asesor : sinComision,
+          p.tiene_comision ? p.monto_convenio : '',
+          p.tiene_comision ? (p.regla_aplicada ?? 'Sin detalle disponible, comisión anterior a esta funcionalidad') : '',
+        ]
+      }
+      return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_asesor, p.monto_convenio]
+    }
+    const totalFila = (seccion: string, p: any): number => {
+      if (seccion === 'canal') return p.monto
+      if (seccion === 'comerciales') return p.monto_asesor
+      if (seccion === 'convenios') return p.monto_convenio
+      if (seccion === 'descuentos') return p.monto_descuento
+      return p.monto_asesor + p.monto_convenio
+    }
+
+    const workbook = new ExcelJS.Workbook()
+    const ws = workbook.addWorksheet('Placas exportadas')
+    ws.columns = Array.from({ length: 7 }, (_, idx) => ({ width: idx === 6 ? 50 : 18 })) // col 7 (idx 6): "Regla aplicada", texto largo
+
+    ws.addRow([`Liquidación RTM — Placas exportadas (${fechaInicio} a ${fechaFin})`]).font = {
+      bold: true,
+      size: 13,
+    }
+    ws.addRow([])
+
+    let totalGeneral = 0
+    for (const { seccion, titulo, grupos } of secciones) {
+      if (!grupos.length) continue
+
+      const filaSeccion = ws.addRow([titulo])
+      filaSeccion.font = { bold: true, size: 12 }
+      filaSeccion.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } }
+      })
+
+      const columnas = COLUMNAS[seccion]
+      const colMonto = ANCHO_MONTO[seccion]
+
+      for (const grupo of grupos) {
+        ws.addRow([grupo.nombre]).font = { bold: true }
+        ws.addRow(columnas).font = { bold: true }
+        let subtotal = 0
+        for (const p of grupo.placas) {
+          const fila = ws.addRow(filaValores(seccion, p))
+          if (seccion === 'asesores_convenio') {
+            fila.getCell(5).numFmt = MONEY_FMT
+            fila.getCell(6).numFmt = MONEY_FMT
+          } else {
+            fila.getCell(colMonto).numFmt = MONEY_FMT
+          }
+          subtotal += totalFila(seccion, p)
+        }
+        const valoresSubtotal = new Array(columnas.length).fill('')
+        valoresSubtotal[0] = `Subtotal: ${grupo.nombre}`
+        valoresSubtotal[colMonto - 1] = subtotal
+        const filaSubtotal = ws.addRow(valoresSubtotal)
+        filaSubtotal.font = { bold: true }
+        filaSubtotal.getCell(colMonto).numFmt = MONEY_FMT
+        totalGeneral += subtotal
+        ws.addRow([])
+      }
+    }
+
+    const filaTotal = ws.addRow(['TOTAL GENERAL EXPORTADO:', '', '', '', totalGeneral])
+    filaTotal.font = { bold: true }
+    filaTotal.getCell(5).numFmt = MONEY_FMT
+    filaTotal.eachCell((cell) => {
+      cell.border = { top: { style: 'thin' } }
+    })
+
+    return await workbook.xlsx.writeBuffer()
+  }
+
+  /**
+   * POST /reportes-admin/liquidacion-rtm/exportar-placas
+   * body: {
+   *   fecha_inicio, fecha_fin,
+   *   secciones: {
+   *     canal?: [{ nombre, canal }],
+   *     descuentos?: [{ nombre, codigo }],
+   *     comerciales?: [{ nombre, comision_ids }],
+   *     asesoresConvenio?: [{ nombre, comision_ids }],
+   *     convenios?: [{ nombre, comision_ids }],
+   *   }
+   * }
+   * Transversal a las 4 tablas del modal — cualquier clave de `secciones`
+   * puede venir vacía/ausente si el usuario no seleccionó nada ahí; solo
+   * las que sí traen grupos aparecen en el Excel. Siempre resuelve placas
+   * frescas del servidor (no depende de qué haya expandido el usuario).
+   */
+  public async liquidacionRtmExportarPlacas({ request, response }: HttpContext) {
+    const {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      secciones,
+    } = request.only(['fecha_inicio', 'fecha_fin', 'secciones'])
+
+    if (!fechaInicio || !fechaFin) {
+      return response.badRequest({ message: 'fecha_inicio y fecha_fin son requeridos' })
+    }
+    if (!secciones || typeof secciones !== 'object') {
+      return response.badRequest({ message: 'secciones es requerido' })
+    }
+
+    const parseIds = (raw: unknown): number[] =>
+      Array.isArray(raw)
+        ? raw.map((id: unknown) => Number(id)).filter((id: number) => Number.isFinite(id))
+        : []
+
+    const DEFS: {
+      key: string
+      seccion: 'canal' | 'comerciales' | 'asesores_convenio' | 'convenios' | 'descuentos'
+      titulo: string
+    }[] = [
+      { key: 'canal', seccion: 'canal', titulo: 'POR CANAL DE CAPTACIÓN' },
+      { key: 'descuentos', seccion: 'descuentos', titulo: 'DESCUENTOS APLICADOS' },
+      { key: 'comerciales', seccion: 'comerciales', titulo: 'ASESORES COMERCIALES' },
+      { key: 'asesoresConvenio', seccion: 'asesores_convenio', titulo: 'ASESORES CONVENIO' },
+      { key: 'convenios', seccion: 'convenios', titulo: 'CONVENIOS' },
+    ]
+
+    const seccionesResueltas: {
+      seccion: 'canal' | 'comerciales' | 'asesores_convenio' | 'convenios' | 'descuentos'
+      titulo: string
+      grupos: { nombre: string; placas: any[] }[]
+    }[] = []
+
+    let totalGrupos = 0
+    for (const def of DEFS) {
+      const gruposRaw = (secciones as Record<string, any>)[def.key]
+      if (!Array.isArray(gruposRaw) || gruposRaw.length === 0) {
+        seccionesResueltas.push({ seccion: def.seccion, titulo: def.titulo, grupos: [] })
+        continue
+      }
+      const grupos: { nombre: string; placas: any[] }[] = []
+      for (const g of gruposRaw) {
+        const nombre = String(g?.nombre ?? '—')
+        let placas: any[]
+        if (def.seccion === 'canal') {
+          placas = await this.resolvePlacasPorCanal(String(g?.canal ?? ''), fechaInicio, fechaFin)
+        } else if (def.seccion === 'descuentos') {
+          placas = await this.resolvePlacasPorDescuento(String(g?.codigo ?? ''), fechaInicio, fechaFin)
+        } else {
+          placas = await this.resolvePlacasPorComisionIds(parseIds(g?.comision_ids))
+        }
+        grupos.push({ nombre, placas })
+      }
+      totalGrupos += grupos.length
+      seccionesResueltas.push({ seccion: def.seccion, titulo: def.titulo, grupos })
+    }
+
+    if (totalGrupos === 0) {
+      return response.badRequest({ message: 'No hay ningún ítem seleccionado para exportar' })
+    }
+
+    const buffer = await this.buildPlacasExportWorkbookBuffer({
+      fechaInicio,
+      fechaFin,
+      secciones: seccionesResueltas,
+    })
+
+    const fileName = `Liquidacion_Placas_${fechaInicio.replace(/-/g, '')}_a_${fechaFin.replace(/-/g, '')}.xlsx`
     response.header(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

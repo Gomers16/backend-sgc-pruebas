@@ -2311,6 +2311,36 @@ router
           )
           return new ReportesAdministrativosController().liquidacionRtmExcel(ctx)
         })
+        router.get('/liquidacion-rtm/detalle-placas', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmDetallePlacas(ctx)
+        })
+        router.get('/liquidacion-rtm/detalle-placas-canal', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmDetallePlacasCanal(ctx)
+        })
+        router.get('/liquidacion-rtm/detalle-placas-descuento', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmDetallePlacasDescuento(ctx)
+        })
+        router.get('/liquidacion-rtm/buscar-placa', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmBuscarPlaca(ctx)
+        })
+        router.post('/liquidacion-rtm/exportar-placas', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().liquidacionRtmExportarPlacas(ctx)
+        })
         router.get('/historial-liquidaciones/excel', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
             '#controllers/reportes_administrativos_controller'
