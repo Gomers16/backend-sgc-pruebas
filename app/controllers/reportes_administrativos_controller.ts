@@ -3307,7 +3307,14 @@ export default class ReportesAdministrativosController {
         't.es_recuperacion',
         't.estado_continuidad',
         'a.nombre as asesor_nombre',
-        'conv.nombre as convenio_nombre'
+        'a.tipo as asesor_tipo',
+        'conv.nombre as convenio_nombre',
+        'conv.reporta',
+        'conv.metodo_pago',
+        'conv.numero_metodo_pago',
+        'c.es_avance',
+        'c.descuento_codigo_aplicado',
+        'c.descuento_observacion_caja'
       )
       .orderBy('t.placa', 'asc')) as any[]
 
@@ -3333,7 +3340,14 @@ export default class ReportesAdministrativosController {
         con_convenio: r.convenio_id != null,
         estado_continuidad: r.estado_continuidad ?? null,
         asesor_nombre: r.asesor_nombre ?? null,
+        asesor_tipo: r.asesor_tipo ?? null,
         convenio_nombre: r.convenio_nombre ?? null,
+        reporta: r.reporta ?? null,
+        metodo_pago: r.metodo_pago ?? null,
+        numero_metodo_pago: r.numero_metodo_pago ?? null,
+        es_avance: Boolean(r.es_avance),
+        descuento_codigo_aplicado: r.descuento_codigo_aplicado ?? null,
+        descuento_observacion_caja: r.descuento_observacion_caja ?? null,
       }
     })
   }
@@ -3399,6 +3413,7 @@ export default class ReportesAdministrativosController {
           .andOnVal('c.es_config', false)
           .andOnVal('c.estado', '!=', 'ANULADA')
       })
+      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
       .where('d.codigo', codigo)
@@ -3415,6 +3430,7 @@ export default class ReportesAdministrativosController {
         'c.monto_asesor',
         'c.monto_convenio',
         'c.regla_aplicada',
+        'conv.nombre as convenio_nombre',
         Database.raw(
           `EXISTS (
             SELECT 1 FROM comisiones c2
@@ -3440,6 +3456,7 @@ export default class ReportesAdministrativosController {
         monto_asesor: tieneComision ? Number(r.monto_asesor) || 0 : null,
         monto_convenio: tieneComision ? Number(r.monto_convenio) || 0 : null,
         regla_aplicada: tieneComision ? (r.regla_aplicada ?? null) : null,
+        convenio_nombre: tieneComision ? (r.convenio_nombre ?? null) : null,
       }
     })
   }
@@ -3591,21 +3608,79 @@ export default class ReportesAdministrativosController {
   }) {
     const { fechaInicio, fechaFin, secciones } = params
 
+    // Columnas "meta" del convenio/asesor compartidas por Comerciales, Asesores
+    // Convenio y Convenios (Convenios no repite "Convenio" — sería redundante
+    // con el grupo, que ya está fijo por convenio).
+    const COLUMNAS_META_CONVENIO = ['Reporta', 'Método de pago', 'Cuenta / Nequi']
+    const COLUMNAS_META_COMISION = ['Avance', 'Tipo de asesor', 'Código descuento', 'Tipo descuento (inferido)']
+
     const COLUMNAS: Record<string, string[]> = {
       canal: ['Placa', 'Vehículo', 'Fecha pago', 'Monto'],
-      comerciales: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (asesor)'],
-      asesores_convenio: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (asesor)', 'Valor a pagar (convenio)'],
-      convenios: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Valor a pagar (convenio)'],
-      descuentos: ['Placa', 'Vehículo', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada'],
+      comerciales: [
+        'Placa', 'Vehículo', 'Estado', 'Fecha', 'Convenio',
+        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
+        'Valor a pagar (asesor)',
+      ],
+      asesores_convenio: [
+        'Placa', 'Vehículo', 'Estado', 'Fecha', 'Convenio',
+        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
+        'Valor a pagar (asesor)', 'Valor a pagar (convenio)',
+      ],
+      convenios: [
+        'Placa', 'Vehículo', 'Estado', 'Fecha',
+        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
+        'Valor a pagar (convenio)',
+      ],
+      descuentos: ['Placa', 'Vehículo', 'Convenio', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada'],
     }
+    // Posición (1-indexada) de la columna de dinero usada para el subtotal
+    // de cada grupo — en asesores_convenio son 2 columnas de dinero, pero
+    // el subtotal combinado (monto_asesor + monto_convenio) va en la última.
     const ANCHO_MONTO: Record<string, number> = {
       canal: 4,
-      comerciales: 5,
-      asesores_convenio: 6,
-      convenios: 5,
-      descuentos: 4,
+      comerciales: COLUMNAS.comerciales.length,
+      asesores_convenio: COLUMNAS.asesores_convenio.length,
+      convenios: COLUMNAS.convenios.length,
+      descuentos: 5,
     }
     const MONEY_FMT = '$#,##0'
+
+    const TIPO_ASESOR_LABELS: Record<string, string> = {
+      ASESOR_COMERCIAL: 'Comercial',
+      ASESOR_CONVENIO: 'Convenio',
+      ASESOR_TELEMERCADEO: 'Telemercadeo',
+    }
+    const tipoAsesorLabel = (raw: unknown): string => TIPO_ASESOR_LABELS[String(raw ?? '')] ?? '—'
+    const avanceLabel = (v: unknown): string => (v ? 'Sí' : 'No')
+    // "(inferido)" en el encabezado ya avisa que esta columna no es un dato
+    // confirmado — ver nota en resolvePlacasPorComisionIds: no existe un
+    // campo que distinga Informativo (dateo) de aplicado en caja; se infiere
+    // por la presencia de descuento_observacion_caja (solo se llena en caja).
+    const tipoDescuentoInferido = (p: any): string => {
+      if (!p.descuento_codigo_aplicado) return '—'
+      return p.descuento_observacion_caja ? 'Aplicado en caja' : 'Informativo'
+    }
+    // Columnas meta compartidas por Comerciales/Asesores Convenio (con
+    // Convenio) y Convenios (sin Convenio, ya está fijo por el grupo).
+    const filaMetaConConvenio = (p: any): (string | number)[] => [
+      p.convenio_nombre ?? '—',
+      p.reporta ?? '—',
+      p.metodo_pago ?? '—',
+      p.numero_metodo_pago ?? '—',
+      avanceLabel(p.es_avance),
+      tipoAsesorLabel(p.asesor_tipo),
+      p.descuento_codigo_aplicado ?? '—',
+      tipoDescuentoInferido(p),
+    ]
+    const filaMetaSinConvenio = (p: any): (string | number)[] => [
+      p.reporta ?? '—',
+      p.metodo_pago ?? '—',
+      p.numero_metodo_pago ?? '—',
+      avanceLabel(p.es_avance),
+      tipoAsesorLabel(p.asesor_tipo),
+      p.descuento_codigo_aplicado ?? '—',
+      tipoDescuentoInferido(p),
+    ]
 
     // Las fechas de la BD llegan en UTC (driver mysql2 las da como Date o
     // string "YYYY-MM-DD HH:mm:ss" ya en UTC) — hay que forzar la zona de
@@ -3621,14 +3696,23 @@ export default class ReportesAdministrativosController {
     const filaValores = (seccion: string, p: any): (string | number)[] => {
       if (seccion === 'canal') return [p.placa ?? '—', p.tipo_vehiculo ?? '—', formatFechaBogota(p.fecha_pago), p.monto]
       if (seccion === 'comerciales')
-        return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_asesor]
+        return [
+          p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
+          ...filaMetaConConvenio(p),
+          p.monto_asesor,
+        ]
       if (seccion === 'convenios')
-        return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_convenio]
+        return [
+          p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
+          ...filaMetaSinConvenio(p),
+          p.monto_convenio,
+        ]
       if (seccion === 'descuentos') {
         const sinComision = p.hubo_comision_anulada ? 'Comisión anulada, sin reemplazo' : 'Sin comisión asociada'
         return [
           p.placa ?? '—',
           p.tipo_vehiculo ?? '—',
+          p.convenio_nombre ?? '—',
           formatFechaBogota(p.fecha_pago),
           p.monto_descuento,
           p.tiene_comision ? p.monto_asesor : sinComision,
@@ -3636,7 +3720,12 @@ export default class ReportesAdministrativosController {
           p.tiene_comision ? (p.regla_aplicada ?? 'Sin detalle disponible, comisión anterior a esta funcionalidad') : '',
         ]
       }
-      return [p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo), p.monto_asesor, p.monto_convenio]
+      // asesores_convenio
+      return [
+        p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
+        ...filaMetaConConvenio(p),
+        p.monto_asesor, p.monto_convenio,
+      ]
     }
     const totalFila = (seccion: string, p: any): number => {
       if (seccion === 'canal') return p.monto
@@ -3648,7 +3737,11 @@ export default class ReportesAdministrativosController {
 
     const workbook = new ExcelJS.Workbook()
     const ws = workbook.addWorksheet('Placas exportadas')
-    ws.columns = Array.from({ length: 7 }, (_, idx) => ({ width: idx === 6 ? 50 : 18 })) // col 7 (idx 6): "Regla aplicada", texto largo
+    // 14 columnas es el máximo (asesores_convenio). Anchos especiales para
+    // las columnas de texto libre que pueden venir largas: Convenio/Reporta/
+    // Método de pago/Cuenta (idx 4-7) y "Regla aplicada" en Descuentos (idx 7).
+    const ANCHOS_ESPECIALES: Record<number, number> = { 4: 26, 5: 26, 6: 22, 7: 40 }
+    ws.columns = Array.from({ length: 14 }, (_, idx) => ({ width: ANCHOS_ESPECIALES[idx] ?? 18 }))
 
     ws.addRow([`Liquidación RTM — Placas exportadas (${fechaInicio} a ${fechaFin})`]).font = {
       bold: true,
@@ -3676,8 +3769,8 @@ export default class ReportesAdministrativosController {
         for (const p of grupo.placas) {
           const fila = ws.addRow(filaValores(seccion, p))
           if (seccion === 'asesores_convenio') {
-            fila.getCell(5).numFmt = MONEY_FMT
-            fila.getCell(6).numFmt = MONEY_FMT
+            fila.getCell(COLUMNAS.asesores_convenio.length - 1).numFmt = MONEY_FMT
+            fila.getCell(COLUMNAS.asesores_convenio.length).numFmt = MONEY_FMT
           } else {
             fila.getCell(colMonto).numFmt = MONEY_FMT
           }
@@ -3694,9 +3787,12 @@ export default class ReportesAdministrativosController {
       }
     }
 
-    const filaTotal = ws.addRow(['TOTAL GENERAL EXPORTADO:', '', '', '', totalGeneral])
+    // Fila resumen final, independiente de en qué columna cae el dinero de
+    // cada sección (varía por sección tras agregar las columnas meta) —
+    // va en la columna 2, justo después de la etiqueta.
+    const filaTotal = ws.addRow(['TOTAL GENERAL EXPORTADO:', totalGeneral])
     filaTotal.font = { bold: true }
-    filaTotal.getCell(5).numFmt = MONEY_FMT
+    filaTotal.getCell(2).numFmt = MONEY_FMT
     filaTotal.eachCell((cell) => {
       cell.border = { top: { style: 'thin' } }
     })
