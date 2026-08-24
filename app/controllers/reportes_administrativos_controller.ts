@@ -3307,9 +3307,7 @@ export default class ReportesAdministrativosController {
         't.es_recuperacion',
         't.estado_continuidad',
         'a.nombre as asesor_nombre',
-        'a.tipo as asesor_tipo',
         'conv.nombre as convenio_nombre',
-        'conv.reporta',
         'conv.metodo_pago',
         'conv.numero_metodo_pago',
         'c.es_avance',
@@ -3340,9 +3338,7 @@ export default class ReportesAdministrativosController {
         con_convenio: r.convenio_id != null,
         estado_continuidad: r.estado_continuidad ?? null,
         asesor_nombre: r.asesor_nombre ?? null,
-        asesor_tipo: r.asesor_tipo ?? null,
         convenio_nombre: r.convenio_nombre ?? null,
-        reporta: r.reporta ?? null,
         metodo_pago: r.metodo_pago ?? null,
         numero_metodo_pago: r.numero_metodo_pago ?? null,
         es_avance: Boolean(r.es_avance),
@@ -3608,79 +3604,100 @@ export default class ReportesAdministrativosController {
   }) {
     const { fechaInicio, fechaFin, secciones } = params
 
-    // Columnas "meta" del convenio/asesor compartidas por Comerciales, Asesores
-    // Convenio y Convenios (Convenios no repite "Convenio" — sería redundante
-    // con el grupo, que ya está fijo por convenio).
-    const COLUMNAS_META_CONVENIO = ['Reporta', 'Método de pago', 'Cuenta / Nequi']
-    const COLUMNAS_META_COMISION = ['Avance', 'Tipo de asesor', 'Código descuento', 'Tipo descuento (inferido)']
+    // Columnas de cada placa — deliberadamente cortas (7-8 cols, no 12-14):
+    // Placa/Vehículo/Estado/Fecha + Medio de pago + Descuento (cada uno
+    // resumido en UNA columna) + Valor a pagar. "Tipo de asesor" y "Reporta"
+    // se quitaron: el primero es constante en toda la sección (cada tabla ya
+    // está filtrada a un solo tipo de asesor, no aporta nada fila a fila);
+    // "Reporta" resultó ser un campo de ruteo interno inconsistente (94% de
+    // los valores reales son solo "ASS2 <nombre>"/"ASS3 <nombre>", ya
+    // redundante con el asesor que mostramos, con una cola de excepciones
+    // administrativas sueltas) — no se re-agrega sin que negocio lo pida.
+    // "Clasificación" (escenario) explica la rama de cálculo en las 3 tablas
+    // (comision_calculo_service.ts: escenario decide toda la rama en Caso 1
+    // y Caso 3, y decide si se consulta continuidad en Caso 2). "Continuidad"
+    // solo aplica a Asesores Convenio (Caso 2) — Caso 3/Convenios nunca la
+    // usa. Ambas quedan vacías ("—") con frecuencia por el bug de
+    // persistencia ya conocido en captacion_dateos_controller.ts (no se
+    // guarda estado_continuidad en la ruta de self-dateo/re-dateo) — no es
+    // un bug nuevo de esta pantalla.
+    const ESCENARIO_LABELS: Record<string, string> = {
+      NUEVO: 'Nuevo directo',
+      RECURRENTE: 'Recurrente',
+      RECUPERACION: 'Recuperación',
+    }
+    const CONTINUIDAD_LABELS: Record<string, string> = {
+      CONTINUA: 'Continúa',
+      ROTA: 'Rota',
+      SIN_EVIDENCIA: 'Sin evidencia',
+    }
+    const clasificacion = (p: any): string => ESCENARIO_LABELS[p.escenario] ?? '—'
+    const continuidad = (p: any): string => (p.estado_continuidad ? CONTINUIDAD_LABELS[p.estado_continuidad] ?? '—' : '—')
 
     const COLUMNAS: Record<string, string[]> = {
       canal: ['Placa', 'Vehículo', 'Fecha pago', 'Monto'],
-      comerciales: [
-        'Placa', 'Vehículo', 'Estado', 'Fecha', 'Convenio',
-        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
-        'Valor a pagar (asesor)',
-      ],
+      // "Convenio" SÍ va en las filas de placa de Comerciales (a diferencia
+      // de Convenios/Asesores Convenio, donde el convenio ya está fijo por
+      // el grupo) — cada placa de un comercial puede tener un convenio
+      // distinto o ninguno, varía fila a fila. "Medio de pago" se quitó de
+      // Comerciales: pertenece al convenio, y la mayoría de placas de un
+      // comercial no tienen convenio — quedaba vacía casi siempre (ruido).
+      // Si se necesita el medio de pago de un convenio puntual, se consulta
+      // en la tabla Convenios, donde siempre aplica.
+      comerciales: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Clasificación', 'Convenio', 'Descuento', 'Valor a pagar'],
+      // Asesor y convenio son montos distintos — fusionarlos perdería
+      // información real, a diferencia de Método de pago/Cuenta que sí eran
+      // el mismo dato partido en 2 columnas.
       asesores_convenio: [
-        'Placa', 'Vehículo', 'Estado', 'Fecha', 'Convenio',
-        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
+        'Placa', 'Vehículo', 'Estado', 'Fecha', 'Clasificación', 'Continuidad', 'Medio de pago', 'Descuento',
         'Valor a pagar (asesor)', 'Valor a pagar (convenio)',
       ],
-      convenios: [
-        'Placa', 'Vehículo', 'Estado', 'Fecha',
-        ...COLUMNAS_META_CONVENIO, ...COLUMNAS_META_COMISION,
-        'Valor a pagar (convenio)',
-      ],
+      convenios: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Clasificación', 'Medio de pago', 'Descuento', 'Valor a pagar'],
       descuentos: ['Placa', 'Vehículo', 'Convenio', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada'],
     }
     // Posición (1-indexada) de la columna de dinero usada para el subtotal
-    // de cada grupo — en asesores_convenio son 2 columnas de dinero, pero
-    // el subtotal combinado (monto_asesor + monto_convenio) va en la última.
+    // de cada grupo (asesores_convenio tiene 2 — cada una con su propio
+    // subtotal, ver más abajo).
     const ANCHO_MONTO: Record<string, number> = {
       canal: 4,
-      comerciales: COLUMNAS.comerciales.length,
-      asesores_convenio: COLUMNAS.asesores_convenio.length,
-      convenios: COLUMNAS.convenios.length,
+      comerciales: 8,
+      asesores_convenio: 9, // (col 10 = convenio, se maneja aparte)
+      convenios: 8,
       descuentos: 5,
     }
     const MONEY_FMT = '$#,##0'
 
-    const TIPO_ASESOR_LABELS: Record<string, string> = {
-      ASESOR_COMERCIAL: 'Comercial',
-      ASESOR_CONVENIO: 'Convenio',
-      ASESOR_TELEMERCADEO: 'Telemercadeo',
+    // "Medio de pago" — Método de pago + Cuenta/Nequi fusionados en un solo
+    // texto ("EFECTIVO" o "TRANSFERENCIA — NEQUI 3217296280"), ya que son el
+    // mismo dato partido en 2 columnas separadas sin necesidad.
+    // 23 de 464 convenios con TRANSFERENCIA (5%) tienen numero_metodo_pago
+    // sucio en BD — texto como "AVANCE"/"DESCUENTOS AUTOS"/"NO APLICA" en
+    // vez de un número de cuenta real (confirmado contra datos reales, no
+    // es un bug de esta query). Un número de cuenta/Nequi real siempre
+    // trae 5+ dígitos seguidos — si no los tiene, se muestra el texto tal
+    // cual (es la señal que negocio necesita para limpiar ese convenio),
+    // pero con un formato que deja claro que NO es un número de cuenta.
+    const pareceNumeroDeCuenta = (v: string): boolean => /\d{5,}/.test(v)
+    const medioPago = (p: any): string => {
+      if (!p.metodo_pago) return '—'
+      if (p.metodo_pago === 'EFECTIVO') return 'EFECTIVO'
+      if (!p.numero_metodo_pago) return p.metodo_pago
+      return pareceNumeroDeCuenta(p.numero_metodo_pago)
+        ? `${p.metodo_pago} — ${p.numero_metodo_pago}`
+        : `${p.metodo_pago} (dato: ${p.numero_metodo_pago})`
     }
-    const tipoAsesorLabel = (raw: unknown): string => TIPO_ASESOR_LABELS[String(raw ?? '')] ?? '—'
-    const avanceLabel = (v: unknown): string => (v ? 'Sí' : 'No')
-    // "(inferido)" en el encabezado ya avisa que esta columna no es un dato
-    // confirmado — ver nota en resolvePlacasPorComisionIds: no existe un
-    // campo que distinga Informativo (dateo) de aplicado en caja; se infiere
-    // por la presencia de descuento_observacion_caja (solo se llena en caja).
-    const tipoDescuentoInferido = (p: any): string => {
-      if (!p.descuento_codigo_aplicado) return '—'
-      return p.descuento_observacion_caja ? 'Aplicado en caja' : 'Informativo'
+    // "Descuento" — Avance + Código descuento + Tipo (inferido) fusionados
+    // en una sola respuesta a "¿tuvo descuento, y cuál?". El origen
+    // dateo/caja sigue siendo una inferencia (no existe un campo que lo
+    // confirme — ver resolvePlacasPorComisionIds), por eso sigue entre
+    // paréntesis junto al código en vez de ser su propia columna.
+    const descripcionDescuento = (p: any): string => {
+      if (p.es_avance) return 'Avance'
+      if (!p.descuento_codigo_aplicado) return 'No'
+      return p.descuento_observacion_caja
+        ? `Aplicado en caja (${p.descuento_codigo_aplicado})`
+        : `Informativo (${p.descuento_codigo_aplicado})`
     }
-    // Columnas meta compartidas por Comerciales/Asesores Convenio (con
-    // Convenio) y Convenios (sin Convenio, ya está fijo por el grupo).
-    const filaMetaConConvenio = (p: any): (string | number)[] => [
-      p.convenio_nombre ?? '—',
-      p.reporta ?? '—',
-      p.metodo_pago ?? '—',
-      p.numero_metodo_pago ?? '—',
-      avanceLabel(p.es_avance),
-      tipoAsesorLabel(p.asesor_tipo),
-      p.descuento_codigo_aplicado ?? '—',
-      tipoDescuentoInferido(p),
-    ]
-    const filaMetaSinConvenio = (p: any): (string | number)[] => [
-      p.reporta ?? '—',
-      p.metodo_pago ?? '—',
-      p.numero_metodo_pago ?? '—',
-      avanceLabel(p.es_avance),
-      tipoAsesorLabel(p.asesor_tipo),
-      p.descuento_codigo_aplicado ?? '—',
-      tipoDescuentoInferido(p),
-    ]
 
     // Las fechas de la BD llegan en UTC (driver mysql2 las da como Date o
     // string "YYYY-MM-DD HH:mm:ss" ya en UTC) — hay que forzar la zona de
@@ -3698,13 +3715,16 @@ export default class ReportesAdministrativosController {
       if (seccion === 'comerciales')
         return [
           p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
-          ...filaMetaConConvenio(p),
+          clasificacion(p),
+          p.con_convenio ? (p.convenio_nombre ?? '—') : '—',
+          descripcionDescuento(p),
           p.monto_asesor,
         ]
       if (seccion === 'convenios')
         return [
           p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
-          ...filaMetaSinConvenio(p),
+          clasificacion(p),
+          medioPago(p), descripcionDescuento(p),
           p.monto_convenio,
         ]
       if (seccion === 'descuentos') {
@@ -3723,7 +3743,8 @@ export default class ReportesAdministrativosController {
       // asesores_convenio
       return [
         p.placa ?? '—', p.tipo_vehiculo ?? '—', p.estado, formatFechaBogota(p.fecha_calculo),
-        ...filaMetaConConvenio(p),
+        clasificacion(p), continuidad(p),
+        medioPago(p), descripcionDescuento(p),
         p.monto_asesor, p.monto_convenio,
       ]
     }
@@ -3735,13 +3756,57 @@ export default class ReportesAdministrativosController {
       return p.monto_asesor + p.monto_convenio
     }
 
+    // Tabla RESUMEN del grupo (asesor/convenio) — mismas columnas que ya se
+    // ven en pantalla para ese acordeón (ver <thead> correspondiente en
+    // ComisionesList.vue), en celdas separadas de verdad (sin merge, sin
+    // texto concatenado) — es una tabla propia, distinta de la tabla de
+    // detalle de placas de abajo, tal como en pantalla son 2 tablas
+    // visualmente separadas (fila del acordeón + detalle expandido).
+    // Calculada sobre las placas YA RESUELTAS para exportar (no reenviada
+    // desde el frontend), así el número siempre cuadra con lo listado debajo.
+    const COLUMNAS_RESUMEN: Record<string, string[]> = {
+      comerciales: ['Asesor', 'Turnos', 'Monto', 'Estados'],
+      asesores_convenio: ['Asesor', 'Convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'],
+      convenios: ['Convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'],
+    }
+    // Columna(s) 1-indexada(s) de dinero dentro de la fila RESUMEN, por sección.
+    const COL_MONTO_RESUMEN: Record<string, number[]> = {
+      comerciales: [3],
+      asesores_convenio: [4, 5],
+      convenios: [4],
+    }
+    const filaResumenValores = (seccion: string, grupo: { nombre: string; placas: any[] }): (string | number)[] => {
+      const placas = grupo.placas
+      const n = placas.length
+      const estados = [...new Set(placas.map((p: any) => p.estado))].join(', ') || '—'
+      if (seccion === 'comerciales') {
+        const monto = placas.reduce((s: number, p: any) => s + (Number(p.monto_asesor) || 0), 0)
+        return [grupo.nombre, n, monto, estados]
+      }
+      if (seccion === 'asesores_convenio') {
+        const montoAsesor = placas.reduce((s: number, p: any) => s + (Number(p.monto_asesor) || 0), 0)
+        const montoConvenio = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
+        return [grupo.nombre, placas[0]?.convenio_nombre ?? '—', n, montoAsesor, montoConvenio, estados]
+      }
+      if (seccion === 'convenios') {
+        const monto = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
+        return [grupo.nombre, placas[0]?.asesor_nombre ?? '—', n, monto, estados]
+      }
+      return [grupo.nombre]
+    }
+
     const workbook = new ExcelJS.Workbook()
     const ws = workbook.addWorksheet('Placas exportadas')
-    // 14 columnas es el máximo (asesores_convenio). Anchos especiales para
-    // las columnas de texto libre que pueden venir largas: Convenio/Reporta/
-    // Método de pago/Cuenta (idx 4-7) y "Regla aplicada" en Descuentos (idx 7).
-    const ANCHOS_ESPECIALES: Record<number, number> = { 4: 26, 5: 26, 6: 22, 7: 40 }
-    ws.columns = Array.from({ length: 14 }, (_, idx) => ({ width: ANCHOS_ESPECIALES[idx] ?? 18 }))
+    // Máximo 10 columnas (asesores_convenio). Columna A más ancha porque
+    // ahí caen tanto "Placa" (corto) como las etiquetas de subtotal
+    // ("Subtotal: <nombre> — N placas", que pueden ser largas) — con la
+    // celda de al lado real y vacía (sin '' que la bloquee, ver más abajo)
+    // el texto de todas formas se desborda visualmente si hace falta, pero
+    // un ancho base decente evita que se vea recortado en la mayoría de
+    // los casos. idx5 (Convenio/Continuidad/Medio de pago según sección) e
+    // idx6 (Descuento/Medio de pago) llevan texto libre más largo.
+    const ANCHOS_ESPECIALES: Record<number, number> = { 0: 32, 5: 28, 6: 26 }
+    ws.columns = Array.from({ length: 10 }, (_, idx) => ({ width: ANCHOS_ESPECIALES[idx] ?? 16 }))
 
     ws.addRow([`Liquidación RTM — Placas exportadas (${fechaInicio} a ${fechaFin})`]).font = {
       bold: true,
@@ -3750,6 +3815,7 @@ export default class ReportesAdministrativosController {
     ws.addRow([])
 
     let totalGeneral = 0
+    let totalPlacas = 0
     for (const { seccion, titulo, grupos } of secciones) {
       if (!grupos.length) continue
 
@@ -3761,36 +3827,91 @@ export default class ReportesAdministrativosController {
 
       const columnas = COLUMNAS[seccion]
       const colMonto = ANCHO_MONTO[seccion]
+      const columnasResumen = COLUMNAS_RESUMEN[seccion]
+      const colMontoResumen = COL_MONTO_RESUMEN[seccion] ?? []
 
+      // Header de la tabla RESUMEN (grupo) — UNA sola vez por sección, antes
+      // del primer grupo (canal/descuentos no tienen tabla resumen propia,
+      // van directo a la tabla de detalle con su fila de grupo simple de
+      // siempre). El header de la tabla DETALLE (placas) se imprime más
+      // abajo, también una sola vez, justo antes de las placas del primer
+      // grupo — así quedan las 2 tablas visualmente separadas, cada una
+      // con su propio header, sin repetirse por cada grupo.
+      if (columnasResumen) {
+        ws.addRow(columnasResumen).font = { bold: true }
+      }
+
+      let primerGrupo = true
       for (const grupo of grupos) {
-        ws.addRow([grupo.nombre]).font = { bold: true }
-        ws.addRow(columnas).font = { bold: true }
+        if (columnasResumen) {
+          // Fila de grupo — SUS PROPIAS columnas (Asesor/Convenio/Turnos/
+          // Monto/Estados, según sección), en celdas separadas reales — no
+          // las columnas de la placa (no le corresponden semánticamente) y
+          // sin merge ni texto concatenado.
+          const filaResumen = ws.addRow(filaResumenValores(seccion, grupo))
+          filaResumen.font = { bold: true }
+          for (let col = 1; col <= columnasResumen.length; col++) {
+            filaResumen.getCell(col).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
+          }
+          for (const col of colMontoResumen) filaResumen.getCell(col).numFmt = MONEY_FMT
+        } else {
+          // canal / descuentos: sin tabla resumen propia (fuera de alcance
+          // de este rediseño) — fila de grupo simple, como siempre.
+          const filaGrupo = ws.addRow([grupo.nombre])
+          filaGrupo.font = { bold: true }
+          filaGrupo.eachCell((cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
+          })
+        }
+
+        if (primerGrupo) {
+          ws.addRow(columnas).font = { bold: true }
+          primerGrupo = false
+        }
+
         let subtotal = 0
+        let subtotalAsesor = 0
+        let subtotalConvenio = 0
         for (const p of grupo.placas) {
           const fila = ws.addRow(filaValores(seccion, p))
           if (seccion === 'asesores_convenio') {
-            fila.getCell(COLUMNAS.asesores_convenio.length - 1).numFmt = MONEY_FMT
-            fila.getCell(COLUMNAS.asesores_convenio.length).numFmt = MONEY_FMT
+            fila.getCell(9).numFmt = MONEY_FMT
+            fila.getCell(10).numFmt = MONEY_FMT
+            subtotalAsesor += Number(p.monto_asesor) || 0
+            subtotalConvenio += Number(p.monto_convenio) || 0
           } else {
             fila.getCell(colMonto).numFmt = MONEY_FMT
           }
           subtotal += totalFila(seccion, p)
         }
-        const valoresSubtotal = new Array(columnas.length).fill('')
-        valoresSubtotal[0] = `Subtotal: ${grupo.nombre}`
-        valoresSubtotal[colMonto - 1] = subtotal
-        const filaSubtotal = ws.addRow(valoresSubtotal)
+        // "Total placas: N" y "Total: $X" — número real con numFmt, la
+        // etiqueta va en la celda de al lado (no concatenada en el mismo
+        // valor), para que el monto siga siendo sumable/usable en fórmulas.
+        const nPlacas = grupo.placas.length
+        const filaSubtotal = ws.addRow(['Total placas:', nPlacas])
         filaSubtotal.font = { bold: true }
-        filaSubtotal.getCell(colMonto).numFmt = MONEY_FMT
+        if (seccion === 'asesores_convenio') {
+          filaSubtotal.getCell(8).value = 'Total:'
+          filaSubtotal.getCell(9).value = subtotalAsesor
+          filaSubtotal.getCell(9).numFmt = MONEY_FMT
+          filaSubtotal.getCell(10).value = subtotalConvenio
+          filaSubtotal.getCell(10).numFmt = MONEY_FMT
+        } else {
+          filaSubtotal.getCell(colMonto - 1).value = 'Total:'
+          filaSubtotal.getCell(colMonto).value = subtotal
+          filaSubtotal.getCell(colMonto).numFmt = MONEY_FMT
+        }
         totalGeneral += subtotal
-        ws.addRow([])
+        totalPlacas += nPlacas
       }
+      ws.addRow([])
     }
 
     // Fila resumen final, independiente de en qué columna cae el dinero de
-    // cada sección (varía por sección tras agregar las columnas meta) —
-    // va en la columna 2, justo después de la etiqueta.
-    const filaTotal = ws.addRow(['TOTAL GENERAL EXPORTADO:', totalGeneral])
+    // cada sección — va en columnas fijas al inicio de la fila, con ambos
+    // números explícitos y etiquetados (total de placas de TODAS las
+    // secciones/grupos incluidas en el export, no solo dinero).
+    const filaTotal = ws.addRow(['TOTAL GENERAL EXPORTADO:', totalGeneral, 'Total placas:', totalPlacas])
     filaTotal.font = { bold: true }
     filaTotal.getCell(2).numFmt = MONEY_FMT
     filaTotal.eachCell((cell) => {
