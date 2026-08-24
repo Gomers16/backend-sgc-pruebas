@@ -3368,7 +3368,16 @@ export default class ReportesAdministrativosController {
     }
 
     const rows = (await query
-      .select('ft.id as ticket_id', 'ft.placa', 'ft.tipo_vehiculo', 'ft.fecha_pago', 'ft.total')
+      .select(
+        'ft.id as ticket_id',
+        'ft.placa',
+        'ft.tipo_vehiculo',
+        'ft.fecha_pago',
+        'ft.total',
+        'ft.agente_comercial_nombre',
+        'ft.asesor_convenio_nombre',
+        'ft.convenio_nombre'
+      )
       .orderBy('ft.placa', 'asc')) as any[]
 
     return rows.map((r) => ({
@@ -3377,6 +3386,9 @@ export default class ReportesAdministrativosController {
       tipo_vehiculo: r.tipo_vehiculo,
       fecha_pago: r.fecha_pago,
       monto: Number(r.total) || 0,
+      agente_comercial_nombre: r.agente_comercial_nombre ?? null,
+      asesor_convenio_nombre: r.asesor_convenio_nombre ?? null,
+      convenio_nombre: r.convenio_nombre ?? null,
     }))
   }
 
