@@ -804,14 +804,26 @@ export default class TurnosRtmController {
       // coincide, no bloquea — el backend es la fuente de verdad real.
       let dateo: CaptacionDateo | null = null
       if (raw.dateoId) {
-        const dateoExplicito = await CaptacionDateo.query({ client: trx })
-          .where('id', Number(raw.dateoId))
-          .first()
-        // No confiar ciegamente en el dateoId que manda el frontend: si su
-        // servicio no coincide, se trata como si no se hubiera mandado nada
-        // y se cae al fallback por placa/teléfono+servicio de abajo.
-        if (dateoExplicito && dateoAplicaAServicio(dateoExplicito, servicio.id)) {
-          dateo = dateoExplicito
+        // 🆕 Antes de consultar, validar que raw.dateoId sea un número finito
+        // real. Un valor no numérico (ej. "abc") pasado crudo a `.where('id', NaN)`
+        // rompía la query con un 500 ("Unknown column 'NaN'") en vez de caer al
+        // fallback como cualquier otro dateoId inválido/no aplicable.
+        const dateoIdNum = Number(raw.dateoId)
+        if (Number.isFinite(dateoIdNum)) {
+          const dateoExplicito = await CaptacionDateo.query({ client: trx })
+            .where('id', dateoIdNum)
+            .first()
+          // No confiar ciegamente en el dateoId que manda el frontend: si su
+          // servicio no coincide, se trata como si no se hubiera mandado nada
+          // y se cae al fallback por placa/teléfono+servicio de abajo.
+          if (dateoExplicito && dateoAplicaAServicio(dateoExplicito, servicio.id)) {
+            dateo = dateoExplicito
+          }
+        } else {
+          console.log('⚠️ [DATEO-INVALIDO] raw.dateoId no es numérico, se ignora y cae al fallback:', {
+            rawDateoIdRecibido: raw.dateoId,
+            tipo: typeof raw.dateoId,
+          })
         }
       }
       if (!dateo) {
@@ -846,28 +858,79 @@ export default class TurnosRtmController {
       let captacionDateoId: number | null = null
       let esAvanceHeredado: boolean = false
 
+      // 🆕 Logging de diagnóstico permanente (no solo para debug puntual):
+      // deja rastro en pm2 logs de qué dateoId llegó y qué dateo se resolvió
+      // ANTES de validar vigencia, para poder reconstruir con certeza un caso
+      // como este si vuelve a pasar sin causa clara.
+      console.log('🔎 [DATEO-DIAGNOSTICO] Antes de validar vigencia:', {
+        rawDateoIdRecibido: raw.dateoId,
+        tipoRawDateoId: typeof raw.dateoId,
+        dateoResueltoId: dateo?.id ?? 'ninguno',
+        servicioIdTurno: servicio.id,
+      })
+
+      // 🆕 Aplica un dateo vigente con la misma lógica de vinculación que ya
+      // usaba el camino feliz (canalAtribucion, agenteCaptacionId,
+      // captacionDateoId, esAvanceHeredado) — compartida también por el
+      // reintento (Capa 1) y la red de seguridad final (Capa 2) para no
+      // triplicar esta lógica.
+      const vincularDateoVigente = (d: CaptacionDateo) => {
+        dateo = d
+        dateoObservacion = d.observacion || null
+        dateoImagenUrl = d.imagenUrl || null
+        dateoCanal = d.canal || null
+
+        const cRaw = (d as any).canal as string | undefined
+        const cNorm = normalizeCanal(cRaw)
+        if (cNorm && !canalAtribucion) {
+          canalAtribucion = cNorm
+        }
+        if (!agenteCaptacionId) {
+          agenteCaptacionId = (d as any).agenteId ?? (d as any).agente_id ?? null
+        }
+
+        captacionDateoId = d.id
+        esAvanceHeredado = Boolean((d as any).esAvance ?? false)
+      }
+
       if (dateo) {
         const r = await buildReserva(dateo)
         if (r.vigente) {
-          const cRaw = (dateo as any).canal as string | undefined
-          const cNorm = normalizeCanal(cRaw)
-
-          if (cNorm && !canalAtribucion) {
-            canalAtribucion = cNorm
-          }
-
-          if (!agenteCaptacionId) {
-            agenteCaptacionId = (dateo as any).agenteId ?? (dateo as any).agente_id ?? null
-          }
-
-          captacionDateoId = dateo.id
-          esAvanceHeredado = Boolean((dateo as any).esAvance ?? false)
+          vincularDateoVigente(dateo)
           console.log(`🆕 esAvance heredado del dateo ${dateo.id}: ${esAvanceHeredado}`)
         } else {
+          // 🆕 Capa 1: el candidato (explícito o fallback) no está vigente —
+          // antes de rendirnos, reintentamos el fallback por placa/teléfono
+          // + servicio EXCLUYENDO este id, por si hay otro dateo vigente
+          // disponible para esta misma placa+servicio.
+          const dateoDescartadoId = dateo.id
           dateo = null
           dateoObservacion = null
           dateoImagenUrl = null
           dateoCanal = null
+
+          const dateoRetry = await CaptacionDateo.query({ client: trx })
+            .where((qb) => {
+              qb.where('placa', placa)
+              if (telefono) qb.orWhere('telefono', telefono)
+            })
+            .andWhere('servicio_id', servicio.id)
+            .whereNot('id', dateoDescartadoId)
+            .orderBy('created_at', 'desc')
+            .first()
+
+          if (dateoRetry) {
+            const rRetry = await buildReserva(dateoRetry)
+            if (rRetry.vigente) {
+              vincularDateoVigente(dateoRetry)
+              console.log('🆕 [RETRY] Dateo descartado por no vigente — se vinculó otro dateo vigente en el reintento:', {
+                dateoDescartadoId,
+                dateoVinculadoId: dateoRetry.id,
+                placa,
+                servicioId: servicio.id,
+              })
+            }
+          }
         }
       }
       // ── Clasificación de recurrencia en tiempo real ──
@@ -934,6 +997,30 @@ export default class TurnosRtmController {
           }
         }
       }
+      // 🆕 Capa 2: red de seguridad final, independiente de la causa raíz.
+      // Si a esta altura captacionDateoId sigue null, se intenta una última
+      // vez por placa+servicio_id antes de crear el turno sin vincular.
+      if (!captacionDateoId) {
+        const dateoUltimoIntento = await CaptacionDateo.query({ client: trx })
+          .where('placa', placa)
+          .andWhere('servicio_id', servicio.id)
+          .orderBy('created_at', 'desc')
+          .first()
+
+        if (dateoUltimoIntento) {
+          const rUltimoIntento = await buildReserva(dateoUltimoIntento)
+          if (rUltimoIntento.vigente) {
+            vincularDateoVigente(dateoUltimoIntento)
+            console.log('🆕 [RED-SEGURIDAD] captacionDateoId seguía null justo antes de crear el turno — se vinculó en el último intento:', {
+              rawDateoIdOriginal: raw.dateoId,
+              dateoVinculadoId: dateoUltimoIntento.id,
+              placa,
+              servicioId: servicio.id,
+            })
+          }
+        }
+      }
+
       const payload: any = {
         sedeId: usuarioCreador.sedeId!,
         funcionarioId: usuarioCreador.id,
