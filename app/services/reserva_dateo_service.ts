@@ -17,10 +17,44 @@ interface DateoComoReserva {
   /** Fecha del último re-dateo confirmado (con evidencia). Si existe, la
    * ventana de exclusividad se recalcula desde acá en vez de desde createdAt. */
   redateadoAt?: DateTime | null
+  /** 🆕 Servicio del dateo — decide la cadencia del TTL post-consumo (ver
+   * ttlPostConsumoDiasPorServicio). Los 9 call sites existentes ya pasan una
+   * instancia real de CaptacionDateo, que siempre trae esta columna. */
+  servicioId?: number | null
 }
 
 function ttlPostConsumoDias(): number {
   return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
+}
+
+// 🆕 Cadencia de bloqueo post-consumo por tipo de servicio: RTM/SOAT usan el
+// TTL global de siempre (365 días); PREVENTIVA/PERITAJE se liberan mucho
+// antes (60 días) — su ciclo de recompra real es más corto y bloquearlos
+// casi un año generaba falsos "dateo activo" (ver caso WTP333/PREVENTIVA).
+function ttlPostConsumoDiasPorServicio(codigoServicio: string | null): number {
+  if (codigoServicio === 'PREV' || codigoServicio === 'PERI') {
+    return Number(process.env.TTL_POST_CONSUMO_DIAS_PREV_PERI ?? 60)
+  }
+  return ttlPostConsumoDias()
+}
+
+// Cache en memoria del proceso (mismo patrón/TTL que getHorasExclusividad()
+// abajo): evita una query a `servicios` en cada buildReserva().
+const CACHE_SERVICIOS_MS = 15_000
+let cacheServicios: { porId: Map<number, string>; expiresAt: number } | null = null
+
+async function getCodigoServicio(servicioId: number | null | undefined): Promise<string | null> {
+  if (!servicioId) return null
+
+  if (!cacheServicios || cacheServicios.expiresAt <= Date.now()) {
+    const { default: Servicio } = await import('#models/servicio')
+    const servicios = await Servicio.query().select(['id', 'codigoServicio'])
+    const porId = new Map<number, string>()
+    for (const s of servicios) porId.set(s.id, s.codigoServicio.toUpperCase())
+    cacheServicios = { porId, expiresAt: Date.now() + CACHE_SERVICIOS_MS }
+  }
+
+  return cacheServicios.porId.get(servicioId) ?? null
 }
 
 // Mismo criterio de normalización que CaptacionDateo.normalize() (beforeSave)
@@ -65,7 +99,8 @@ export async function buildReserva(
   const now = DateTime.now()
 
   if (d.consumidoTurnoId && d.consumidoAt) {
-    const hasta = d.consumidoAt.plus({ days: ttlPostConsumoDias() })
+    const codigoServicio = await getCodigoServicio(d.servicioId)
+    const hasta = d.consumidoAt.plus({ days: ttlPostConsumoDiasPorServicio(codigoServicio) })
     return { vigente: now < hasta, bloqueaHasta: hasta.toISO() }
   }
 

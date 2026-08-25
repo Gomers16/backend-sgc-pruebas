@@ -900,7 +900,28 @@ export default class CaptacionDateosController {
     if (servicioDateoIdEfectivo === null) {
       const servicioRtmDefault = await Servicio.query().where('codigo_servicio', 'RTM').first()
       servicioDateoIdEfectivo = servicioRtmDefault?.id ?? null
+      // 🆕 Guardar también la instancia (no solo el id) cuando cae al default
+      // de RTM — el mensaje de "dateo activo" de más abajo necesita
+      // servicioDateo.nombreServicio, no solo el id.
+      servicioDateo = servicioDateo ?? servicioRtmDefault
     }
+
+    // 🆕 Código del servicio del dateo — hoisted aquí (antes vivía más abajo,
+    // junto a VALIDACIÓN 2/RTM_VIGENTE) porque ahora también lo necesita el
+    // chequeo de "dateo activo" (exclusividad), que corre antes en el método.
+    const codigoServicioDateo = (servicioDateo?.codigoServicio ?? 'RTM').toUpperCase()
+    const esDateoParaRtm = codigoServicioDateo === 'RTM'
+
+    // 🆕 Rol privilegiado y flag de confirmación — hoisted por el mismo
+    // motivo: los usa tanto el chequeo de "dateo activo" (nuevo) como
+    // VALIDACIÓN 2/RTM_VIGENTE (ya existente, más abajo).
+    await auth.user!.load('rol')
+    const rolNombreExcepcion = auth.user!.rol?.nombre ?? ''
+    const esPrivilegiado = ['SUPER_ADMIN', 'GERENCIA'].includes(rolNombreExcepcion)
+
+    const confirmarExcepcion =
+      request.input('confirmar_excepcion') === true ||
+      request.input('confirmar_excepcion') === 'true'
     // ========== 🆕 AVANCE ==========
     /**
      * es_avance:
@@ -1037,26 +1058,58 @@ export default class CaptacionDateosController {
 
     const ultimo = await ultimoQuery.first()
 
+    // 🆕 Excepción DATEO_ACTIVO: mismo patrón que excepcionRtmAprobada de
+    // VALIDACIÓN 2 más abajo — se declara aquí porque este chequeo corre
+    // antes en el método.
+    let excepcionDateoActivoAprobada = false
+
     if (ultimo) {
       const reserva = await buildReserva(ultimo)
       if (reserva.vigente) {
-        const u = ultimo.serialize() as any
-        return response.status(409).send({
-          message: 'Ya existe un dateo activo para esta placa/teléfono dentro de la ventana.',
-          dateoId: u.id,
-          bloqueadoHasta: reserva.bloqueaHasta,
-          por: u?.agente?.nombre ?? null,
-        })
+        const nombreServicioBloqueo = servicioDateo?.nombreServicio ?? codigoServicioDateo
+        const fechaBloqueo = reserva.bloqueaHasta
+          ? DateTime.fromISO(reserva.bloqueaHasta).toFormat('dd/LL/yyyy')
+          : null
+        // El TTL post-consumo (365/60 días, ver ttlPostConsumoDiasPorServicio)
+        // solo aplica a dateos ya CONSUMIDOS (típicamente EXITOSO) — un
+        // PENDIENTE/EN_PROCESO recién creado por otro asesor cae en la rama
+        // de horasExclusividad de buildReserva(), mensaje distinto porque
+        // ahí no es correcto decir "exitoso".
+        const esConsumido = !!(ultimo.consumidoTurnoId && ultimo.consumidoAt)
+        const mensaje = esConsumido
+          ? `Esta placa ya tiene un dateo de ${nombreServicioBloqueo} exitoso, vigente hasta ${fechaBloqueo}. Podrá datear de nuevo a partir de esa fecha.`
+          : `Ya existe un dateo activo de ${nombreServicioBloqueo} para esta placa/teléfono, vigente hasta ${fechaBloqueo}.`
+
+        if (esPrivilegiado && confirmarExcepcion) {
+          // El admin ya confirmó la excepción: se deja continuar y se registra abajo.
+          excepcionDateoActivoAprobada = true
+        } else if (esPrivilegiado) {
+          const diasRestantesBloqueo = reserva.bloqueaHasta
+            ? Math.ceil(DateTime.fromISO(reserva.bloqueaHasta).diff(DateTime.now(), 'days').days)
+            : null
+          return response.conflict({
+            code: 'DATEO_ACTIVO_EXCEPCION_DISPONIBLE',
+            message: mensaje,
+            dateoId: ultimo.id,
+            servicio: nombreServicioBloqueo,
+            bloqueadoHasta: reserva.bloqueaHasta,
+            diasRestantes: diasRestantesBloqueo,
+          })
+        } else {
+          return response.conflict({
+            code: 'DATEO_ACTIVO',
+            message: mensaje,
+            dateoId: ultimo.id,
+            servicio: nombreServicioBloqueo,
+            bloqueadoHasta: reserva.bloqueaHasta,
+          })
+        }
       }
     }
 
     // ========================================
     // 🚫 VALIDACIONES DE TURNO
     // ========================================
-
-    // Código del servicio del dateo — se necesita en ambas validaciones
-    const codigoServicioDateo = (servicioDateo?.codigoServicio ?? 'RTM').toUpperCase()
-    const esDateoParaRtm = codigoServicioDateo === 'RTM'
 
     // VALIDACIÓN 1: Bloquear si hay turno ACTIVO hoy (el vehículo ya está en la sede)
     const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
@@ -1068,11 +1121,6 @@ export default class CaptacionDateosController {
       .preload('servicio')
       .orderBy('id', 'desc')
       .first()
-
-    // Verificar si el usuario tiene rol privilegiado
-    await auth.user!.load('rol')
-    const rolNombre = auth.user!.rol?.nombre ?? ''
-    const esPrivilegiado = ['SUPER_ADMIN', 'GERENCIA'].includes(rolNombre)
 
     if (turnoActivoHoy && !esPrivilegiado) {
       const codigoTurnoActivo = (turnoActivoHoy.servicio?.codigoServicio ?? '').toUpperCase()
@@ -1090,12 +1138,8 @@ export default class CaptacionDateosController {
       }
     }
     // VALIDACIÓN 2: Bloquear si tiene RTM vigente — solo aplica si el dateo es para RTM
-
-    // 🆕 Excepción controlada para SUPER_ADMIN/GERENCIA: si confirman explícitamente,
-    // se permite continuar aunque exceda la ventana de días permitida.
-    const confirmarExcepcion =
-      request.input('confirmar_excepcion') === true ||
-      request.input('confirmar_excepcion') === 'true'
+    // (confirmarExcepcion y esPrivilegiado ya se calcularon arriba, junto al
+    // chequeo de "dateo activo" — reutilizados aquí sin cambios.)
 
     let excepcionRtmAprobada = false
 
@@ -1200,9 +1244,25 @@ export default class CaptacionDateosController {
         (turnoActivoHoy.servicio?.codigoServicio ?? '').toUpperCase() === codigoServicioDateo
           ? DateTime.now()
           : undefined,
-      // 🆕 Excepción RTM_VIGENTE: se registra quién (usuario logueado) aprobó, no el asesor
-      aprobadoExcepcionPor: excepcionRtmAprobada ? auth.user!.id : undefined,
-      aprobadoExcepcionAt: excepcionRtmAprobada ? DateTime.now() : undefined,
+      // 🆕 Excepción RTM_VIGENTE o DATEO_ACTIVO: se registra quién (usuario
+      // logueado) aprobó, no el asesor — aprobadoExcepcionTipo distingue cuál
+      // de las 2 reglas se saltó. ⚠️ Caso borde conocido: si en el MISMO
+      // request bloquean tanto "dateo activo" (mismo servicio) como
+      // RTM_VIGENTE (placa con RTM reciente), un solo confirmar_excepcion=true
+      // aprueba las DOS de una vez (mismo flag, sin que el usuario vea el
+      // segundo modal) — aprobadoExcepcionTipo solo guarda RTM_VIGENTE en ese
+      // caso (prioridad del ternario de abajo), perdiendo el rastro de que
+      // DATEO_ACTIVO también se saltó. Aceptado como limitación conocida al
+      // reutilizar el mismo flag; no resuelto en este fix.
+      aprobadoExcepcionPor:
+        excepcionRtmAprobada || excepcionDateoActivoAprobada ? auth.user!.id : undefined,
+      aprobadoExcepcionAt:
+        excepcionRtmAprobada || excepcionDateoActivoAprobada ? DateTime.now() : undefined,
+      aprobadoExcepcionTipo: excepcionRtmAprobada
+        ? 'RTM_VIGENTE'
+        : excepcionDateoActivoAprobada
+          ? 'DATEO_ACTIVO'
+          : undefined,
     })
     if (placa) {
       try {

@@ -30,6 +30,23 @@ function ttlSinConsumir(): number {
 function ttlPostConsumo(): number {
   return Number(process.env.TTL_POST_CONSUMO_DIAS ?? 365)
 }
+
+// 🆕 Misma cadencia por servicio que ttlPostConsumoDiasPorServicio() en
+// reserva_dateo_service.ts (mismas 2 variables de entorno) — duplicada aquí
+// a propósito: bloqueadoHasta/bloqueado son @computed() de Lucid, que Lucid
+// evalúa de forma SÍNCRONA al serializar, así que no pueden hacer el mismo
+// lookup async+cache a `servicios` que hace buildReserva() vía
+// getCodigoServicio(). En su lugar usan this.servicio?.codigoServicio (la
+// relación ya cargada) — si el caller no la precargó con .preload('servicio'),
+// cae al TTL de RTM/SOAT (365 días) como fallback conservador, igual que
+// ttlPostConsumo() se comportaba antes de este fix para todos los servicios.
+function ttlPostConsumoPorServicio(codigoServicio: string | null | undefined): number {
+  if (codigoServicio === 'PREV' || codigoServicio === 'PERI') {
+    return Number(process.env.TTL_POST_CONSUMO_DIAS_PREV_PERI ?? 60)
+  }
+  return ttlPostConsumo()
+}
+
 function normalizePlaca(v?: string | null) {
   return v ? v.replace(/[\s-]/g, '').toUpperCase() : (v ?? null)
 }
@@ -178,12 +195,19 @@ export default class CaptacionDateo extends BaseModel {
   declare comprobanteAvanceUrl: string | null
   // ========== FIN AVANCE ==========
 
-  // ========== 🆕 EXCEPCIÓN RTM_VIGENTE (SUPER_ADMIN / GERENCIA) ==========
+  // ========== 🆕 EXCEPCIÓN RTM_VIGENTE / DATEO_ACTIVO (SUPER_ADMIN / GERENCIA) ==========
   @column({ columnName: 'aprobado_excepcion_por' })
   declare aprobadoExcepcionPor: number | null
 
   @column.dateTime({ columnName: 'aprobado_excepcion_at' })
   declare aprobadoExcepcionAt: DateTime | null
+
+  /** 🆕 Distingue cuál de las 2 reglas se saltó — aprobadoExcepcionPor/At son
+   * genéricos y compartidos, este campo es lo único que dice si fue por
+   * RTM_VIGENTE (placa con RTM reciente) o DATEO_ACTIVO (dateo ya
+   * consumido/exitoso dentro de su TTL post-consumo). */
+  @column({ columnName: 'aprobado_excepcion_tipo' })
+  declare aprobadoExcepcionTipo: 'RTM_VIGENTE' | 'DATEO_ACTIVO' | null
   // ========== FIN EXCEPCIÓN ==========
 
   // ========== 🆕 RE-DATEAR CON EVIDENCIA ==========
@@ -260,7 +284,10 @@ export default class CaptacionDateo extends BaseModel {
   public get bloqueadoHasta(): string | null {
     if (!this.createdAt) return null
     const base = this.consumidoTurnoId && this.consumidoAt ? this.consumidoAt : this.createdAt
-    const days = this.consumidoTurnoId && this.consumidoAt ? ttlPostConsumo() : ttlSinConsumir()
+    const days =
+      this.consumidoTurnoId && this.consumidoAt
+        ? ttlPostConsumoPorServicio(this.servicio?.codigoServicio)
+        : ttlSinConsumir()
     return base.plus({ days }).toISO()
   }
 
@@ -268,7 +295,10 @@ export default class CaptacionDateo extends BaseModel {
   public get bloqueado(): boolean {
     if (!this.createdAt) return false
     const base = this.consumidoTurnoId && this.consumidoAt ? this.consumidoAt : this.createdAt
-    const days = this.consumidoTurnoId && this.consumidoAt ? ttlPostConsumo() : ttlSinConsumir()
+    const days =
+      this.consumidoTurnoId && this.consumidoAt
+        ? ttlPostConsumoPorServicio(this.servicio?.codigoServicio)
+        : ttlSinConsumir()
     return DateTime.now() < base.plus({ days })
   }
 }
