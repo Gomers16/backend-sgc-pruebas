@@ -357,12 +357,11 @@ export default class CaptacionDateosController {
       .whereRaw('TIMESTAMPDIFF(MINUTE, COALESCE(redateado_at, created_at), NOW()) >= ?', [
         minutosVencimiento,
       ])
-      // 🆕 Guard de turno vinculado: si el vehículo ya llegó y tiene un
-      // turno activo/finalizado vinculado a este dateo, no lo toques acá
-      // aunque venza la ventana — evita que quede en RE_DATEAR mientras el
-      // turno sigue vivo (ver guard principal en redatear()). Un turno
-      // cancelado/inactivo vinculado no cuenta, ese caso sigue venciendo
-      // normal.
+      // 🆕 Guard de turno vinculado: excluye dateos con un turno
+      // activo/finalizado ya vinculado — no deben llegar a RE_DATEAR
+      // mientras el turno sigue vivo (ver guard principal en redatear()).
+      // Turno cancelado/inactivo vinculado no bloquea, ese caso sigue
+      // venciendo normal.
       .whereNotExists((sub) => {
         sub
           .from('turnos_rtms')
