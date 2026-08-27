@@ -1,6 +1,7 @@
 // app/services/reserva_dateo_service.ts
 import { DateTime } from 'luxon'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
+import type TurnoRtm from '#models/turno_rtm'
 
 /**
  * Ventana de exclusividad de un dateo sobre placa/teléfono, compartida por
@@ -135,6 +136,39 @@ export function dateoAplicaAServicio(
   if (!dateo) return false
   if (!servicioId) return false
   return dateo.servicioId === servicioId
+}
+
+/**
+ * Ventana de 40 minutos desde turno.horaIngreso dentro de la cual un turno
+ * SIN dateo vinculado (captacion_dateo_id NULL) todavía puede recibir un
+ * dateo de excepción sin pasar por el ticket "Excepción de Dateo". Usada por
+ * captacion_dateos_controller.ts::store() ANTES de la validación de
+ * exclusividad por placa+servicio.
+ *
+ * Mismo parseo de horaIngreso ('HH:mm:ss' con fallback a 'HH:mm', zona
+ * America/Bogota) que ya usan registrarSalida() (turnos_rtms_controller.ts)
+ * y confirmar()/applyCommissionHook() (facturacion_tickets_controller.ts).
+ */
+// Exportada (antes vivía solo dentro de la función) para que
+// captacion_dateos_controller.ts::store() pueda calcular
+// minutos_restantes_ventana en la respuesta de éxito sin duplicar el 40
+// como número mágico en dos archivos.
+export const VENTANA_MINUTOS_DATEO_TURNO = 40
+
+export function dentroVentanaDateoTurno(turno: {
+  horaIngreso: TurnoRtm['horaIngreso']
+}): { dentro: boolean; minutosTotales: number; minutosExceso: number } {
+  let entrada = DateTime.fromFormat(turno.horaIngreso, 'HH:mm:ss', { zone: 'America/Bogota' })
+  if (!entrada.isValid) {
+    entrada = DateTime.fromFormat(turno.horaIngreso, 'HH:mm', { zone: 'America/Bogota' })
+  }
+
+  const ahora = DateTime.local().setZone('America/Bogota')
+  const minutosTotales = Math.max(0, Math.floor(ahora.diff(entrada, 'minutes').minutes))
+  const minutosExceso = Math.max(0, minutosTotales - VENTANA_MINUTOS_DATEO_TURNO)
+  const dentro = minutosTotales <= VENTANA_MINUTOS_DATEO_TURNO
+
+  return { dentro, minutosTotales, minutosExceso }
 }
 
 /**

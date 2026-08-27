@@ -2546,5 +2546,109 @@ router
       })
       .prefix('/tarifas-servicios')
       .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    /* ============================================================
+     *          TICKETS INTERNOS (genérico + Excepción de Dateo)
+     * ============================================================*/
+
+    // Catálogo de tipos de ticket que el usuario autenticado puede CREAR —
+    // filtrado server-side por roles_creador (mismo criterio que
+    // roles_controller.ts para otros selectores). Sin checkRole: el
+    // filtrado es interno, según el rol de quien pregunta.
+    router
+      .get('/tipos-ticket', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().tiposIndex(ctx)
+      })
+      .use([middleware.auth()])
+
+    // Bandeja general — abierta a cualquier rol autenticado, el propio
+    // controller filtra por roles_resuelve/creado_por_id (ver
+    // tickets_controller.ts::index()).
+    router
+      .get('/tickets', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().index(ctx)
+      })
+      .use([middleware.auth()])
+
+    router
+      .get('/tickets/:id', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().show(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth()])
+
+    router
+      .post('/tickets/comentarios', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().agregarComentario(ctx)
+      })
+      .use([middleware.auth()])
+
+    // Excepción de Dateo — roles_creador/roles_resuelve del seed
+    // (database/migrations/1787000000006_insert_tipo_ticket_excepcion_dateo.ts).
+    router
+      .post('/tickets-excepcion-dateo', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().crear(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['COMERCIAL', 'SUPER_ADMIN', 'GERENCIA'] }),
+      ])
+
+    router
+      .patch('/tickets-excepcion-dateo/:id/aprobar', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().aprobar(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .patch('/tickets-excepcion-dateo/:id/rechazar', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().rechazar(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    // Saldo de penalizaciones — mismos roles que gestionan comisiones
+    // (comisiones_controller.ts: gestionarComisiones/aprobarComisiones/pagarComisiones).
+    router
+      .get('/saldo-penalizaciones/:asesorId', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().saldoShow(ctx)
+      })
+      .where('asesorId', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
+    router
+      .post('/saldo-penalizaciones/:asesorId/cobrar', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().cobrarSaldo(ctx)
+      })
+      .where('asesorId', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
+      ])
+
+    /* ============== FIN TICKETS INTERNOS ============== */
   })
   .prefix('/api')

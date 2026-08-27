@@ -249,7 +249,9 @@ function calcularSemaforo(pct: number | null): 'VERDE' | 'AMARILLO' | 'ROJO' | '
   return 'ROJO'
 }
 
-function calcularPct(avance: number, meta: number): number | null {
+// 🆕 export: reutilizada por penalizacion_service.ts::evaluarCumplioMeta()
+// para el mismo redondeo que ya usa metaComercialResumen()/pct_avance.
+export function calcularPct(avance: number, meta: number): number | null {
   return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : null
 }
 
@@ -463,20 +465,26 @@ async function obtenerCostoBaseRtmGlobal(): Promise<{ moto: number; vehiculo: nu
  * 'TST%') — sin esto se generaba de más con turnos cancelados/activos,
  * igual que el bug ya corregido en Ingresos por Canal/Retención.
  */
-type IngresoRtmGeneradoCanal = {
+export type IngresoRtmGeneradoCanal = {
   motos: number
   vehiculos: number
   pesosMotos: number
   pesosVehiculos: number
 }
-type IngresoRtmGeneradoAsesor = {
+export type IngresoRtmGeneradoAsesor = {
   costoBaseMoto: number
   costoBaseVehiculo: number
   convenio: IngresoRtmGeneradoCanal
   comercial: IngresoRtmGeneradoCanal
 }
 
-async function calcularIngresoRtmGeneradoPorAsesor(
+/**
+ * 🆕 export: reutilizada directamente por penalizacion_service.ts
+ * (evaluarCumplioMeta) para el mismo cálculo de "ingreso RTM generado" que
+ * ya usa metaComercialResumen()/metaComercialSuperInforme() — sin pasar por
+ * el endpoint HTTP bulk, que no filtra por un solo asesor.
+ */
+export async function calcularIngresoRtmGeneradoPorAsesor(
   asesorIds: number[],
   fechaInicio: string,
   fechaFin: string
