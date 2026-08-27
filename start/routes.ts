@@ -2587,6 +2587,61 @@ router
       })
       .use([middleware.auth()])
 
+    // 🆕 Configuración de ventana de ticket sin penalización (global +
+    // override por asesor) — mismo patrón que
+    // /captacion-dateos/config/max-redateos.
+    router
+      .get('/tickets/config/ventana', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().ventanaConfigGet(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ])
+
+    router
+      .post('/tickets/config/ventana', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().ventanaConfigUpsert(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .get('/tickets/config/ventana/asesores', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().ventanaAsesoresIndex(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ])
+
+    router
+      .post('/tickets/config/ventana/asesores', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().ventanaAsesoresUpsert(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .delete('/tickets/config/ventana/asesores/:id', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().ventanaAsesoresDelete(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
     // Excepción de Dateo — roles_creador/roles_resuelve del seed
     // (database/migrations/1787000000006_insert_tipo_ticket_excepcion_dateo.ts).
     router

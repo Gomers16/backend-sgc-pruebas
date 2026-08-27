@@ -139,25 +139,22 @@ export function dateoAplicaAServicio(
 }
 
 /**
- * Ventana de 40 minutos desde turno.horaIngreso dentro de la cual un turno
- * SIN dateo vinculado (captacion_dateo_id NULL) todavía puede recibir un
- * dateo de excepción sin pasar por el ticket "Excepción de Dateo". Usada por
- * captacion_dateos_controller.ts::store() ANTES de la validación de
- * exclusividad por placa+servicio.
+ * Todo turno SIN dateo vinculado (captacion_dateo_id NULL) requiere un
+ * ticket "Excepción de Dateo" para registrar su dateo — sin excepción. Esta
+ * función solo determina si ese ticket, al aprobarse, lleva penalización o
+ * no: dentro de `minutosVentana` desde turno.horaIngreso = sin penalización.
+ * Usada por captacion_dateos_controller.ts::store() (para el código de la
+ * respuesta 409) y tickets_excepcion_dateo_controller.ts::crear() (para
+ * fijar el snapshot `dentro_ventana` del ticket).
  *
  * Mismo parseo de horaIngreso ('HH:mm:ss' con fallback a 'HH:mm', zona
  * America/Bogota) que ya usan registrarSalida() (turnos_rtms_controller.ts)
  * y confirmar()/applyCommissionHook() (facturacion_tickets_controller.ts).
  */
-// Exportada (antes vivía solo dentro de la función) para que
-// captacion_dateos_controller.ts::store() pueda calcular
-// minutos_restantes_ventana en la respuesta de éxito sin duplicar el 40
-// como número mágico en dos archivos.
-export const VENTANA_MINUTOS_DATEO_TURNO = 40
-
-export function dentroVentanaDateoTurno(turno: {
-  horaIngreso: TurnoRtm['horaIngreso']
-}): { dentro: boolean; minutosTotales: number; minutosExceso: number } {
+export function dentroVentanaDateoTurno(
+  turno: { horaIngreso: TurnoRtm['horaIngreso'] },
+  minutosVentana: number
+): { dentro: boolean; minutosTotales: number; minutosExceso: number } {
   let entrada = DateTime.fromFormat(turno.horaIngreso, 'HH:mm:ss', { zone: 'America/Bogota' })
   if (!entrada.isValid) {
     entrada = DateTime.fromFormat(turno.horaIngreso, 'HH:mm', { zone: 'America/Bogota' })
@@ -165,10 +162,40 @@ export function dentroVentanaDateoTurno(turno: {
 
   const ahora = DateTime.local().setZone('America/Bogota')
   const minutosTotales = Math.max(0, Math.floor(ahora.diff(entrada, 'minutes').minutes))
-  const minutosExceso = Math.max(0, minutosTotales - VENTANA_MINUTOS_DATEO_TURNO)
-  const dentro = minutosTotales <= VENTANA_MINUTOS_DATEO_TURNO
+  const minutosExceso = Math.max(0, minutosTotales - minutosVentana)
+  const dentro = minutosTotales <= minutosVentana
 
   return { dentro, minutosTotales, minutosExceso }
+}
+
+/**
+ * Minutos de ventana (desde turno.horaIngreso) dentro de los cuales un
+ * ticket de "Excepción de Dateo" no lleva penalización. Cascada idéntica a
+ * getMaxRedateos(): override por asesor (si existe y no es null) → config
+ * global (find-or-create con default 60). Sin cache — mismo criterio que
+ * getMaxRedateos(), no es un hot-path.
+ */
+export async function getMinutosVentanaTicket(agenteId?: number | null): Promise<number> {
+  if (agenteId) {
+    const { default: ConfiguracionVentanaTicketAsesor } = await import(
+      '#models/configuracion_ventana_ticket_asesor'
+    )
+    const override = await ConfiguracionVentanaTicketAsesor.query()
+      .where('asesor_id', agenteId)
+      .first()
+    if (override && override.minutosVentana !== null) {
+      return override.minutosVentana
+    }
+  }
+
+  const { default: ConfiguracionVentanaTicketGlobal } = await import(
+    '#models/configuracion_ventana_ticket_global'
+  )
+  let config = await ConfiguracionVentanaTicketGlobal.query().first()
+  if (!config) {
+    config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana: 60 } as any)
+  }
+  return config.minutosVentana
 }
 
 /**

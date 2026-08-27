@@ -15,6 +15,9 @@ import Ticket from '#models/ticket'
 import Database from '@adonisjs/lucid/services/db'
 
 const PLACA = 'TSTTKE2E'
+// 🆕 Placa dedicada al caso "dentro de ventana, sin penalización" — turno
+// separado del anterior para no interferir con su ventana de exclusividad.
+const PLACA_DENTRO_VENTANA = 'TSTTKW2E'
 const SEDE_ID = 2
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
@@ -55,6 +58,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
 
   group.teardown(async () => {
     console.log('--- TEARDOWN: limpiando datos de prueba ---')
+    const placas = [PLACA, PLACA_DENTRO_VENTANA]
     await Database.rawQuery('DELETE FROM movimientos_penalizacion WHERE asesor_id = ?', [agenteTest.id])
     await Database.rawQuery('DELETE FROM saldo_penalizaciones WHERE asesor_id = ?', [agenteTest.id])
     await Database.rawQuery(
@@ -62,16 +66,16 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
       [agenteTest.id]
     )
     await Database.rawQuery(
-      "DELETE FROM tickets WHERE titulo LIKE ?",
-      [`%${PLACA}%`]
+      "DELETE FROM tickets WHERE titulo LIKE ? OR titulo LIKE ?",
+      placas.map((p) => `%${p}%`)
     )
     await Database.rawQuery(
-      'DELETE FROM comisiones WHERE captacion_dateo_id IN (SELECT id FROM captacion_dateos WHERE placa = ?)',
-      [PLACA]
+      'DELETE FROM comisiones WHERE captacion_dateo_id IN (SELECT id FROM captacion_dateos WHERE placa IN (?, ?))',
+      placas
     )
-    await Database.rawQuery('DELETE FROM facturacion_tickets WHERE placa = ?', [PLACA])
-    await Database.rawQuery('DELETE FROM turnos_rtms WHERE placa = ?', [PLACA])
-    await Database.rawQuery('DELETE FROM captacion_dateos WHERE placa = ?', [PLACA])
+    await Database.rawQuery('DELETE FROM facturacion_tickets WHERE placa IN (?, ?)', placas)
+    await Database.rawQuery('DELETE FROM turnos_rtms WHERE placa IN (?, ?)', placas)
+    await Database.rawQuery('DELETE FROM captacion_dateos WHERE placa IN (?, ?)', placas)
     await agenteTest.delete()
     await usuarioTest.delete()
     try {
@@ -82,7 +86,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     console.log('--- TEARDOWN: completo ---')
   })
 
-  test('flujo completo: turno -> VENTANA_DATEO_VENCIDA -> ticket -> aprobar -> comision -> saldo -> cobrar', async ({
+  test('flujo completo: turno -> REQUIERE_TICKET_DATEO (fuera de ventana) -> ticket -> aprobar con penalización -> comision -> saldo -> cobrar', async ({
     client,
     assert,
   }) => {
@@ -124,9 +128,10 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
       captacionDateoId: turnoFinalizado.captacionDateoId,
     })
 
-    // ===== PASO 2/3: intentar datear esa placa -> debe rechazar con
-    // VENTANA_DATEO_VENCIDA (el "simular 40 minutos" ya está resuelto por
-    // horaIngreso=00:05, no hace falta esperar de verdad). =====
+    // ===== PASO 2/3: intentar datear esa placa -> debe rechazar SIEMPRE con
+    // REQUIERE_TICKET_DATEO (ya no hay "dateo automático dentro de ventana").
+    // horaIngreso=00:05 garantiza que ya pasó la ventana configurada
+    // (default global 60 min), así que dentroVentana debe venir false. =====
     const resDateoRechazado = await client
       .post('/api/captacion-dateos')
       .header('Authorization', `Bearer ${token}`)
@@ -138,17 +143,19 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
         origen: 'UI',
       })
     console.log(
-      '--- PASO 2/3: intento de dateo directo (debe fallar VENTANA_DATEO_VENCIDA) ---',
+      '--- PASO 2/3: intento de dateo directo (debe fallar REQUIERE_TICKET_DATEO) ---',
       resDateoRechazado.status(),
       JSON.stringify(resDateoRechazado.body())
     )
     resDateoRechazado.assertStatus(409)
     const bodyVentana = resDateoRechazado.body()
-    assert.equal(bodyVentana.code, 'VENTANA_DATEO_VENCIDA')
+    assert.equal(bodyVentana.code, 'REQUIERE_TICKET_DATEO')
     assert.equal(bodyVentana.turnoId, turnoId)
-    assert.isTrue(bodyVentana.minutosTarde > 40)
+    assert.isFalse(bodyVentana.dentroVentana)
+    assert.isTrue(bodyVentana.minutosTranscurridos > bodyVentana.minutosVentana)
     assert.isTrue(bodyVentana.minutosExceso > 0)
     assert.exists(bodyVentana.horaIngreso)
+    assert.exists(bodyVentana.minutosVentana)
 
     // ===== Fixture: turno ya facturado y confirmado (para probar la rama
     // que SÍ genera comisión en el paso de aprobar) =====
@@ -200,6 +207,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     assert.equal(resTicket.body().detalle.comercialId, agenteTest.id)
     assert.equal(resTicket.body().detalle.turnoId, turnoId)
     assert.isTrue(resTicket.body().detalle.minutosExceso > 0)
+    assert.isFalse(resTicket.body().detalle.dentroVentana, 'Fuera de ventana: dentroVentana debe quedar false')
 
     // Duplicado: debe rechazar con 409 mientras siga PENDIENTE
     const resDup = await client
@@ -227,6 +235,8 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     assert.equal(aprobarBody.ticket.estado, 'APROBADO')
     assert.exists(aprobarBody.dateoId)
     assert.exists(aprobarBody.comisionId, 'Debe generar comisión porque hay facturación CONFIRMADA')
+    assert.isFalse(aprobarBody.dentroVentana)
+    assert.exists(aprobarBody.detalle.porcentajePenalizacion, 'Fuera de ventana: sí debe quedar porcentaje')
 
     const dateoCreado = await CaptacionDateo.findOrFail(aprobarBody.dateoId)
     const turnoTrasAprobar = await TurnoRtm.findOrFail(turnoId)
@@ -314,5 +324,152 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     const saldoFinalBD = await SaldoPenalizacion.findByOrFail('asesorId', agenteTest.id)
     console.log('--- PASO 8c: saldo final en BD ---', saldoFinalBD.saldoActual)
     assert.equal(Number(saldoFinalBD.saldoActual), montoEsperadoCargo - montoACobrar)
+  }).timeout(60000)
+
+  // 🆕 Caso "dentro de ventana, sin penalización": el turno entró hace pocos
+  // minutos (dentro de la ventana global default de 60 min), así que el
+  // ticket queda dentroVentana=true y aprobar() no debe pedir porcentaje ni
+  // generar ningún movimiento de penalización.
+  test('flujo dentro de ventana: turno -> REQUIERE_TICKET_DATEO (dentroVentana=true) -> ticket -> aprobar sin penalización', async ({
+    client,
+    assert,
+  }) => {
+    const hoy = DateTime.local().setZone('America/Bogota')
+    // horaIngreso 5 minutos atrás — bien dentro de la ventana global default
+    // (60 min), sin depender de mockear el reloj.
+    const horaIngresoReciente = hoy.minus({ minutes: 5 }).toFormat('HH:mm')
+
+    const resTurno = await client
+      .post('/api/turnos-rtm')
+      .header('Authorization', `Bearer ${token}`)
+      .json({
+        placa: PLACA_DENTRO_VENTANA,
+        tipoVehiculo: 'Liviano Particular',
+        usuarioId: usuarioTest.id,
+        fecha: hoy.toISODate(),
+        horaIngreso: horaIngresoReciente,
+        servicioId: SERVICIO_RTM_ID,
+      })
+    console.log('--- [DENTRO VENTANA] PASO 1: crear turno ---', resTurno.status(), JSON.stringify(resTurno.body()))
+    resTurno.assertStatus(201)
+    const turnoId = resTurno.body().id as number
+
+    const resSalida = await client
+      .put(`/api/turnos-rtm/${turnoId}/salida`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({ usuarioId: usuarioTest.id })
+    resSalida.assertStatus(200)
+
+    // Intento de dateo directo: debe rechazar con REQUIERE_TICKET_DATEO pero
+    // dentroVentana=true (a diferencia del flujo anterior).
+    const resDateoRechazado = await client
+      .post('/api/captacion-dateos')
+      .header('Authorization', `Bearer ${token}`)
+      .json({
+        canal: 'ASESOR',
+        agente_id: agenteTest.id,
+        placa: PLACA_DENTRO_VENTANA,
+        servicio_id: SERVICIO_RTM_ID,
+        origen: 'UI',
+      })
+    console.log(
+      '--- [DENTRO VENTANA] intento de dateo directo (debe fallar REQUIERE_TICKET_DATEO, dentroVentana=true) ---',
+      resDateoRechazado.status(),
+      JSON.stringify(resDateoRechazado.body())
+    )
+    resDateoRechazado.assertStatus(409)
+    const bodyVentana = resDateoRechazado.body()
+    assert.equal(bodyVentana.code, 'REQUIERE_TICKET_DATEO')
+    assert.isTrue(bodyVentana.dentroVentana, 'Turno reciente: debe quedar dentro de ventana')
+
+    // Fixture: turno ya facturado y confirmado (para probar que sí genera
+    // comisión aunque no haya penalización).
+    const facturacion = await FacturacionTicket.create({
+      hash: `TEST-HASH-DENTRO-${Date.now()}`,
+      filePath: 'test/fake.jpg',
+      estado: 'CONFIRMADA',
+      turnoId,
+      placa: PLACA_DENTRO_VENTANA,
+      servicioCodigo: 'RTM',
+    } as any)
+    console.log('--- [DENTRO VENTANA] Fixture: facturacion_ticket CONFIRMADA creado ---', facturacion.id)
+
+    async function subirEvidencia() {
+      const res = await client
+        .post('/api/media/upload')
+        .header('Authorization', `Bearer ${token}`)
+        .file('file', EVIDENCIA_PATH)
+      res.assertStatus(201)
+      return res.body().url as string
+    }
+    const urlChat = await subirEvidencia()
+    const urlWhatsapp = await subirEvidencia()
+    const urlBloqueo = await subirEvidencia()
+
+    const resTicket = await client
+      .post('/api/tickets-excepcion-dateo')
+      .header('Authorization', `Bearer ${token}`)
+      .json({
+        turno_id: turnoId,
+        comercial_id: agenteTest.id,
+        observacion: 'Prueba E2E: turno reciente, comercial todavía dentro de la ventana permitida.',
+        evidencia_chat_url: urlChat,
+        evidencia_grupo_whatsapp_url: urlWhatsapp,
+        evidencia_bloqueo_url: urlBloqueo,
+      })
+    console.log(
+      '--- [DENTRO VENTANA] crear ticket excepcion dateo ---',
+      resTicket.status(),
+      JSON.stringify(resTicket.body())
+    )
+    resTicket.assertStatus(201)
+    const ticketId = resTicket.body().ticket.id as number
+    assert.isTrue(
+      resTicket.body().detalle.dentroVentana,
+      'Snapshot al crear el ticket debe quedar dentroVentana=true'
+    )
+
+    // Saldo ANTES de aprobar — debe quedar exactamente igual después, sin
+    // ningún movimiento CARGO nuevo.
+    const saldoAntes = await SaldoPenalizacion.query().where('asesor_id', agenteTest.id).first()
+    const saldoAntesValor = saldoAntes ? Number(saldoAntes.saldoActual) : 0
+
+    // Aprobar SIN porcentaje_penalizacion en el body — el backend debe
+    // ignorarlo/no exigirlo porque detalle.dentroVentana === true.
+    const resAprobar = await client
+      .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({})
+    console.log(
+      '--- [DENTRO VENTANA] aprobar ticket sin porcentaje ---',
+      resAprobar.status(),
+      JSON.stringify(resAprobar.body())
+    )
+    resAprobar.assertStatus(200)
+    const aprobarBody = resAprobar.body()
+    assert.equal(aprobarBody.ticket.estado, 'APROBADO')
+    assert.isTrue(aprobarBody.dentroVentana)
+    assert.exists(aprobarBody.dateoId)
+    assert.exists(aprobarBody.comisionId, 'Debe generar comisión aunque no haya penalización')
+    assert.equal(aprobarBody.montoCargoPenalizacion, 0, 'Sin penalización: el cargo debe ser 0')
+    assert.isNull(
+      aprobarBody.detalle.porcentajePenalizacion,
+      'Sin penalización: porcentaje_penalizacion debe quedar null'
+    )
+
+    const dateoCreado = await CaptacionDateo.findOrFail(aprobarBody.dateoId)
+    const turnoTrasAprobar = await TurnoRtm.findOrFail(turnoId)
+    assert.equal(turnoTrasAprobar.captacionDateoId, dateoCreado.id, 'El turno debe quedar vinculado al dateo')
+    assert.equal(dateoCreado.resultado, 'EXITOSO')
+
+    const movCargo = await MovimientoPenalizacion.query()
+      .where('ticket_id', ticketId)
+      .where('tipo', 'CARGO')
+      .first()
+    assert.isNull(movCargo, 'No debe crearse ningún movimiento CARGO para un ticket dentro de ventana')
+
+    const saldoDespues = await SaldoPenalizacion.query().where('asesor_id', agenteTest.id).first()
+    const saldoDespuesValor = saldoDespues ? Number(saldoDespues.saldoActual) : 0
+    assert.equal(saldoDespuesValor, saldoAntesValor, 'El saldo de penalizaciones no debe moverse')
   }).timeout(60000)
 })

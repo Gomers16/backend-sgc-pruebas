@@ -20,8 +20,8 @@ import {
   cerrarDateosViejosPorPlacaTelefono,
   dateoAplicaAServicio,
   dentroVentanaDateoTurno,
-  VENTANA_MINUTOS_DATEO_TURNO,
   getHorasExclusividad,
+  getMinutosVentanaTicket,
   getMaxRedateos,
   invalidateHorasExclusividadCache,
 } from '#services/reserva_dateo_service'
@@ -1077,13 +1077,12 @@ export default class CaptacionDateosController {
     // que corre antes.
     const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
 
-    // 🆕 TICKET EXCEPCIÓN DE DATEO — ventana de 40 minutos
-    // Si ya existe un turno hoy para esta placa+servicio SIN dateo vinculado
-    // (walk-in que entró sin datearse primero), el comercial tiene 40 minutos
-    // desde turno.horaIngreso para registrar el dateo retroactivamente. Corre
-    // ANTES de la exclusividad por placa+servicio de abajo. Fuera de la
-    // ventana: 409 VENTANA_DATEO_VENCIDA — el frontend ofrece crear un ticket
-    // de "Excepción de Dateo" (ver tickets_excepcion_dateo_controller.ts).
+    // 🆕 TICKET DE DATEO — ya no existe "dateo automático dentro de
+    // ventana": todo turno walk-in de hoy sin dateo vinculado SIEMPRE
+    // requiere un ticket "Excepción de Dateo", sin importar el tiempo
+    // transcurrido. La ventana configurable (getMinutosVentanaTicket) solo
+    // decide si ese ticket, al aprobarse, lleva penalización o no — ver
+    // tickets_excepcion_dateo_controller.ts::crear()/aprobar().
     let turnoSinDateoHoy: TurnoRtm | null = null
     if (servicioDateoIdEfectivo !== null) {
       turnoSinDateoHoy = await TurnoRtm.query()
@@ -1097,17 +1096,21 @@ export default class CaptacionDateosController {
     }
 
     if (turnoSinDateoHoy) {
-      const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(turnoSinDateoHoy)
+      const minutosVentana = await getMinutosVentanaTicket(agenteId)
+      const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(
+        turnoSinDateoHoy,
+        minutosVentana
+      )
 
-      if (!dentro) {
-        return response.conflict({
-          code: 'VENTANA_DATEO_VENCIDA',
-          turnoId: turnoSinDateoHoy.id,
-          horaIngreso: turnoSinDateoHoy.horaIngreso,
-          minutosTarde: minutosTotales,
-          minutosExceso,
-        })
-      }
+      return response.conflict({
+        code: 'REQUIERE_TICKET_DATEO',
+        turnoId: turnoSinDateoHoy.id,
+        horaIngreso: turnoSinDateoHoy.horaIngreso,
+        minutosTranscurridos: minutosTotales,
+        minutosExceso,
+        dentroVentana: dentro,
+        minutosVentana,
+      })
     }
 
     // 🆕 La exclusividad es por placa/teléfono + SERVICIO, no solo por placa —
@@ -1194,15 +1197,9 @@ export default class CaptacionDateosController {
       .orderBy('id', 'desc')
       .first()
 
-    // ⚠️ PROPUESTA A CONFIRMAR: si el chequeo de ventana de arriba ya
-    // aprobó explícitamente este MISMO turno (turnoSinDateoHoy, dentro de los
-    // 40 minutos), no lo volvemos a bloquear aquí — si no, todo comercial no
-    // privilegiado que pase la ventana igual sería rechazado acá mismo con
-    // TURNO_ACTIVO, porque esta consulta encuentra el mismo turno sin filtrar
-    // por captacion_dateo_id. Sin este `&&`, la ventana de 40 min sería
-    // efectivamente inalcanzable para cualquier rol distinto de
-    // SUPER_ADMIN/GERENCIA.
-    if (turnoActivoHoy && !esPrivilegiado && turnoActivoHoy.id !== turnoSinDateoHoy?.id) {
+    // turnoSinDateoHoy ya no puede llegar vivo hasta acá: el bloque de
+    // arriba corta con 409 REQUIERE_TICKET_DATEO en cuanto existe.
+    if (turnoActivoHoy && !esPrivilegiado) {
       const codigoTurnoActivo = (turnoActivoHoy.servicio?.codigoServicio ?? '').toUpperCase()
       // Solo bloquear si el turno activo de hoy es del MISMO servicio que se quiere datear.
       // Caso de uso: cliente llega hoy por SOAT y el comercial lo datéa para RTM futuro → permitido.
@@ -1345,29 +1342,6 @@ export default class CaptacionDateosController {
           : undefined,
     })
 
-    // 🆕 Ventana de 40 minutos: vinculación retroactiva turno→dateo. Antes
-    // esto solo pasaba "hacia adelante" (un turno nuevo que ya trae
-    // captacion_dateo_id al crearse) — acá el turno YA existía sin dateo y el
-    // dateo se acaba de crear después, así que hay que cerrar el vínculo
-    // desde este lado.
-    // 🆕 Se informa al comercial en la respuesta (turnoVinculadoRetroactivo)
-    // porque desde su lado esto se ve como un dateo normal — sin este aviso
-    // no tiene forma de saber que se enganchó a un turno walk-in existente.
-    let turnoVinculadoRetroactivo:
-      | { turno_id: number; hora_ingreso: string; minutos_restantes_ventana: number }
-      | undefined
-    if (turnoSinDateoHoy) {
-      turnoSinDateoHoy.captacionDateoId = created.id
-      await turnoSinDateoHoy.save()
-
-      const { minutosTotales: minutosTotalesAlVincular } = dentroVentanaDateoTurno(turnoSinDateoHoy)
-      turnoVinculadoRetroactivo = {
-        turno_id: turnoSinDateoHoy.id,
-        hora_ingreso: turnoSinDateoHoy.horaIngreso,
-        minutos_restantes_ventana: Math.max(0, VENTANA_MINUTOS_DATEO_TURNO - minutosTotalesAlVincular),
-      }
-    }
-
     if (placa) {
       try {
         const prospectoEncontrado = await Prospecto.query()
@@ -1396,11 +1370,6 @@ export default class CaptacionDateosController {
     out.canal = (['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'] as const).includes(out.canal)
       ? 'ASESOR'
       : out.canal
-    // 🆕 Solo se incluye si hubo vinculación retroactiva — el caso normal
-    // (sin turnoSinDateoHoy) no agrega esta clave, respuesta idéntica a hoy.
-    if (turnoVinculadoRetroactivo) {
-      out.turno_vinculado_retroactivo = turnoVinculadoRetroactivo
-    }
     return response.created(toSnake(out))
   }
 

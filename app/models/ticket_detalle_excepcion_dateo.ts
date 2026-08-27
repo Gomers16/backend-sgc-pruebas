@@ -43,6 +43,10 @@ export default class TicketDetalleExcepcionDateo extends BaseModel {
   @column({ columnName: 'minutos_exceso' })
   declare minutosExceso: number
 
+  /** Snapshot calculado y persistido AL CREAR el ticket — no se recalcula. */
+  @column({ columnName: 'dentro_ventana' })
+  declare dentroVentana: boolean
+
   @column()
   declare observacion: string
 

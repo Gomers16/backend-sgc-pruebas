@@ -15,7 +15,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 import SaldoPenalizacion from '#models/saldo_penalizacion'
 import MovimientoPenalizacion from '#models/movimiento_penalizacion'
 
-import { dentroVentanaDateoTurno } from '#services/reserva_dateo_service'
+import { dentroVentanaDateoTurno, getMinutosVentanaTicket } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -36,6 +36,141 @@ function readOptionalNumber(input: unknown): number | null {
 }
 
 export default class TicketsExcepcionDateoController {
+  /**
+   * GET /tickets/config/ventana
+   * Límite global de minutos de ventana sin penalización (fallback cuando no
+   * hay override por asesor). Mismo patrón que
+   * captacion_dateos_controller.ts::maxRedateosConfigGet().
+   */
+  public async ventanaConfigGet({ response }: HttpContext) {
+    const { default: ConfiguracionVentanaTicketGlobal } = await import(
+      '#models/configuracion_ventana_ticket_global'
+    )
+
+    let config = await ConfiguracionVentanaTicketGlobal.query().first()
+    if (!config) {
+      config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana: 60 } as any)
+    }
+
+    return response.ok({ minutos_ventana: config.minutosVentana })
+  }
+
+  /**
+   * POST /tickets/config/ventana
+   * Actualiza el límite global. body: { minutos_ventana }
+   */
+  public async ventanaConfigUpsert({ request, response }: HttpContext) {
+    const { default: ConfiguracionVentanaTicketGlobal } = await import(
+      '#models/configuracion_ventana_ticket_global'
+    )
+
+    const raw = request.input('minutos_ventana')
+    const minutosVentana = Math.trunc(Number(raw))
+    if (!Number.isFinite(minutosVentana) || minutosVentana <= 0) {
+      return response.badRequest({
+        message: 'minutos_ventana debe ser un número entero mayor a 0',
+      })
+    }
+
+    let config = await ConfiguracionVentanaTicketGlobal.query().first()
+    if (!config) {
+      config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana } as any)
+    } else {
+      config.minutosVentana = minutosVentana
+      await config.save()
+    }
+
+    return response.ok({ minutos_ventana: config.minutosVentana })
+  }
+
+  /**
+   * GET /tickets/config/ventana/asesores?asesorId=
+   * Lista los overrides por asesor (NULL = usa el global).
+   */
+  public async ventanaAsesoresIndex({ request, response }: HttpContext) {
+    const { default: ConfiguracionVentanaTicketAsesor } = await import(
+      '#models/configuracion_ventana_ticket_asesor'
+    )
+
+    const asesorId = request.input('asesorId') as number | undefined
+    const query = ConfiguracionVentanaTicketAsesor.query().preload('asesor')
+    if (asesorId) query.where('asesor_id', asesorId)
+
+    const configs = await query
+    const data = configs.map((c) => {
+      const asesor = (c as any).$preloaded?.asesor || null
+      return {
+        id: c.id,
+        asesor_id: c.asesorId,
+        asesor_nombre: asesor ? asesor.nombre : null,
+        minutos_ventana: c.minutosVentana,
+      }
+    })
+
+    return response.ok({ data })
+  }
+
+  /**
+   * POST /tickets/config/ventana/asesores
+   * Crea/actualiza el override de un asesor. body: { asesor_id, minutos_ventana }
+   * minutos_ventana null/vacío = elimina el override (vuelve a usar el global).
+   */
+  public async ventanaAsesoresUpsert({ request, response }: HttpContext) {
+    const { default: ConfiguracionVentanaTicketAsesor } = await import(
+      '#models/configuracion_ventana_ticket_asesor'
+    )
+
+    const payload = request.only(['asesor_id', 'minutos_ventana'])
+
+    const asesorId = Number(payload.asesor_id)
+    if (!asesorId) return response.badRequest({ message: 'asesor_id es requerido' })
+
+    let minutosVentana: number | null = null
+    if (
+      payload.minutos_ventana !== null &&
+      payload.minutos_ventana !== undefined &&
+      payload.minutos_ventana !== ''
+    ) {
+      minutosVentana = Math.trunc(Number(payload.minutos_ventana))
+      if (!Number.isFinite(minutosVentana) || minutosVentana <= 0) {
+        return response.badRequest({
+          message: 'minutos_ventana debe ser un número entero mayor a 0, o null para usar el global',
+        })
+      }
+    }
+
+    let config = await ConfiguracionVentanaTicketAsesor.query().where('asesor_id', asesorId).first()
+
+    if (!config) {
+      config = await ConfiguracionVentanaTicketAsesor.create({ asesorId, minutosVentana } as any)
+    } else {
+      config.minutosVentana = minutosVentana
+      await config.save()
+    }
+
+    return response.ok({
+      id: config.id,
+      asesor_id: config.asesorId,
+      minutos_ventana: config.minutosVentana,
+    })
+  }
+
+  /**
+   * DELETE /tickets/config/ventana/asesores/:id
+   * Elimina el override — el asesor vuelve a usar el límite global.
+   */
+  public async ventanaAsesoresDelete({ params, response }: HttpContext) {
+    const { default: ConfiguracionVentanaTicketAsesor } = await import(
+      '#models/configuracion_ventana_ticket_asesor'
+    )
+
+    const config = await ConfiguracionVentanaTicketAsesor.find(params.id)
+    if (!config) return response.notFound({ message: 'Configuración no encontrada' })
+
+    await config.delete()
+    return response.ok({ message: 'Configuración eliminada correctamente' })
+  }
+
   /**
    * POST /tickets-excepcion-dateo
    * Body: { turno_id, convenio_id?, observacion, evidencia_chat_url,
@@ -131,7 +266,12 @@ export default class TicketsExcepcionDateoController {
 
     const convenioId = readOptionalNumber(payload.convenio_id)
 
-    const { minutosTotales, minutosExceso } = dentroVentanaDateoTurno(turno)
+    // 🆕 dentro_ventana se calcula y persiste AQUÍ, con la ventana vigente en
+    // este momento (posible override del comercial que crea el ticket) — no
+    // se recalcula después, así un cambio de configuración posterior no
+    // afecta tickets ya creados (ver dentro_ventana en el modelo/migración).
+    const minutosVentana = await getMinutosVentanaTicket(comercial.id)
+    const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(turno, minutosVentana)
 
     const trx = await Database.transaction()
     try {
@@ -157,6 +297,7 @@ export default class TicketsExcepcionDateoController {
           horaIntentoDateo: DateTime.now(),
           minutosTotales,
           minutosExceso,
+          dentroVentana: dentro,
           observacion,
           evidenciaChatUrl,
           evidenciaGrupoWhatsappUrl,
@@ -186,17 +327,6 @@ export default class TicketsExcepcionDateoController {
    * aquí a propósito, ese archivo no se tocó en esta fase.
    */
   public async aprobar({ params, request, response, auth }: HttpContext) {
-    const porcentajePenalizacion = Number(request.input('porcentaje_penalizacion'))
-    if (
-      !Number.isFinite(porcentajePenalizacion) ||
-      porcentajePenalizacion < 0 ||
-      porcentajePenalizacion > 100
-    ) {
-      return response.badRequest({
-        message: 'porcentaje_penalizacion debe ser un número entre 0 y 100',
-      })
-    }
-
     const ticket = await Ticket.find(params.id)
     if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
     if (ticket.estado !== 'PENDIENTE') {
@@ -205,6 +335,27 @@ export default class TicketsExcepcionDateoController {
 
     const detalle = await TicketDetalleExcepcionDateo.findBy('ticketId', ticket.id)
     if (!detalle) return response.notFound({ message: 'Detalle del ticket no encontrado' })
+
+    // dentro_ventana quedó fijado AL CREAR el ticket (snapshot de la ventana
+    // configurada en ese momento) — no se recalcula acá. Dentro de ventana =
+    // sin penalización: se ignora porcentaje_penalizacion aunque venga en
+    // el body. mysql2 devuelve TINYINT(1) como 0/1 (no boolean real) — Boolean()
+    // en vez de === true, si no la comparación estricta siempre da false.
+    const dentroVentana = Boolean(detalle.dentroVentana)
+
+    let porcentajePenalizacion = 0
+    if (!dentroVentana) {
+      porcentajePenalizacion = Number(request.input('porcentaje_penalizacion'))
+      if (
+        !Number.isFinite(porcentajePenalizacion) ||
+        porcentajePenalizacion < 0 ||
+        porcentajePenalizacion > 100
+      ) {
+        return response.badRequest({
+          message: 'porcentaje_penalizacion debe ser un número entre 0 y 100',
+        })
+      }
+    }
 
     const trx = await Database.transaction()
     try {
@@ -367,48 +518,52 @@ export default class TicketsExcepcionDateoController {
       // turno.captacionDateoId en vivo cuando el ticket de facturación se
       // confirme más adelante (confirmado en investigación previa).
 
-      // 5. CARGO en movimientos_penalizacion. SIEMPRE sobre montoAsesor (lo
-      // que gana el comercial que cometió la infracción) — nunca sobre
-      // montoConvenio, que es plata de un tercero ajeno al ticket y además
-      // es $0 en Caso 2 (CONVENIO_SELF), dejando la penalización sin efecto.
-      // Usa resultadoComision SIEMPRE (con o sin comisión persistida, el
-      // número es el mismo cálculo puro).
-      const montoCargo = Math.round(
-        (resultadoComision.montoAsesor * porcentajePenalizacion) / 100
-      )
+      // 5/6. CARGO en movimientos_penalizacion — solo si el ticket quedó
+      // FUERA de ventana. Dentro de ventana no hay infracción que penalizar
+      // (el comercial cumplió el plazo configurado), así que no se toca
+      // saldo_penalizaciones ni se crea movimiento. SIEMPRE sobre
+      // montoAsesor (lo que gana el comercial que cometió la infracción) —
+      // nunca sobre montoConvenio, que es plata de un tercero ajeno al
+      // ticket y además es $0 en Caso 2 (CONVENIO_SELF), dejando la
+      // penalización sin efecto. Usa resultadoComision SIEMPRE (con o sin
+      // comisión persistida, el número es el mismo cálculo puro).
+      let montoCargo = 0
+      let nuevoSaldo: number | null = null
+      if (!dentroVentana) {
+        montoCargo = Math.round((resultadoComision.montoAsesor * porcentajePenalizacion) / 100)
 
-      // 6. Actualiza saldo_penalizaciones (find-or-create + lock de fila).
-      let saldo = await SaldoPenalizacion.query({ client: trx })
-        .where('asesor_id', comercial.id)
-        .forUpdate()
-        .first()
-      if (!saldo) {
-        saldo = new SaldoPenalizacion()
-        saldo.useTransaction(trx)
-        saldo.asesorId = comercial.id
-        saldo.saldoActual = '0'
-      } else {
-        saldo.useTransaction(trx)
+        let saldo = await SaldoPenalizacion.query({ client: trx })
+          .where('asesor_id', comercial.id)
+          .forUpdate()
+          .first()
+        if (!saldo) {
+          saldo = new SaldoPenalizacion()
+          saldo.useTransaction(trx)
+          saldo.asesorId = comercial.id
+          saldo.saldoActual = '0'
+        } else {
+          saldo.useTransaction(trx)
+        }
+        nuevoSaldo = Number(saldo.saldoActual) + montoCargo
+        saldo.saldoActual = String(nuevoSaldo)
+        await saldo.save()
+
+        await MovimientoPenalizacion.create(
+          {
+            asesorId: comercial.id,
+            tipo: 'CARGO',
+            monto: String(montoCargo),
+            ticketId: ticket.id,
+            saldoResultante: String(nuevoSaldo),
+            creadoPorId: auth.user!.id,
+          },
+          { client: trx }
+        )
       }
-      const nuevoSaldo = Number(saldo.saldoActual) + montoCargo
-      saldo.saldoActual = String(nuevoSaldo)
-      await saldo.save()
-
-      await MovimientoPenalizacion.create(
-        {
-          asesorId: comercial.id,
-          tipo: 'CARGO',
-          monto: String(montoCargo),
-          ticketId: ticket.id,
-          saldoResultante: String(nuevoSaldo),
-          creadoPorId: auth.user!.id,
-        },
-        { client: trx }
-      )
 
       // 7. Cierra el ticket.
       detalle.useTransaction(trx)
-      detalle.porcentajePenalizacion = String(porcentajePenalizacion)
+      detalle.porcentajePenalizacion = dentroVentana ? null : String(porcentajePenalizacion)
       detalle.aprobadoPorId = auth.user!.id
       detalle.aprobadoAt = DateTime.now()
       await detalle.save()
@@ -427,6 +582,7 @@ export default class TicketsExcepcionDateoController {
         comisionId: comisionCreada?.id ?? null,
         montoCargoPenalizacion: montoCargo,
         saldoActual: nuevoSaldo,
+        dentroVentana,
       })
     } catch (error) {
       await trx.rollback()
