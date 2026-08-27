@@ -357,6 +357,18 @@ export default class CaptacionDateosController {
       .whereRaw('TIMESTAMPDIFF(MINUTE, COALESCE(redateado_at, created_at), NOW()) >= ?', [
         minutosVencimiento,
       ])
+      // 🆕 Guard de turno vinculado: si el vehículo ya llegó y tiene un
+      // turno activo/finalizado vinculado a este dateo, no lo toques acá
+      // aunque venza la ventana — evita que quede en RE_DATEAR mientras el
+      // turno sigue vivo (ver guard principal en redatear()). Un turno
+      // cancelado/inactivo vinculado no cuenta, ese caso sigue venciendo
+      // normal.
+      .whereNotExists((sub) => {
+        sub
+          .from('turnos_rtms')
+          .whereColumn('turnos_rtms.captacion_dateo_id', 'captacion_dateos.id')
+          .whereIn('turnos_rtms.estado', ['activo', 'finalizado'])
+      })
       .preload('prospecto')
 
     console.log(`📊 Se encontraron ${dateosVencidos.length} dateo(s) vencido(s)`)
@@ -463,6 +475,27 @@ export default class CaptacionDateosController {
       if (!item) {
         await trx.rollback()
         return response.notFound({ message: 'Dateo no encontrado' })
+      }
+
+      // 🆕 Guard de turno vinculado: si el vehículo YA llegó y se le creó un
+      // turno activo o finalizado vinculado a este dateo, no se puede
+      // re-datear sin importar si ya venció la ventana de exclusividad —
+      // el re-dateo lo dejaría "anexado" en silencio al turno existente.
+      // Un turno cancelado/inactivo vinculado NO bloquea (caso legítimo).
+      const turnoVinculado = await TurnoRtm.query({ client: trx })
+        .where('captacion_dateo_id', item.id)
+        .whereIn('estado', ['activo', 'finalizado'])
+        .orderBy('created_at', 'desc')
+        .first()
+
+      if (turnoVinculado) {
+        await trx.rollback()
+        return response.conflict({
+          message: `Este dateo ya tiene un turno vinculado (#${turnoVinculado.turnoNumero} / placa ${turnoVinculado.placa}), no se puede re-datear.`,
+          turnoId: turnoVinculado.id,
+          turnoNumero: turnoVinculado.turnoNumero,
+          turnoEstado: turnoVinculado.estado,
+        })
       }
 
       if (item.resultado !== 'RE_DATEAR') {
