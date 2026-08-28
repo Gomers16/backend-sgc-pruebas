@@ -2676,34 +2676,6 @@ router
       .where('id', /^[0-9]+$/)
       .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
 
-    // Saldo de penalizaciones — mismos roles que gestionan comisiones
-    // (comisiones_controller.ts: gestionarComisiones/aprobarComisiones/pagarComisiones).
-    router
-      .get('/saldo-penalizaciones/:asesorId', async (ctx) => {
-        const { default: TicketsExcepcionDateoController } = await import(
-          '#controllers/tickets_excepcion_dateo_controller'
-        )
-        return new TicketsExcepcionDateoController().saldoShow(ctx)
-      })
-      .where('asesorId', /^[0-9]+$/)
-      .use([
-        middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
-      ])
-
-    router
-      .post('/saldo-penalizaciones/:asesorId/cobrar', async (ctx) => {
-        const { default: TicketsExcepcionDateoController } = await import(
-          '#controllers/tickets_excepcion_dateo_controller'
-        )
-        return new TicketsExcepcionDateoController().cobrarSaldo(ctx)
-      })
-      .where('asesorId', /^[0-9]+$/)
-      .use([
-        middleware.auth(),
-        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD'] }),
-      ])
-
     /* ============== FIN TICKETS INTERNOS ============== */
   })
   .prefix('/api')

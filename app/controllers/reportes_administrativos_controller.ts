@@ -249,8 +249,6 @@ function calcularSemaforo(pct: number | null): 'VERDE' | 'AMARILLO' | 'ROJO' | '
   return 'ROJO'
 }
 
-// 🆕 export: reutilizada por penalizacion_service.ts::evaluarCumplioMeta()
-// para el mismo redondeo que ya usa metaComercialResumen()/pct_avance.
 export function calcularPct(avance: number, meta: number): number | null {
   return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : null
 }
@@ -478,12 +476,6 @@ export type IngresoRtmGeneradoAsesor = {
   comercial: IngresoRtmGeneradoCanal
 }
 
-/**
- * 🆕 export: reutilizada directamente por penalizacion_service.ts
- * (evaluarCumplioMeta) para el mismo cálculo de "ingreso RTM generado" que
- * ya usa metaComercialResumen()/metaComercialSuperInforme() — sin pasar por
- * el endpoint HTTP bulk, que no filtra por un solo asesor.
- */
 export async function calcularIngresoRtmGeneradoPorAsesor(
   asesorIds: number[],
   fechaInicio: string,

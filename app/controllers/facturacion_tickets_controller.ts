@@ -14,6 +14,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
+import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -1117,6 +1118,36 @@ export default class FacturacionTicketsController {
     const startDay = now.startOf('day').toSQL()
     const endDay = now.endOf('day').toSQL()
 
+    // 🆕 Si este dateo vino de un ticket de Excepción de Dateo APROBADO con
+    // "Aprobar sin comisión" (con_comision=false), esa decisión de gerencia
+    // debe respetarse también en este camino diferido — igual que
+    // tickets_excepcion_dateo_controller.ts::aprobar() ya hace cuando la
+    // facturación estaba confirmada al momento de aprobar el ticket. Sin
+    // esto, un ticket "sin comisión" terminaría pagando comisión completa en
+    // cuanto facturación se confirmara después, sin que nadie lo decidiera.
+    // Lectura simple, fuera de la transacción de abajo (no modifica nada).
+    let forzarSinComisionPorTicket = false
+    if (turnoActual?.id) {
+      const detalleTicketExcepcion = await TicketDetalleExcepcionDateo.query()
+        .where('turno_id', turnoActual.id)
+        .whereHas('ticket', (q) => q.where('estado', 'APROBADO'))
+        .first()
+      // mysql2 devuelve TINYINT(1) como 0/1/null (no boolean real) en una
+      // lectura directa de modelo — null (dentro de ventana) también es
+      // falsy, así que hay que descartarlo explícitamente antes de negar,
+      // si no `Boolean(null)` colaría como "sin comisión" igual que `false`.
+      if (
+        detalleTicketExcepcion &&
+        detalleTicketExcepcion.conComision !== null &&
+        !Boolean(detalleTicketExcepcion.conComision)
+      ) {
+        forzarSinComisionPorTicket = true
+        console.log(
+          `🎫 Turno ${turnoActual.id} viene de ticket de Excepción de Dateo APROBADO SIN comisión — se fuerza montoAsesor=0`
+        )
+      }
+    }
+
     const trx = await Database.transaction()
     try {
       const existingComision = await Comision.query({ client: trx })
@@ -1181,6 +1212,8 @@ export default class FacturacionTicketsController {
         c.reglaAplicada = resultadoCaso1.reglaAplicada
         console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
 
+        if (forzarSinComisionPorTicket) c.montoAsesor = '0'
+
         await c.useTransaction(trx).save()
       } else if (
         !dateo.agenteId ||
@@ -1230,6 +1263,8 @@ export default class FacturacionTicketsController {
         console.log(
           `✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`
         )
+
+        if (forzarSinComisionPorTicket) c.montoAsesor = '0'
 
         await c.useTransaction(trx).save()
 
@@ -1281,6 +1316,7 @@ export default class FacturacionTicketsController {
         console.log(
           `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
         )
+        if (forzarSinComisionPorTicket) c.montoAsesor = '0'
         await c.useTransaction(trx).save()
       }
 

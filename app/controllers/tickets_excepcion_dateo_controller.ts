@@ -12,8 +12,6 @@ import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import Comision from '#models/comision'
 import FacturacionTicket from '#models/facturacion_ticket'
-import SaldoPenalizacion from '#models/saldo_penalizacion'
-import MovimientoPenalizacion from '#models/movimiento_penalizacion'
 
 import { dentroVentanaDateoTurno, getMinutosVentanaTicket } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
@@ -25,7 +23,6 @@ import {
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
-import { evaluarCumplioMeta, calcularBolsaComisionesMes } from '#services/penalizacion_service'
 
 function readOptionalNumber(input: unknown): number | null {
   if (input === undefined || input === null) return null
@@ -317,14 +314,18 @@ export default class TicketsExcepcionDateoController {
 
   /**
    * PATCH /tickets-excepcion-dateo/:id/aprobar
-   * Body: { porcentaje_penalizacion: number }
+   * Body: { con_comision: boolean } — solo requerido/relevante fuera de
+   * ventana (dentroVentana=false); dentro de ventana se ignora, la comisión
+   * siempre es completa.
    *
    * Plantilla estructural: comisiones_controller.ts::store() (transacción,
    * crear/vincular dateo, marcar EXITOSO condicionalmente, generar comisión).
    * El cálculo del monto de comisión (caso/escenario/continuidad + llamada a
    * calcularComision()) replica el criterio de
    * facturacion_tickets_controller.ts::applyCommissionHook() — duplicado
-   * aquí a propósito, ese archivo no se tocó en esta fase.
+   * aquí a propósito. Ese archivo sí se tocó en esta fase, pero solo para
+   * respetar con_comision=false en su camino de comisión DIFERIDA (ver
+   * forzarSinComisionPorTicket ahí) — el cálculo en sí sigue duplicado.
    */
   public async aprobar({ params, request, response, auth }: HttpContext) {
     const ticket = await Ticket.find(params.id)
@@ -337,24 +338,23 @@ export default class TicketsExcepcionDateoController {
     if (!detalle) return response.notFound({ message: 'Detalle del ticket no encontrado' })
 
     // dentro_ventana quedó fijado AL CREAR el ticket (snapshot de la ventana
-    // configurada en ese momento) — no se recalcula acá. Dentro de ventana =
-    // sin penalización: se ignora porcentaje_penalizacion aunque venga en
-    // el body. mysql2 devuelve TINYINT(1) como 0/1 (no boolean real) — Boolean()
-    // en vez de === true, si no la comparación estricta siempre da false.
+    // configurada en ese momento) — no se recalcula acá. mysql2 devuelve
+    // TINYINT(1) como 0/1 (no boolean real) — Boolean() en vez de === true,
+    // si no la comparación estricta siempre da false.
     const dentroVentana = Boolean(detalle.dentroVentana)
 
-    let porcentajePenalizacion = 0
+    // con_comision solo es relevante fuera de ventana — dentro de ventana la
+    // comisión siempre es completa, sin que gerencia decida nada, así que se
+    // ignora aunque venga en el body.
+    let conComision: boolean | null = null
     if (!dentroVentana) {
-      porcentajePenalizacion = Number(request.input('porcentaje_penalizacion'))
-      if (
-        !Number.isFinite(porcentajePenalizacion) ||
-        porcentajePenalizacion < 0 ||
-        porcentajePenalizacion > 100
-      ) {
+      const raw = request.input('con_comision')
+      if (typeof raw !== 'boolean') {
         return response.badRequest({
-          message: 'porcentaje_penalizacion debe ser un número entre 0 y 100',
+          message: 'con_comision es requerido (true/false) cuando el ticket está fuera de ventana',
         })
       }
+      conComision = raw
     }
 
     const trx = await Database.transaction()
@@ -510,6 +510,11 @@ export default class TicketsExcepcionDateoController {
         c.valorNuevoDirecto = String(resultadoComision.valorNuevoDirectoFinal)
         c.reglaAplicada = resultadoComision.reglaAplicada
         c.esAvance = false
+        // Fuera de ventana + "Aprobar sin comisión": se calcula la comisión
+        // normal con el motor de siempre y se fuerza a 0 recién acá, justo
+        // antes de guardar — montoConvenio queda intacto (si hay convenio,
+        // cobra su parte normal; si no hay, ya es $0 de por sí).
+        if (!dentroVentana && conComision === false) c.montoAsesor = '0'
         await c.save()
         comisionCreada = c
       }
@@ -518,52 +523,9 @@ export default class TicketsExcepcionDateoController {
       // turno.captacionDateoId en vivo cuando el ticket de facturación se
       // confirme más adelante (confirmado en investigación previa).
 
-      // 5/6. CARGO en movimientos_penalizacion — solo si el ticket quedó
-      // FUERA de ventana. Dentro de ventana no hay infracción que penalizar
-      // (el comercial cumplió el plazo configurado), así que no se toca
-      // saldo_penalizaciones ni se crea movimiento. SIEMPRE sobre
-      // montoAsesor (lo que gana el comercial que cometió la infracción) —
-      // nunca sobre montoConvenio, que es plata de un tercero ajeno al
-      // ticket y además es $0 en Caso 2 (CONVENIO_SELF), dejando la
-      // penalización sin efecto. Usa resultadoComision SIEMPRE (con o sin
-      // comisión persistida, el número es el mismo cálculo puro).
-      let montoCargo = 0
-      let nuevoSaldo: number | null = null
-      if (!dentroVentana) {
-        montoCargo = Math.round((resultadoComision.montoAsesor * porcentajePenalizacion) / 100)
-
-        let saldo = await SaldoPenalizacion.query({ client: trx })
-          .where('asesor_id', comercial.id)
-          .forUpdate()
-          .first()
-        if (!saldo) {
-          saldo = new SaldoPenalizacion()
-          saldo.useTransaction(trx)
-          saldo.asesorId = comercial.id
-          saldo.saldoActual = '0'
-        } else {
-          saldo.useTransaction(trx)
-        }
-        nuevoSaldo = Number(saldo.saldoActual) + montoCargo
-        saldo.saldoActual = String(nuevoSaldo)
-        await saldo.save()
-
-        await MovimientoPenalizacion.create(
-          {
-            asesorId: comercial.id,
-            tipo: 'CARGO',
-            monto: String(montoCargo),
-            ticketId: ticket.id,
-            saldoResultante: String(nuevoSaldo),
-            creadoPorId: auth.user!.id,
-          },
-          { client: trx }
-        )
-      }
-
-      // 7. Cierra el ticket.
+      // 5. Cierra el ticket.
       detalle.useTransaction(trx)
-      detalle.porcentajePenalizacion = dentroVentana ? null : String(porcentajePenalizacion)
+      detalle.conComision = dentroVentana ? null : conComision
       detalle.aprobadoPorId = auth.user!.id
       detalle.aprobadoAt = DateTime.now()
       await detalle.save()
@@ -580,9 +542,8 @@ export default class TicketsExcepcionDateoController {
         detalle: detalle.serialize(),
         dateoId: dateo.id,
         comisionId: comisionCreada?.id ?? null,
-        montoCargoPenalizacion: montoCargo,
-        saldoActual: nuevoSaldo,
         dentroVentana,
+        conComision: dentroVentana ? null : conComision,
       })
     } catch (error) {
       await trx.rollback()
@@ -629,222 +590,4 @@ export default class TicketsExcepcionDateoController {
     }
   }
 
-  /**
-   * GET /saldo-penalizaciones/:asesorId
-   * Saldo actual + historial de movimientos, para la ficha comercial.
-   */
-  public async saldoShow({ params, response }: HttpContext) {
-    const asesorId = readOptionalNumber(params.asesorId)
-    if (asesorId === null) return response.badRequest({ message: 'asesorId inválido' })
-
-    const saldo = await SaldoPenalizacion.query().where('asesor_id', asesorId).first()
-
-    const movimientos = await MovimientoPenalizacion.query()
-      .where('asesor_id', asesorId)
-      .preload('ticket')
-      .preload('comision')
-      .preload('creadoPor')
-      .orderBy('created_at', 'desc')
-
-    return response.ok({
-      asesorId,
-      saldoActual: saldo ? Number(saldo.saldoActual) : 0,
-      movimientos: movimientos.map((m) => m.serialize()),
-    })
-  }
-
-  /**
-   * POST /saldo-penalizaciones/:asesorId/cobrar
-   * Body: { monto, origen: 'COMISION'|'NOMINA', mes?, anio?, observacion? }
-   * mes/anio son obligatorios solo cuando origen=COMISION.
-   *
-   * NOMINA: ABONO directo, no toca comisiones.
-   * COMISION: exige meta cumplida ese mes (evaluarCumplioMeta). La bolsa
-   * disponible (calcularBolsaComisionesMes) SOLO cuenta comisiones
-   * PENDIENTE/APROBADA — PAGADA queda excluida desde el cálculo (esa plata ya
-   * se desembolsó, no hay nada real que recuperar de ahí) y solo se toca
-   * monto_asesor (nunca monto_convenio, que es de un tercero ajeno al
-   * ticket) — mismo principio de cautela que la fórmula de aprobar(). Si lo
-   * solicitado excede la bolsa (o el propio saldo adeudado), cobra solo
-   * hasta ese tope y el resto queda pendiente en el saldo — se reparte entre
-   * las comisiones del mes empezando por fecha_calculo más antigua, con una
-   * fila de auditoría en movimientos_penalizacion POR CADA comisión tocada
-   * (comision_id, monto, creado_por_id) ya que PATCH /comisiones/:id/valores
-   * no provee esa trazabilidad y tampoco sirve para este ajuste (solo acepta
-   * cantidad/valor_unitario).
-   */
-  public async cobrarSaldo({ params, request, response, auth }: HttpContext) {
-    const asesorId = readOptionalNumber(params.asesorId)
-    if (asesorId === null) return response.badRequest({ message: 'asesorId inválido' })
-
-    const payload = request.only(['monto', 'origen', 'mes', 'anio', 'observacion'])
-
-    const montoSolicitado = Number(payload.monto)
-    if (!Number.isFinite(montoSolicitado) || montoSolicitado <= 0) {
-      return response.badRequest({ message: 'monto debe ser un número mayor a 0' })
-    }
-
-    const origenCobro = String(payload.origen ?? '').toUpperCase()
-    if (!['COMISION', 'NOMINA'].includes(origenCobro)) {
-      return response.badRequest({ message: "origen debe ser 'COMISION' o 'NOMINA'" })
-    }
-
-    const observacion = (payload.observacion as string | undefined)?.trim() || null
-
-    const comercial = await AgenteCaptacion.find(asesorId)
-    if (!comercial) return response.notFound({ message: 'Asesor no encontrado' })
-
-    const trx = await Database.transaction()
-    try {
-      let saldo = await SaldoPenalizacion.query({ client: trx })
-        .where('asesor_id', asesorId)
-        .forUpdate()
-        .first()
-      if (!saldo) {
-        saldo = new SaldoPenalizacion()
-        saldo.useTransaction(trx)
-        saldo.asesorId = asesorId
-        saldo.saldoActual = '0'
-        await saldo.save()
-      } else {
-        saldo.useTransaction(trx)
-      }
-
-      if (origenCobro === 'NOMINA') {
-        const montoCobrado = Math.min(montoSolicitado, Number(saldo.saldoActual))
-        if (montoCobrado <= 0) {
-          await trx.rollback()
-          return response.ok({
-            montoSolicitado,
-            montoCobrado: 0,
-            saldoActual: Number(saldo.saldoActual),
-            motivo: 'SALDO_EN_CERO' as const,
-            mensaje: 'El asesor no tiene saldo pendiente.',
-          })
-        }
-
-        const nuevoSaldo = Number(saldo.saldoActual) - montoCobrado
-        saldo.saldoActual = String(nuevoSaldo)
-        await saldo.save()
-
-        await MovimientoPenalizacion.create(
-          {
-            asesorId,
-            tipo: 'ABONO',
-            monto: String(montoCobrado),
-            origenCobro: 'NOMINA',
-            observacion,
-            saldoResultante: String(nuevoSaldo),
-            creadoPorId: auth.user!.id,
-          },
-          { client: trx }
-        )
-
-        await trx.commit()
-        return response.ok({
-          montoSolicitado,
-          montoCobrado,
-          saldoActual: nuevoSaldo,
-          saldoPendiente: nuevoSaldo,
-        })
-      }
-
-      // origenCobro === 'COMISION'
-      const mes = Number(payload.mes)
-      const anio = Number(payload.anio)
-      if (!Number.isInteger(mes) || mes < 1 || mes > 12 || !Number.isInteger(anio)) {
-        await trx.rollback()
-        return response.badRequest({
-          message: 'mes y anio son requeridos y válidos cuando origen=COMISION',
-        })
-      }
-
-      const { cumplio } = await evaluarCumplioMeta(asesorId, mes, anio)
-      if (cumplio !== true) {
-        await trx.rollback()
-        return response.unprocessableEntity({
-          motivo: 'META_NO_CUMPLIDA' as const,
-          message: 'El asesor no cumplió su meta ese mes, no se puede cobrar de comisiones.',
-        })
-      }
-
-      const bolsaDisponible = await calcularBolsaComisionesMes(asesorId, mes, anio)
-      const montoAcobrar = Math.min(montoSolicitado, bolsaDisponible, Number(saldo.saldoActual))
-
-      if (montoAcobrar <= 0) {
-        await trx.rollback()
-        const motivo = Number(saldo.saldoActual) <= 0 ? ('SALDO_EN_CERO' as const) : ('SIN_BOLSA_DISPONIBLE' as const)
-        return response.ok({
-          montoSolicitado,
-          montoCobrado: 0,
-          saldoActual: Number(saldo.saldoActual),
-          saldoPendiente: Number(saldo.saldoActual),
-          bolsaDisponible,
-          motivo,
-          mensaje:
-            motivo === 'SALDO_EN_CERO'
-              ? 'El asesor no tiene saldo pendiente.'
-              : 'No hay comisiones PENDIENTES/APROBADAS disponibles ese mes para cobrar.',
-        })
-      }
-
-      const comisionesDelMes = await Comision.query({ client: trx })
-        .where('asesor_id', asesorId)
-        .where('es_config', false)
-        .whereIn('estado', ['PENDIENTE', 'APROBADA'])
-        .whereRaw('MONTH(fecha_calculo) = ? AND YEAR(fecha_calculo) = ?', [mes, anio])
-        .orderBy('fecha_calculo', 'asc')
-
-      let restante = montoAcobrar
-      const comisionesTocadas: { comisionId: number; montoDescontado: number }[] = []
-
-      for (const c of comisionesDelMes) {
-        if (restante <= 0) break
-        const disponibleEnComision = Number(c.montoAsesor ?? 0)
-        if (disponibleEnComision <= 0) continue
-
-        const tomar = Math.min(disponibleEnComision, restante)
-        c.useTransaction(trx)
-        c.montoAsesor = String(disponibleEnComision - tomar)
-        await c.save()
-        restante -= tomar
-        comisionesTocadas.push({ comisionId: c.id, montoDescontado: tomar })
-
-        const nuevoSaldoParcial = Number(saldo.saldoActual) - tomar
-        saldo.saldoActual = String(nuevoSaldoParcial)
-        await saldo.useTransaction(trx).save()
-
-        await MovimientoPenalizacion.create(
-          {
-            asesorId,
-            tipo: 'ABONO',
-            monto: String(tomar),
-            origenCobro: 'COMISION',
-            comisionId: c.id,
-            observacion,
-            saldoResultante: String(nuevoSaldoParcial),
-            creadoPorId: auth.user!.id,
-          },
-          { client: trx }
-        )
-      }
-
-      const montoCobrado = montoAcobrar - restante
-      const saldoActualFinal = Number(saldo.saldoActual)
-
-      await trx.commit()
-
-      return response.ok({
-        montoSolicitado,
-        montoCobrado,
-        saldoActual: saldoActualFinal,
-        saldoPendiente: saldoActualFinal,
-        bolsaDisponible,
-        comisionesTocadas,
-      })
-    } catch (error) {
-      await trx.rollback()
-      throw error
-    }
-  }
 }

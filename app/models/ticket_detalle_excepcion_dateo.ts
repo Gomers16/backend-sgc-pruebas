@@ -62,9 +62,13 @@ export default class TicketDetalleExcepcionDateo extends BaseModel {
   @column({ columnName: 'evidencia_calamidad_url' })
   declare evidenciaCalamidadUrl: string | null
 
-  /** Se llena al aprobar (PATCH /tickets-excepcion-dateo/:id/aprobar). */
-  @column({ columnName: 'porcentaje_penalizacion' })
-  declare porcentajePenalizacion: string | null
+  /**
+   * Solo relevante fuera de ventana — dentro de ventana la comisión siempre
+   * es completa y esta columna queda null. Se llena al aprobar (PATCH
+   * /tickets-excepcion-dateo/:id/aprobar).
+   */
+  @column({ columnName: 'con_comision' })
+  declare conComision: boolean | null
 
   @column({ columnName: 'aprobado_por_id' })
   declare aprobadoPorId: number | null
