@@ -14,8 +14,8 @@ import TurnoRtm from '#models/turno_rtm'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
-import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
 import { evaluarContinuidad } from '#services/continuidad_service'
+import { debeRespetarSinComision } from '#services/reserva_dateo_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -1128,20 +1128,8 @@ export default class FacturacionTicketsController {
     // Lectura simple, fuera de la transacción de abajo (no modifica nada).
     let forzarSinComisionPorTicket = false
     if (turnoActual?.id) {
-      const detalleTicketExcepcion = await TicketDetalleExcepcionDateo.query()
-        .where('turno_id', turnoActual.id)
-        .whereHas('ticket', (q) => q.where('estado', 'APROBADO'))
-        .first()
-      // mysql2 devuelve TINYINT(1) como 0/1/null (no boolean real) en una
-      // lectura directa de modelo — null (dentro de ventana) también es
-      // falsy, así que hay que descartarlo explícitamente antes de negar,
-      // si no `Boolean(null)` colaría como "sin comisión" igual que `false`.
-      if (
-        detalleTicketExcepcion &&
-        detalleTicketExcepcion.conComision !== null &&
-        !Boolean(detalleTicketExcepcion.conComision)
-      ) {
-        forzarSinComisionPorTicket = true
+      forzarSinComisionPorTicket = await debeRespetarSinComision(turnoActual.id)
+      if (forzarSinComisionPorTicket) {
         console.log(
           `🎫 Turno ${turnoActual.id} viene de ticket de Excepción de Dateo APROBADO SIN comisión — se fuerza montoAsesor=0`
         )

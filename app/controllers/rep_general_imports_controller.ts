@@ -12,6 +12,7 @@ import Conductor from '#models/conductor'
 import TurnoRtm from '#models/turno_rtm'
 import Comision from '#models/comision'
 import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
+import { debeRespetarSinComision } from '#services/reserva_dateo_service'
 import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
 
 type TipoVehiculoDB = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
@@ -1235,6 +1236,11 @@ export default class RepGeneralImportController {
 
     const tieneConvenio = !!comision.convenioId
     const esComercialConConvenio = tieneConvenio && !!comision.asesorSecundarioId
+    // 🆕 Si este dateo viene de un ticket de Excepción de Dateo APROBADO con
+    // "Aprobar sin comisión", el Rep General no debe revertir esa decisión
+    // de gerencia al reclasificar recurrencia/recuperación — mismo criterio
+    // que forzarSinComisionPorTicket en facturacion_tickets_controller.ts.
+    const respetarSinComision = await debeRespetarSinComision(turnoParaActualizar?.id ?? null)
 
     if (rec.esRecurrente || rec.esRecuperacion) {
       // Recuperación es solo una categoría informativa/de reporte — nunca
@@ -1248,9 +1254,11 @@ export default class RepGeneralImportController {
       if (!tieneConvenio) {
         // CASO 1: Sin convenio — solo actualizar monto del asesor
         comision.monto = String(valorAsesor)
-        comision.montoAsesor = String(valorAsesor)
+        if (!respetarSinComision) comision.montoAsesor = String(valorAsesor)
         console.log(
-          `   ${etiqueta} Comisión #${comision.id} | Sin convenio → asesor $${valorAsesor}`
+          respetarSinComision
+            ? `   🔒 ${etiqueta} Comisión #${comision.id} | Sin convenio → ticket "sin comisión" ya aprobado, se respeta montoAsesor=$${comision.montoAsesor}`
+            : `   ${etiqueta} Comisión #${comision.id} | Sin convenio → asesor $${valorAsesor}`
         )
       } else if (esComercialConConvenio) {
         // CASO 3: Comercial + convenio
@@ -1264,9 +1272,11 @@ export default class RepGeneralImportController {
         // CASO 2: Convenio datea él mismo
         // montoConvenio siempre es $0, solo actualizar montoAsesor
         comision.monto = String(valorAsesor)
-        comision.montoAsesor = String(valorAsesor)
+        if (!respetarSinComision) comision.montoAsesor = String(valorAsesor)
         console.log(
-          `   ${etiqueta} Comisión #${comision.id} | Convenio datea → asesor $${valorAsesor} | convenio $0`
+          respetarSinComision
+            ? `   🔒 ${etiqueta} Comisión #${comision.id} | Convenio datea → ticket "sin comisión" ya aprobado, se respeta montoAsesor=$${comision.montoAsesor}`
+            : `   ${etiqueta} Comisión #${comision.id} | Convenio datea → asesor $${valorAsesor} | convenio $0`
         )
       }
     }

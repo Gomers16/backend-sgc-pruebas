@@ -199,6 +199,41 @@ export async function getMinutosVentanaTicket(agenteId?: number | null): Promise
 }
 
 /**
+ * ¿El turno viene de un ticket de Excepción de Dateo APROBADO con "Aprobar
+ * sin comisión" (con_comision=false)? Si es así, esa decisión de gerencia
+ * debe respetarse en cualquier punto que vuelva a escribir montoAsesor
+ * después — facturacion_tickets_controller.ts::applyCommissionHook() (camino
+ * diferido, cuando facturación se confirma después de aprobar el ticket) y
+ * rep_general_imports_controller.ts::recalcularComisionSiExiste()
+ * (reclasificación de recurrencia/recuperación al subir un Rep General
+ * posterior) — antes cada uno tenía su propia copia de esta consulta.
+ *
+ * mysql2 devuelve TINYINT(1) como 0/1/null (no boolean real) en una lectura
+ * directa de modelo — null (dentro de ventana) también es falsy, así que hay
+ * que descartarlo explícitamente antes de negar, si no `Boolean(null)`
+ * colaría como "sin comisión" igual que `false`.
+ */
+export async function debeRespetarSinComision(
+  turnoId: number | null | undefined
+): Promise<boolean> {
+  if (!turnoId) return false
+
+  const { default: TicketDetalleExcepcionDateo } = await import(
+    '#models/ticket_detalle_excepcion_dateo'
+  )
+  const detalleTicketExcepcion = await TicketDetalleExcepcionDateo.query()
+    .where('turno_id', turnoId)
+    .whereHas('ticket', (q) => q.where('estado', 'APROBADO'))
+    .first()
+
+  return (
+    !!detalleTicketExcepcion &&
+    detalleTicketExcepcion.conComision !== null &&
+    !Boolean(detalleTicketExcepcion.conComision)
+  )
+}
+
+/**
  * Máximo de veces que un dateo puede re-datearse. Cascada: override por
  * asesor (si existe y no es null) → config global (find-or-create con
  * default 3). Sin cache — se llama solo dentro de POST /:id/redatear, bajo
