@@ -20,6 +20,7 @@ import {
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
+import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
 
 /* ========= Helpers ========= */
 function toNumber(v: any): number {
@@ -593,41 +594,20 @@ export default class ComisionesController {
       month = now.month
     }
 
-    const start = DateTime.fromObject({ year, month, day: 1 }).startOf('day').toSQL()
-    const end = DateTime.fromObject({ year, month, day: 1 }).endOf('month').toSQL()
+    const start = DateTime.fromObject({ year, month, day: 1 }).startOf('day').toISODate()
+    const end = DateTime.fromObject({ year, month, day: 1 }).endOf('month').toISODate()
 
     const asesorId =
       asesorIdParam !== undefined && asesorIdParam !== null ? Number(asesorIdParam) : undefined
 
-    const baseQ = Database.from('comisiones')
-      .where((q) => {
-        q.where('es_config', false).orWhereNull('es_config')
-      })
-      .andWhere('tipo_servicio', 'RTM')
-      .whereIn('estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
-      .whereNotNull('asesor_id')
-
-    if (start && end) baseQ.whereBetween('fecha_calculo', [start, end])
-    if (asesorId) baseQ.andWhere('asesor_id', asesorId)
-
-    const agregados = await baseQ
-      .select('asesor_id')
-      .select(Database.raw("SUM(CASE WHEN tipo_vehiculo = 'MOTO' THEN 1 ELSE 0 END) AS rtm_motos"))
-      .select(
-        Database.raw(
-          "SUM(CASE WHEN tipo_vehiculo = 'VEHICULO' OR tipo_vehiculo IS NULL THEN 1 ELSE 0 END) AS rtm_vehiculos"
-        )
-      )
-      .groupBy('asesor_id')
-
+    const conteoRtm = await contarUnidadesRtmPorAsesor({
+      fechaInicio: start,
+      fechaFin: end,
+      asesorId,
+    })
     const countsByAsesor = new Map<number, { rtm_motos: number; rtm_vehiculos: number }>()
-    for (const row of agregados as any[]) {
-      const id = Number(row.asesor_id)
-      if (!Number.isFinite(id)) continue
-      countsByAsesor.set(id, {
-        rtm_motos: Number(row.rtm_motos || 0),
-        rtm_vehiculos: Number(row.rtm_vehiculos || 0),
-      })
+    for (const [id, c] of conteoRtm) {
+      countsByAsesor.set(id, { rtm_motos: c.rtmMotos, rtm_vehiculos: c.rtmVehiculos })
     }
 
     const globalCfg = await Comision.query()

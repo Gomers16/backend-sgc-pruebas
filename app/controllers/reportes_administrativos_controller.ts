@@ -14,6 +14,7 @@ import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
 import Liquidacion from '#models/liquidacion'
 import Comision from '#models/comision'
 import InformeDiscrepanciaRtm from '#models/informe_discrepancia_rtm'
+import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -5624,46 +5625,47 @@ export default class ReportesAdministrativosController {
         }
 
         if (esReal) {
-          // ── Vehículos logrados (real) — facturacion_tickets, NO comisiones:
-          // comisiones solo genera una fila por "dateo exitoso"
-          // (captacion_dateos_controller.ts), no por cada vehículo facturado
-          // — subestimaría fuertemente el conteo (verificado: ~20 filas de
-          // comisiones vs. ~114 vehículos reales en facturacion_tickets para
-          // un mismo asesor/mes). agente_id ya es el mismo universo que
-          // reporteAsesores() usa para "vehículos atendidos por el asesor".
-          // Agrupado también por tipo de vehículo (join a turnos_rtms vía
-          // turno_id, misma clasificación MOTO/VEHICULO que usa Servicios)
-          // para poder separar "Unidades" en Motos/Vehículos y calcular
-          // Ingreso RTM Generado por categoría.
-          const vehiculosRows = (await Database.from('facturacion_tickets as ft')
-            .join('turnos_rtms as t', 't.id', 'ft.turno_id')
-            .whereIn('ft.agente_id', idsPermitidos)
-            .where('ft.estado', 'CONFIRMADA')
-            .where('ft.servicio_codigo', 'RTM')
-            .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [ventanaInicio, ventanaFin])
-            .select(
-              'ft.agente_id',
-              Database.raw(
-                "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
-              )
-            )
-            .count('* as cantidad')
-            .groupBy('ft.agente_id', 'tipo_clasificado')) as {
-            agente_id: number
-            tipo_clasificado: 'MOTO' | 'VEHICULO'
-            cantidad: string
-          }[]
-          for (const r of vehiculosRows) {
-            const acc = asegurar(Number(r.agente_id))
-            const cantidad = Number(r.cantidad) || 0
-            const costoBase = obtenerCostoBaseAsesor(Number(r.agente_id))
-            if (r.tipo_clasificado === 'MOTO') {
-              acc.logradoMotos += cantidad
-              acc.ingresoRtmGenerado += cantidad * costoBase.moto
+          // ── Vehículos logrados (real) — MISMA fuente y MISMO criterio que
+          // ComisionesController.metasMensuales() (Ficha Comercial → modal
+          // "Metas mensuales RTM"): 1 fila de `comisiones` = 1 unidad RTM
+          // lograda, vía contarUnidadesRtmPorAsesor() (compartida por ambos
+          // controladores para que no puedan volver a divergir).
+          //
+          // 🆕 Corrección 2026-09-03: antes esta sección contaba filas de
+          // facturacion_tickets JOIN turnos_rtms (por ft.created_at), con el
+          // argumento "comisiones subestima: ~20 filas de comisiones vs.
+          // ~114 vehículos reales en facturacion_tickets para un mismo
+          // asesor/mes". Ese ~20 vs ~114 se verificó contra la BD local
+          // compartida (backend-sgc-pruebas / backend-sgc local) mientras
+          // junio 2026 solo tenía datos sintéticos de dos seeders que nunca
+          // se cruzan entre sí (`38_comisiones_prueba_seeder.ts` y
+          // `32_facturacion_tickets_reportes_seeder.ts`) — no reflejaba un
+          // patrón real del negocio, y se confirmó manualmente contra los
+          // Excel oficiales de la empresa que los números de `comisiones`
+          // (Ficha Comercial) son los correctos, no los de facturacion_tickets.
+          // facturacion_tickets cuenta cualquier ticket CONFIRMADA de RTM
+          // exista o no una comisión asociada (turno sin dateo vinculado,
+          // comisión anulada manualmente, ticket duplicado del mismo día,
+          // etc. — ver diagnóstico completo en MAPA_DEL_SISTEMA_BACKEND.md),
+          // por lo que daba números sistemáticamente más altos que Ficha
+          // Comercial. No usar facturacion_tickets para "Unidades" de nuevo
+          // sin revisar ese diagnóstico primero.
+          const conteoRtm = await contarUnidadesRtmPorAsesor({
+            fechaInicio: ventanaInicio,
+            fechaFin: ventanaFin,
+            asesorIds: idsPermitidos,
+          })
+          for (const [agenteId, conteo] of conteoRtm) {
+            const acc = asegurar(agenteId)
+            const costoBase = obtenerCostoBaseAsesor(agenteId)
+            if (conteo.rtmMotos > 0) {
+              acc.logradoMotos += conteo.rtmMotos
+              acc.ingresoRtmGenerado += conteo.rtmMotos * costoBase.moto
               acc.ultimoCostoBaseMoto = costoBase.moto
-            } else {
-              acc.logradoVehiculos += cantidad
-              acc.ingresoRtmGenerado += cantidad * costoBase.vehiculo
+            }
+            if (conteo.rtmVehiculos > 0) {
+              acc.logradoVehiculos += conteo.rtmVehiculos
+              acc.ingresoRtmGenerado += conteo.rtmVehiculos * costoBase.vehiculo
               acc.ultimoCostoBaseVehiculo = costoBase.vehiculo
             }
           }
