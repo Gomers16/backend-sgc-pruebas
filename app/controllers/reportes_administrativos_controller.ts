@@ -14,7 +14,12 @@ import ConfiguracionMetaMensual from '#models/configuracion_meta_mensual'
 import Liquidacion from '#models/liquidacion'
 import Comision from '#models/comision'
 import InformeDiscrepanciaRtm from '#models/informe_discrepancia_rtm'
-import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
+import {
+  contarUnidadesRtmPorAsesor,
+  contarUnidadesRtmPorAsesorPorDia,
+  contarUnidadesRtmPorAsesorConDesgloseConvenio,
+  contarUnidadesRtmPorConvenio,
+} from '#services/meta_comercial_rtm_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -452,17 +457,24 @@ async function obtenerCostoBaseRtmGlobal(): Promise<{ moto: number; vehiculo: nu
 
 /**
  * Ingreso RTM Generado por asesor (SOLO meses reales, post-corte): cantidad
- * de vehículos/motos FACTURADOS (facturacion_tickets confirmada+RTM) ×
+ * de unidades RTM logradas (comisiones, vía contarUnidadesRtmPorAsesor()) ×
  * Costo Base RTM (override del asesor si tiene, si no el Global) — separado
- * por canal (convenio/propio) y tipo de vehículo.
+ * por canal (convenio/comercial, según el tipo fijo del asesor en
+ * agentes_captacions.tipo) y tipo de vehículo.
  *
- * Compartida por metaComercialResumen() y computeMetaComercialSuperInforme()
- * — ambas necesitan la MISMA definición de "cuánto generó el asesor en RTM
- * real" para no divergir entre la pantalla de Meta Comercial y el Súper
- * Informe. Mismos filtros que computeReconciliacionFacturacionRtm()/
- * computeProduccionPorLider() (t.estado='finalizado', t.placa NOT LIKE
- * 'TST%') — sin esto se generaba de más con turnos cancelados/activos,
- * igual que el bug ya corregido en Ingresos por Canal/Retención.
+ * Compartida por metaComercialResumen() y metaComercialDetalleVehiculo() —
+ * ambas necesitan la MISMA definición de "cuánto generó el asesor en RTM
+ * real" para no divergir entre sí ni con Ficha Comercial/Súper Informe.
+ *
+ * 🆕 Corrección 2026-09-04: antes esta función contaba filas de
+ * facturacion_tickets JOIN turnos_rtms (por ft.created_at, servicio_codigo
+ * RTM), con el desglose convenio/comercial por ft.convenio_nombre — mismo
+ * bug de sobreconteo ya corregido en computeMetaComercialSuperInforme() el
+ * 2026-09-03 (facturacion_tickets cuenta cualquier ticket CONFIRMADA de RTM
+ * exista o no una comisión real asociada; verificado con datos reales de
+ * junio 2026: asesor 735 → 19 comisiones reales vs 104 tickets, asesor 734
+ * → 19 vs 114). Ver diagnóstico completo en MAPA_DEL_SISTEMA_BACKEND.md — no
+ * volver a usar facturacion_tickets acá sin revisarlo primero.
  */
 export type IngresoRtmGeneradoCanal = {
   motos: number
@@ -517,42 +529,27 @@ export async function calcularIngresoRtmGeneradoPorAsesor(
     })
   }
 
-  const rows = (await Database.from('facturacion_tickets as ft')
-    .join('turnos_rtms as t', 't.id', 'ft.turno_id')
-    .whereIn('ft.agente_id', asesorIds)
-    .where('ft.estado', 'CONFIRMADA')
-    .where('ft.servicio_codigo', 'RTM')
-    .where('t.estado', 'finalizado')
-    .whereRaw("t.placa NOT LIKE 'TST%'")
-    .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-    .select(
-      'ft.agente_id',
-      Database.raw(
-        "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
-      ),
-      Database.raw("CASE WHEN ft.convenio_nombre IS NULL THEN 'PROPIO' ELSE 'CONVENIO' END as canal")
-    )
-    .count('* as cantidad')
-    .groupBy('ft.agente_id', 'tipo_clasificado', 'canal')) as {
-    agente_id: number
-    tipo_clasificado: 'MOTO' | 'VEHICULO'
-    canal: 'PROPIO' | 'CONVENIO'
-    cantidad: string
-  }[]
+  const conteoRtm = await contarUnidadesRtmPorAsesor({ fechaInicio, fechaFin, asesorIds })
+  if (conteoRtm.size > 0) {
+    // Convenio/comercial ya no se decide por ticket (ft.convenio_nombre) —
+    // comisiones no tiene ese dato por fila así de simple — sino por el tipo
+    // FIJO del asesor, mismo criterio que ya usa el bloque de comisión real
+    // (pesosConvenio/pesosComercial) en metaComercialResumen().
+    const tipos = await AgenteCaptacion.query().whereIn('id', asesorIds).select('id', 'tipo')
+    const tipoPorAsesor = new Map(tipos.map((a) => [a.id, a.tipo]))
 
-  for (const r of rows) {
-    const id = Number(r.agente_id)
-    const cantidad = Number(r.cantidad) || 0
-    const acc = resultado.get(id)
-    if (!acc) continue // agente_id fuera de los asesorIds pedidos (no debería pasar, whereIn ya filtra)
-    const costoBase = { moto: acc.costoBaseMoto, vehiculo: acc.costoBaseVehiculo }
-    const bucket = r.canal === 'CONVENIO' ? acc.convenio : acc.comercial
-    if (r.tipo_clasificado === 'MOTO') {
-      bucket.motos += cantidad
-      bucket.pesosMotos += cantidad * costoBase.moto
-    } else {
-      bucket.vehiculos += cantidad
-      bucket.pesosVehiculos += cantidad * costoBase.vehiculo
+    for (const [id, conteo] of conteoRtm) {
+      const acc = resultado.get(id)
+      if (!acc) continue // asesor_id fuera de los asesorIds pedidos (no debería pasar, whereIn ya filtra)
+      const bucket = tipoPorAsesor.get(id) === 'ASESOR_CONVENIO' ? acc.convenio : acc.comercial
+      if (conteo.rtmMotos > 0) {
+        bucket.motos += conteo.rtmMotos
+        bucket.pesosMotos += conteo.rtmMotos * acc.costoBaseMoto
+      }
+      if (conteo.rtmVehiculos > 0) {
+        bucket.vehiculos += conteo.rtmVehiculos
+        bucket.pesosVehiculos += conteo.rtmVehiculos * acc.costoBaseVehiculo
+      }
     }
   }
 
@@ -561,16 +558,19 @@ export async function calcularIngresoRtmGeneradoPorAsesor(
 
 /**
  * Variante de calcularIngresoRtmGeneradoPorAsesor() con bucketing por día
- * (DATE(ft.created_at)) en la MISMA query — 1 sola consulta, evita N+1 al
+ * en 1 sola consulta (vía contarUnidadesRtmPorAsesorPorDia()), evita N+1 al
  * pedir un query por día para metaComercialDiario/Semanal/Proyectado (rama
- * real). asesorIds=null → SIN whereIn, agrega TODOS los agente_id que
- * aparezcan en el rango (equivalente al modo "todos los asesores" que ya
- * usaban esos 3 endpoints con comisiones, donde el universo lo descubre el
- * propio GROUP BY, sin lista previa).
+ * real). asesorIds=null → agrega TODOS los agente_id que aparezcan en el
+ * rango.
  *
- * Cada fecha del mapa devuelto SOLO existe si tuvo al menos un vehículo/moto
- * facturado ese día — el llamador ya tiene el patrón `get(fecha) ?? 0` para
- * los días sin datos (igual que antes con comisiones).
+ * Cada fecha del mapa devuelto SOLO existe si tuvo al menos una comisión RTM
+ * real ese día — el llamador ya tiene el patrón `get(fecha) ?? 0` para los
+ * días sin datos.
+ *
+ * 🆕 Corrección 2026-09-04: antes contaba filas de facturacion_tickets por
+ * DATE(ft.created_at) — mismo bug de sobreconteo ya corregido en
+ * calcularIngresoRtmGeneradoPorAsesor() (ver comentario ahí y en
+ * MAPA_DEL_SISTEMA_BACKEND.md).
  */
 async function calcularIngresoRtmGeneradoPorAsesorPorDia(
   asesorIds: number[] | null,
@@ -580,43 +580,15 @@ async function calcularIngresoRtmGeneradoPorAsesorPorDia(
   const resultado = new Map<string, Map<number, IngresoRtmGeneradoAsesor>>()
   if (asesorIds !== null && asesorIds.length === 0) return resultado
 
-  const baseQuery = Database.from('facturacion_tickets as ft')
-    .join('turnos_rtms as t', 't.id', 'ft.turno_id')
-    .where('ft.estado', 'CONFIRMADA')
-    .where('ft.servicio_codigo', 'RTM')
-    .where('t.estado', 'finalizado')
-    .whereRaw("t.placa NOT LIKE 'TST%'")
-    .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-  if (asesorIds !== null) baseQuery.whereIn('ft.agente_id', asesorIds)
+  const conteoPorDia = await contarUnidadesRtmPorAsesorPorDia({ fechaInicio, fechaFin, asesorIds })
+  if (conteoPorDia.size === 0) return resultado
 
-  // Alias 'dia' (no 'fecha'): turnos_rtms.fecha es una columna real
-  // alcanzable por el JOIN — con sql_mode=only_full_group_by, MySQL
-  // resuelve un alias de GROUP BY contra una columna real del FROM antes
-  // que contra el alias del SELECT, así que `GROUP BY fecha` terminaba
-  // agrupando por t.fecha (no relacionado) en vez de por el alias.
-  const rows = (await baseQuery
-    .select(
-      Database.raw("DATE_FORMAT(ft.created_at, '%Y-%m-%d') as dia"),
-      'ft.agente_id',
-      Database.raw(
-        "CASE WHEN LOWER(t.tipo_vehiculo) LIKE '%moto%' THEN 'MOTO' ELSE 'VEHICULO' END as tipo_clasificado"
-      ),
-      Database.raw("CASE WHEN ft.convenio_nombre IS NULL THEN 'PROPIO' ELSE 'CONVENIO' END as canal")
-    )
-    .count('* as cantidad')
-    .groupBy('dia', 'ft.agente_id', 'tipo_clasificado', 'canal')) as {
-    dia: string
-    agente_id: number
-    tipo_clasificado: 'MOTO' | 'VEHICULO'
-    canal: 'PROPIO' | 'CONVENIO'
-    cantidad: string
-  }[]
-
-  if (rows.length === 0) return resultado
-
-  // Costo Base solo para los asesores que REALMENTE aparecen en los
-  // resultados — evita pedirlo para todo el universo cuando asesorIds=null.
-  const idsEncontrados = Array.from(new Set(rows.map((r) => Number(r.agente_id))))
+  // Costo Base + tipo (convenio/comercial) solo para los asesores que
+  // REALMENTE aparecen en los resultados — evita pedirlo para todo el
+  // universo cuando asesorIds=null.
+  const idsEncontrados = Array.from(
+    new Set(Array.from(conteoPorDia.values()).flatMap((porAsesor) => Array.from(porAsesor.keys())))
+  )
   const costoBaseGlobal = await obtenerCostoBaseRtmGlobal()
   const costoBaseConfigRows = await Comision.query()
     .where('es_config', true)
@@ -632,33 +604,33 @@ async function calcularIngresoRtmGeneradoPorAsesorPorDia(
   }
   const obtenerCostoBase = (asesorId: number) => costoBasePorAsesor.get(asesorId) ?? costoBaseGlobal
 
-  const asegurarAsesor = (fecha: string, id: number): IngresoRtmGeneradoAsesor => {
-    if (!resultado.has(fecha)) resultado.set(fecha, new Map())
-    const porAsesor = resultado.get(fecha)!
-    if (!porAsesor.has(id)) {
+  // Convenio/comercial por tipo FIJO del asesor — mismo criterio ya aplicado
+  // en calcularIngresoRtmGeneradoPorAsesor().
+  const tipos = await AgenteCaptacion.query().whereIn('id', idsEncontrados).select('id', 'tipo')
+  const tipoPorAsesor = new Map(tipos.map((a) => [a.id, a.tipo]))
+
+  for (const [fecha, porAsesor] of conteoPorDia) {
+    const porAsesorOut = new Map<number, IngresoRtmGeneradoAsesor>()
+    for (const [id, conteo] of porAsesor) {
       const costoBase = obtenerCostoBase(id)
-      porAsesor.set(id, {
+      const acc: IngresoRtmGeneradoAsesor = {
         costoBaseMoto: costoBase.moto,
         costoBaseVehiculo: costoBase.vehiculo,
         convenio: { motos: 0, vehiculos: 0, pesosMotos: 0, pesosVehiculos: 0 },
         comercial: { motos: 0, vehiculos: 0, pesosMotos: 0, pesosVehiculos: 0 },
-      })
+      }
+      const bucket = tipoPorAsesor.get(id) === 'ASESOR_CONVENIO' ? acc.convenio : acc.comercial
+      if (conteo.rtmMotos > 0) {
+        bucket.motos += conteo.rtmMotos
+        bucket.pesosMotos += conteo.rtmMotos * costoBase.moto
+      }
+      if (conteo.rtmVehiculos > 0) {
+        bucket.vehiculos += conteo.rtmVehiculos
+        bucket.pesosVehiculos += conteo.rtmVehiculos * costoBase.vehiculo
+      }
+      porAsesorOut.set(id, acc)
     }
-    return porAsesor.get(id)!
-  }
-
-  for (const r of rows) {
-    const id = Number(r.agente_id)
-    const cantidad = Number(r.cantidad) || 0
-    const acc = asegurarAsesor(r.dia, id)
-    const bucket = r.canal === 'CONVENIO' ? acc.convenio : acc.comercial
-    if (r.tipo_clasificado === 'MOTO') {
-      bucket.motos += cantidad
-      bucket.pesosMotos += cantidad * acc.costoBaseMoto
-    } else {
-      bucket.vehiculos += cantidad
-      bucket.pesosVehiculos += cantidad * acc.costoBaseVehiculo
-    }
+    resultado.set(fecha, porAsesorOut)
   }
 
   return resultado
@@ -1959,6 +1931,14 @@ export default class ReportesAdministrativosController {
    * en facturacion_tickets, agente_comercial_nombre solo se llena para
    * canal ASESOR_COMERCIAL; para ASESOR_CONVENIO el nombre vive en
    * asesor_convenio_nombre.
+   *
+   * 🆕 2026-09-04: vehiculos_directos/vehiculos_convenio/total_vehiculos
+   * (tabla `asesores`) y total_vehiculos (tabla `convenios`, más abajo)
+   * salen de `comisiones` (ver comentarios dentro de la función) — SOLO
+   * cuentan ventas con comisión RTM real generada, ya no cualquier ticket
+   * CONFIRMADA. total_bruto/total_neto siguen siendo dinero real facturado
+   * (facturacion_tickets), sin cambios en ninguna de las dos tablas — ver
+   * `nota_metodologia` en la respuesta.
    */
   public async reporteAsesores({ request, response }: HttpContext) {
     const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
@@ -1976,57 +1956,128 @@ export default class ReportesAdministrativosController {
           'COALESCE(MAX(agente_comercial_nombre), MAX(asesor_convenio_nombre)) as nombre'
         )
       )
-      .select(
-        Database.raw(
-          'SUM(CASE WHEN convenio_nombre IS NULL THEN 1 ELSE 0 END) as vehiculos_directos'
-        )
-      )
-      .select(
-        Database.raw(
-          'SUM(CASE WHEN convenio_nombre IS NOT NULL THEN 1 ELSE 0 END) as vehiculos_convenio'
-        )
-      )
-      .count('* as total_vehiculos')
       .sum('total as total_bruto')
       .sum('subtotal as total_neto')
-      .groupBy('agente_id', 'captacion_canal')
-      .orderBy('total_vehiculos', 'desc')) as any[]
+      .groupBy('agente_id', 'captacion_canal')) as any[]
 
-    const asesores = rows.map((r) => ({
-      agente_id: Number(r.agente_id),
-      nombre: r.nombre,
-      canal: r.captacion_canal,
-      vehiculos_directos: Number(r.vehiculos_directos) || 0,
-      vehiculos_convenio: Number(r.vehiculos_convenio) || 0,
-      total_vehiculos: Number(r.total_vehiculos),
-      total_bruto: Number(r.total_bruto) || 0,
-      total_neto: Number(r.total_neto) || 0,
-    }))
+    // 🆕 Corrección 2026-09-04: vehiculos_directos/vehiculos_convenio/
+    // total_vehiculos ya NO cuentan filas de facturacion_tickets — mismo bug
+    // de sobreconteo ya corregido en Meta Comercial (facturacion_tickets
+    // cuenta cualquier ticket CONFIRMADA de RTM exista o no una comisión
+    // real asociada; verificado con datos reales de junio 2026: asesor 735
+    // → 19 comisiones reales vs 104 tickets, asesor 734 → 19 vs 114 — ver
+    // MAPA_DEL_SISTEMA_BACKEND.md). Ahora salen de `comisiones`
+    // (contarUnidadesRtmPorAsesor/ConDesgloseConvenio), la misma fuente que
+    // Ficha Comercial y el Súper Informe.
+    //
+    // total_bruto/total_neto SÍ siguen siendo de facturacion_tickets a
+    // propósito — es dinero real cobrado en caja, un concepto distinto de
+    // "venta con comisión RTM generada" que no debe filtrarse para forzar
+    // que cuadre con el conteo de unidades (ver `nota_metodologia` abajo:
+    // el drill-down de detallePorAsesor() tampoco se tocó, sigue listando
+    // placas de facturacion_tickets).
+    const asesorIds = Array.from(new Set(rows.map((r) => Number(r.agente_id))))
+    const [conteoTotal, conteoConvenio] = await Promise.all([
+      contarUnidadesRtmPorAsesor({ fechaInicio, fechaFin, asesorIds }),
+      contarUnidadesRtmPorAsesorConDesgloseConvenio({ fechaInicio, fechaFin, asesorIds }),
+    ])
+
+    const asesores = rows
+      .map((r) => {
+        const agenteId = Number(r.agente_id)
+        const conteo = conteoTotal.get(agenteId)
+        const desglose = conteoConvenio.get(agenteId)
+        return {
+          agente_id: agenteId,
+          nombre: r.nombre,
+          canal: r.captacion_canal,
+          vehiculos_directos: desglose?.directos ?? 0,
+          vehiculos_convenio: desglose?.convenio ?? 0,
+          total_vehiculos: conteo ? conteo.rtmMotos + conteo.rtmVehiculos : 0,
+          total_bruto: Number(r.total_bruto) || 0,
+          total_neto: Number(r.total_neto) || 0,
+        }
+      })
+      .sort((a, b) => b.total_vehiculos - a.total_vehiculos)
 
     // ===== Convenio (solo tickets captados por ASESOR_COMERCIAL — los de
     // ASESOR_CONVENIO ya están en el segmento "Asesor Convenio", no se duplican) =====
-    const convenioRows = (await Database.from('facturacion_tickets')
-      .where('estado', 'CONFIRMADA')
-      .where('servicio_codigo', 'RTM')
-      .whereRaw('DATE(created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .where('captacion_canal', 'ASESOR_COMERCIAL')
-      .whereNotNull('convenio_nombre')
-      .select('convenio_nombre')
-      .select(
-        Database.raw(
-          "GROUP_CONCAT(DISTINCT agente_comercial_nombre ORDER BY agente_comercial_nombre SEPARATOR ', ') as asesores"
-        )
-      )
-      .count('* as total_vehiculos')
-      .sum('total as total_bruto')
-      .sum('subtotal as total_neto')
-      .groupBy('convenio_nombre')
-      .orderBy('total_bruto', 'desc')) as any[]
+    //
+    // 🆕 Corrección 2026-09-04: total_vehiculos ya NO cuenta filas de
+    // facturacion_tickets — mismo bug de sobreconteo que ya corregimos en
+    // la tabla `asesores` de esta misma función. Ahora sale de
+    // contarUnidadesRtmPorConvenio() (comisiones.convenio_id), cruzado por
+    // convenio_nombre contra esta misma query de facturación — no hay
+    // convenio_id en facturacion_tickets (solo el texto libre
+    // convenio_nombre), así que el cruce es por nombre, no por id.
+    //
+    // ⚠️ Dimensionado primero contra la BD LOCAL de pruebas (datos casi
+    // 100% sintéticos, dos seeders desconectados): dio una imagen MUY
+    // distorsionada — 0% de coincidencia turno-a-turno entre comisión y su
+    // propio ticket. Redimensionado contra datos reales de producción: el
+    // panorama real es mucho más acotado — 296/394 (75%) coinciden
+    // correctamente sin tocar nada; del resto, 83/394 (21%) es el caso que
+    // este fix SÍ resuelve (ticket con canal ASESOR_COMERCIAL correcto pero
+    // convenio_nombre vacío — ver el LEFT JOIN a comisiones/convenios más
+    // abajo), y 9/394 (2%) son variantes de texto del mismo convenio (ej.
+    // "BRYAN VALDES" vs "BRAYAN ANDRES VALDES ROMERO") que este fix NO
+    // intenta resolver — no se sobrescribe un convenio_nombre ya presente,
+    // solo se rellena cuando está NULL. Advertencia permanente: la BD local
+    // de pruebas puede distorsionar severamente el tamaño real de un
+    // problema — verificar contra producción antes de dimensionar cambios
+    // grandes. Ver MAPA_DEL_SISTEMA_BACKEND.md.
+    //
+    // Cobertura asumida: toda comisión real tiene un ticket de facturación
+    // de respaldo, aunque haya llegado después vía comisión manual
+    // (comisiones_controller.ts::store()) — es una garantía "de facto"
+    // (convención operativa), NO impuesta por el sistema: store() no valida
+    // que exista un ticket CONFIRMADA antes de crear la comisión. Si alguna
+    // vez se crea una comisión manual sin ticket, ese convenio no aparecerá
+    // acá (esta query de facturación es la que conduce las filas).
+    //
+    // total_bruto/total_neto SIGUEN siendo de facturacion_tickets, sin
+    // cambios — mismo criterio que en `asesores` (dinero real cobrado en
+    // caja, concepto distinto de "venta con comisión RTM generada").
+    const convenioRowsResult = (await Database.rawQuery(
+      `
+      SELECT
+        COALESCE(ft.convenio_nombre, conv_fb.nombre) AS convenio_nombre,
+        GROUP_CONCAT(DISTINCT ft.agente_comercial_nombre ORDER BY ft.agente_comercial_nombre SEPARATOR ', ') AS asesores,
+        SUM(ft.total) AS total_bruto,
+        SUM(ft.subtotal) AS total_neto
+      FROM facturacion_tickets ft
+      LEFT JOIN captacion_dateos cd ON cd.consumido_turno_id = ft.turno_id
+      LEFT JOIN comisiones com
+        ON com.captacion_dateo_id = cd.id
+        AND com.es_config = 0
+        AND com.convenio_id IS NOT NULL
+        AND com.estado IN ('PENDIENTE', 'APROBADA', 'PAGADA')
+      LEFT JOIN convenios conv_fb ON conv_fb.id = com.convenio_id
+      WHERE ft.estado = 'CONFIRMADA'
+        AND ft.servicio_codigo = 'RTM'
+        AND DATE(ft.created_at) BETWEEN ? AND ?
+        AND ft.captacion_canal = 'ASESOR_COMERCIAL'
+        AND COALESCE(ft.convenio_nombre, conv_fb.nombre) IS NOT NULL
+      GROUP BY COALESCE(ft.convenio_nombre, conv_fb.nombre)
+      ORDER BY total_bruto DESC
+      `,
+      [fechaInicio, fechaFin]
+    )) as unknown as [
+      {
+        convenio_nombre: string
+        asesores: string | null
+        total_bruto: string
+        total_neto: string
+      }[],
+    ]
+    const convenioRows = convenioRowsResult[0]
+
+    const conteoConvenios = await contarUnidadesRtmPorConvenio({ fechaInicio, fechaFin })
 
     const convenios = convenioRows.map((r) => ({
       convenio_nombre: r.convenio_nombre,
       asesores: r.asesores ?? '',
-      total_vehiculos: Number(r.total_vehiculos),
+      total_vehiculos: conteoConvenios.get(r.convenio_nombre) ?? 0,
       total_bruto: Number(r.total_bruto) || 0,
       total_neto: Number(r.total_neto) || 0,
     }))
@@ -2034,6 +2085,12 @@ export default class ReportesAdministrativosController {
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
+      nota_metodologia:
+        'Vehículos/unidades (asesores y convenios) = ventas con comisión RTM real generada ' +
+        '(fuente: comisiones). Total bruto/neto = dinero real facturado en caja (fuente: ' +
+        'facturación), un concepto distinto — puede no coincidir con el conteo de unidades ni ' +
+        'con el número de placas del detalle (drill-down), que sigue listando todos los tickets ' +
+        'confirmados.',
       asesores,
       convenios,
     }
@@ -6085,9 +6142,9 @@ export default class ReportesAdministrativosController {
       })
     }
 
-    // Ingreso RTM Generado por día (facturacion_tickets), NO comisión —
-    // mismo bug ya corregido en metaComercialResumen(): antes usaba
-    // SUM(comisiones.monto_asesor).
+    // Ingreso RTM Generado por día — unidades RTM logradas (comisiones) ×
+    // Costo Base, NO monto_asesor (comisión pagada, otra cosa). Ver
+    // calcularIngresoRtmGeneradoPorAsesorPorDia() para el detalle de fuente.
     const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
     const fechaFinMes = (
       DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
@@ -6405,9 +6462,9 @@ export default class ReportesAdministrativosController {
     }[] = []
 
     if (esReal) {
-      // Ingreso RTM Generado por día (facturacion_tickets), re-agrupado en
-      // semanas sábado-viernes en JS — NO comisión. Mismo bug ya corregido
-      // en metaComercialResumen()/metaComercialDiario().
+      // Ingreso RTM Generado por día — unidades RTM logradas (comisiones),
+      // re-agrupado en semanas sábado-viernes en JS. Ver
+      // calcularIngresoRtmGeneradoPorAsesorPorDia() para el detalle de fuente.
       const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
       const fechaFinMes = (
         DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
@@ -6560,8 +6617,8 @@ export default class ReportesAdministrativosController {
     const diasDelMes = DateTime.fromObject({ year: anio, month: mes }).daysInMonth as number
 
     if (esReal) {
-      // Ingreso RTM Generado por día (facturacion_tickets), NO comisión —
-      // mismo bug ya corregido en metaComercialResumen()/Diario()/Semanal().
+      // Ingreso RTM Generado por día — unidades RTM logradas (comisiones).
+      // Ver calcularIngresoRtmGeneradoPorAsesorPorDia() para el detalle de fuente.
       const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
       const fechaFinMes = (
         DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
@@ -6708,16 +6765,19 @@ export default class ReportesAdministrativosController {
     const metaPesos = await this.metaPesosDelMes(asesorId, mes, anio)
 
     if (esFuenteRealComercial(mes, anio)) {
-      // Meses reales: Ingreso RTM Generado (cantidad de vehículos/motos
-      // FACTURADOS × Costo Base), misma función compartida que
-      // metaComercialResumen()/computeMetaComercialSuperInforme(). Antes
-      // usaba comisiones (monto_asesor = comisión pagada, no ingreso
-      // generado; y "cantidad" = filas de dateo exitoso, que SUBESTIMA el
-      // conteo real de vehículos facturados — verificado ~20 filas de
-      // comisiones vs ~114 vehículos reales para un mismo asesor/mes, ver
-      // computeMetaComercialSuperInforme). cantidad y pesos deben salir de
-      // la MISMA fuente (facturacion_tickets) para que "pesos = cantidad ×
-      // tarifa" siga siendo exacto en la tabla.
+      // Meses reales: Ingreso RTM Generado (cantidad de unidades RTM
+      // LOGRADAS × Costo Base), misma función compartida que
+      // metaComercialResumen(): calcularIngresoRtmGeneradoPorAsesor(), que
+      // desde 2026-09-04 cuenta sobre `comisiones` (contarUnidadesRtmPorAsesor)
+      // — NO facturacion_tickets. El razonamiento anterior ("comisiones
+      // subestima: ~20 filas vs ~114 vehículos reales para un mismo
+      // asesor/mes") resultó estar basado en datos 100% sintéticos de dos
+      // seeders desconectados entre sí en la BD local compartida — nunca
+      // reflejó un patrón real del negocio (verificado con datos reales de
+      // junio 2026: 19 comisiones reales vs 104-114 tickets fantasma sin
+      // comisión asociada). Ver diagnóstico completo en
+      // MAPA_DEL_SISTEMA_BACKEND.md. cantidad y pesos siguen saliendo de la
+      // MISMA fuente para que "pesos = cantidad × tarifa" siga siendo exacto.
       const fechaInicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
       const fechaFinMes = (
         DateTime.fromObject({ year: anio, month: mes, day: 1 }).endOf('month').toISODate()
