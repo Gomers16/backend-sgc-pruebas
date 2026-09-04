@@ -15,12 +15,24 @@ const PLACA_SIN_TURNO = 'TST981'
 const PLACA_TURNO_ACTIVO = 'TST982'
 const PLACA_TURNO_CANCELADO = 'TST983'
 const PLACA_VENCIDOS_ACTIVO = 'TST984'
+const PLACA_TURNO_SIN_DATEO_HOY = 'TST986'
+const PLACA_SIN_TURNO_HOY_CONTROL = 'TST987'
+const PLACA_TURNO_OTRO_SERVICIO = 'TST988'
 const AGENTE_ID = 1
 const SEDE_ID = 2
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
+const SERVICIO_SOAT_ID = 4
 
-const PLACAS = [PLACA_SIN_TURNO, PLACA_TURNO_ACTIVO, PLACA_TURNO_CANCELADO, PLACA_VENCIDOS_ACTIVO]
+const PLACAS = [
+  PLACA_SIN_TURNO,
+  PLACA_TURNO_ACTIVO,
+  PLACA_TURNO_CANCELADO,
+  PLACA_VENCIDOS_ACTIVO,
+  PLACA_TURNO_SIN_DATEO_HOY,
+  PLACA_SIN_TURNO_HOY_CONTROL,
+  PLACA_TURNO_OTRO_SERVICIO,
+]
 
 let turnoCodigoSeq = 0
 function nextTurnoCodigo() {
@@ -47,8 +59,12 @@ test.group('Guard: no permitir re-dateo si el dateo ya tiene un turno vinculado'
   })
 
   group.teardown(async () => {
-    await Database.rawQuery('DELETE FROM turnos_rtms WHERE placa IN (?, ?, ?, ?)', PLACAS)
-    await Database.rawQuery('DELETE FROM captacion_dateos WHERE placa IN (?, ?, ?, ?)', PLACAS)
+    const placeholders = PLACAS.map(() => '?').join(', ')
+    await Database.rawQuery(`DELETE FROM turnos_rtms WHERE placa IN (${placeholders})`, PLACAS)
+    await Database.rawQuery(
+      `DELETE FROM captacion_dateos WHERE placa IN (${placeholders})`,
+      PLACAS
+    )
     if (usuarioTest) await usuarioTest.delete()
   })
 
@@ -81,6 +97,31 @@ test.group('Guard: no permitir re-dateo si el dateo ya tiene un turno vinculado'
       tipoVehiculo: 'Liviano Particular',
       estado,
       captacionDateoId: dateoId,
+    } as any)
+  }
+
+  // Turno de HOY sin vincular a ningún dateo (captacion_dateo_id NULL) — el
+  // caso real del bug GAY96H: el vehículo ya está en sede pero el turno no
+  // quedó anexado a ESTE dateo, así que el guard de turnoVinculado no lo ve.
+  async function crearTurnoSinDateo(
+    placa: string,
+    estado: TurnoRtm['estado'],
+    servicioId: number = SERVICIO_RTM_ID
+  ) {
+    turnoNumeroSeq += 1
+    return TurnoRtm.create({
+      funcionarioId: usuarioTest.id,
+      sedeId: SEDE_ID,
+      servicioId,
+      fecha: DateTime.local().setZone('America/Bogota'),
+      horaIngreso: DateTime.local().setZone('America/Bogota').toFormat('HH:mm:ss'),
+      turnoNumero: turnoNumeroSeq,
+      turnoNumeroServicio: turnoNumeroSeq,
+      turnoCodigo: nextTurnoCodigo(),
+      placa,
+      tipoVehiculo: 'Liviano Particular',
+      estado,
+      captacionDateoId: null,
     } as any)
   }
 
@@ -201,5 +242,76 @@ test.group('Guard: no permitir re-dateo si el dateo ya tiene un turno vinculado'
       false,
       '(d) FALLO: se liberó pese al turno activo vinculado'
     )
+  })
+
+  // Regresión del bug GAY96H (2026-09-04): redatear() no repetía el chequeo
+  // turnoSinDateoHoy que sí tiene store(), permitiendo re-datear un dateo
+  // viejo aunque ya existiera un turno de hoy en sede sin vincular. Fix:
+  // buscarTurnoSinDateoHoy() (reserva_dateo_service.ts), reutilizada en
+  // ambos endpoints.
+
+  test('(e) turno de HOY sin dateo vinculado, misma placa/servicio -> rechaza 409 REQUIERE_TICKET_DATEO', async ({
+    client,
+    assert,
+  }) => {
+    const dateo = await crearDateoEnRedatear(PLACA_TURNO_SIN_DATEO_HOY)
+    const turno = await crearTurnoSinDateo(PLACA_TURNO_SIN_DATEO_HOY, 'activo')
+
+    const res = await client
+      .post(`/api/captacion-dateos/${dateo.id}/redatear`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({ evidencia_url: '/uploads/dateos/test-evidencia-e.jpg' })
+
+    console.log('--- (e) turno de hoy sin dateo vinculado ---', res.status(), JSON.stringify(res.body()))
+    res.assertStatus(409)
+    assert.equal(res.body().code, 'REQUIERE_TICKET_DATEO')
+    assert.equal(res.body().turnoId, turno.id)
+
+    const dateoDespues = await CaptacionDateo.findOrFail(dateo.id)
+    assert.equal(
+      dateoDespues.resultado,
+      'RE_DATEAR',
+      '(e) FALLO: el dateo cambió de estado pese al rechazo'
+    )
+    assert.equal(dateoDespues.numeroRedateosUsados, 0, '(e) FALLO: incrementó el contador igual')
+  })
+
+  test('(f) control: sin ningún turno de hoy para la placa/servicio -> permite re-datear normalmente', async ({
+    client,
+    assert,
+  }) => {
+    const dateo = await crearDateoEnRedatear(PLACA_SIN_TURNO_HOY_CONTROL)
+
+    const res = await client
+      .post(`/api/captacion-dateos/${dateo.id}/redatear`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({ evidencia_url: '/uploads/dateos/test-evidencia-f.jpg' })
+
+    console.log('--- (f) control sin turno de hoy ---', res.status(), JSON.stringify(res.body()))
+    res.assertStatus(200)
+
+    const dateoDespues = await CaptacionDateo.findOrFail(dateo.id)
+    assert.equal(dateoDespues.resultado, 'PENDIENTE', '(f) FALLO: no volvió a PENDIENTE')
+    assert.equal(dateoDespues.numeroRedateosUsados, 1, '(f) FALLO: no incrementó el contador')
+  })
+
+  test('(g) control: turno de hoy pero de OTRO servicio -> permite re-datear (filtro por servicio funciona)', async ({
+    client,
+    assert,
+  }) => {
+    const dateo = await crearDateoEnRedatear(PLACA_TURNO_OTRO_SERVICIO)
+    await crearTurnoSinDateo(PLACA_TURNO_OTRO_SERVICIO, 'activo', SERVICIO_SOAT_ID)
+
+    const res = await client
+      .post(`/api/captacion-dateos/${dateo.id}/redatear`)
+      .header('Authorization', `Bearer ${token}`)
+      .json({ evidencia_url: '/uploads/dateos/test-evidencia-g.jpg' })
+
+    console.log('--- (g) control turno de hoy otro servicio ---', res.status(), JSON.stringify(res.body()))
+    res.assertStatus(200)
+
+    const dateoDespues = await CaptacionDateo.findOrFail(dateo.id)
+    assert.equal(dateoDespues.resultado, 'PENDIENTE', '(g) FALLO: no volvió a PENDIENTE')
+    assert.equal(dateoDespues.numeroRedateosUsados, 1, '(g) FALLO: no incrementó el contador')
   })
 })

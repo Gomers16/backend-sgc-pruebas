@@ -17,6 +17,7 @@ import Comision from '#models/comision'
 import FacturacionTicket from '#models/facturacion_ticket'
 import {
   buildReserva,
+  buscarTurnoSinDateoHoy,
   cerrarDateosViejosPorPlacaTelefono,
   dateoAplicaAServicio,
   dentroVentanaDateoTurno,
@@ -495,6 +496,34 @@ export default class CaptacionDateosController {
           turnoNumero: turnoVinculado.turnoNumero,
           turnoEstado: turnoVinculado.estado,
         })
+      }
+
+      // 🆕 Mismo criterio que turnoSinDateoHoy en store(): un turno de HOY,
+      // misma placa y mismo servicio que este dateo, aún sin ningún dateo
+      // vinculado (captacion_dateo_id NULL), también bloquea el re-dateo —
+      // requiere ticket de Excepción de Dateo. Sin excepción para
+      // SUPER_ADMIN/GERENCIA, igual que en store() (esPrivilegiado de arriba
+      // solo gobierna el permiso de re-datear, no este chequeo).
+      if (item.servicioId !== null) {
+        const turnoSinDateoHoy = await buscarTurnoSinDateoHoy(item.placa!, item.servicioId, trx)
+
+        if (turnoSinDateoHoy) {
+          await trx.rollback()
+          const minutosVentana = await getMinutosVentanaTicket(item.agenteId)
+          const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(
+            turnoSinDateoHoy,
+            minutosVentana
+          )
+          return response.conflict({
+            code: 'REQUIERE_TICKET_DATEO',
+            turnoId: turnoSinDateoHoy.id,
+            horaIngreso: turnoSinDateoHoy.horaIngreso,
+            minutosTranscurridos: minutosTotales,
+            minutosExceso,
+            dentroVentana: dentro,
+            minutosVentana,
+          })
+        }
       }
 
       if (item.resultado !== 'RE_DATEAR') {
@@ -1083,17 +1112,10 @@ export default class CaptacionDateosController {
     // transcurrido. La ventana configurable (getMinutosVentanaTicket) solo
     // decide si ese ticket, al aprobarse, lleva penalización o no — ver
     // tickets_excepcion_dateo_controller.ts::crear()/aprobar().
-    let turnoSinDateoHoy: TurnoRtm | null = null
-    if (servicioDateoIdEfectivo !== null) {
-      turnoSinDateoHoy = await TurnoRtm.query()
-        .where('placa', placa!)
-        .where('fecha', hoyISO)
-        .where('servicio_id', servicioDateoIdEfectivo)
-        .whereIn('estado', ['activo', 'finalizado'])
-        .whereNull('captacion_dateo_id')
-        .orderBy('id', 'desc')
-        .first()
-    }
+    const turnoSinDateoHoy =
+      servicioDateoIdEfectivo !== null
+        ? await buscarTurnoSinDateoHoy(placa!, servicioDateoIdEfectivo)
+        : null
 
     if (turnoSinDateoHoy) {
       const minutosVentana = await getMinutosVentanaTicket(agenteId)

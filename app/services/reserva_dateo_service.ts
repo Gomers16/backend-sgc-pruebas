@@ -139,6 +139,37 @@ export function dateoAplicaAServicio(
 }
 
 /**
+ * Turno de HOY, misma placa y mismo servicio, aún SIN dateo vinculado
+ * (captacion_dateo_id NULL) — dispara el 409 REQUIERE_TICKET_DATEO. Extraída
+ * de captacion_dateos_controller.ts::store() (antes vivía inline solo ahí)
+ * porque redatear() necesita el mismo chequeo: sin esto, un asesor podía
+ * re-datear un dateo viejo aunque el vehículo ya tuviera un turno abierto en
+ * sede sin vincular, saltándose la exigencia del ticket de excepción (ver
+ * caso GAY96H, 2026-09-04, MAPA_DEL_SISTEMA_BACKEND.md).
+ *
+ * Única fuente de verdad para esta query — reutilizar en cualquier punto que
+ * deba exigir el ticket de Excepción de Dateo, igual que dateoAplicaAServicio()
+ * para la regla de servicio.
+ */
+export async function buscarTurnoSinDateoHoy(
+  placa: string,
+  servicioId: number,
+  trx?: TransactionClientContract
+): Promise<TurnoRtm | null> {
+  const { default: TurnoRtm } = await import('#models/turno_rtm')
+  const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
+  const query = trx ? TurnoRtm.query({ client: trx }) : TurnoRtm.query()
+  return query
+    .where('placa', placa)
+    .where('fecha', hoyISO)
+    .where('servicio_id', servicioId)
+    .whereIn('estado', ['activo', 'finalizado'])
+    .whereNull('captacion_dateo_id')
+    .orderBy('id', 'desc')
+    .first()
+}
+
+/**
  * Todo turno SIN dateo vinculado (captacion_dateo_id NULL) requiere un
  * ticket "Excepción de Dateo" para registrar su dateo — sin excepción. Esta
  * función solo determina si ese ticket, al aprobarse, lleva penalización o
