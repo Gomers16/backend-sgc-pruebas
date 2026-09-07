@@ -17,6 +17,7 @@ export default class CargoSeeder extends BaseSeeder {
       // 🎯 Líderes
       { nombre: 'LIDER DE SEDE' },
       { nombre: 'LIDER DE INFORMES' },
+      { nombre: 'LIDER NACIONAL' },
 
       // 🤝 Comercial
       { nombre: 'ASESOR COMERCIAL' },
