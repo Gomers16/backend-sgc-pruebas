@@ -163,6 +163,44 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
       ])
 
+    /* ==================== TURNERO (pantalla de sala de espera) ========= */
+    router
+      .get('/turnos-rtm/pendientes-llamar', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().index(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    router
+      .post('/turnos-rtm/:id/llamar', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().store(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    // Único endpoint que consume TurneroCDAPro (proyecto independiente,
+    // pantalla de solo lectura en la sala de espera) — rol exclusivo TURNERO,
+    // sin acceso a ningún otro endpoint de turnos.
+    router
+      .get('/turnero/cola', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().colaTurnero(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['TURNERO'] })])
+
     /* =========================== REP GENERAL RTM ======================= */
     router
       .post('/rtm/rep-general/import', async (ctx) => {

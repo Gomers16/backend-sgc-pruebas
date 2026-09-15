@@ -1,7 +1,7 @@
 // app/models/turno_rtm.ts
 import { DateTime } from 'luxon'
-import { BaseModel, column, belongsTo, hasMany } from '@adonisjs/lucid/orm'
-import type { BelongsTo, HasMany } from '@adonisjs/lucid/types/relations'
+import { BaseModel, column, belongsTo, hasMany, hasOne } from '@adonisjs/lucid/orm'
+import type { BelongsTo, HasMany, HasOne } from '@adonisjs/lucid/types/relations'
 
 import Usuario from '#models/usuario'
 import Sede from '#models/sede'
@@ -14,6 +14,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import FacturacionTicket from '#models/facturacion_ticket'
 import Certificacion from '#models/certificacion'
 import Conductor from '#models/conductor'
+import TurnoLlamado from '#models/turno_llamado'
 
 export type TipoVehiculoUI =
   | 'Liviano Particular'
@@ -231,4 +232,7 @@ export default class TurnoRtm extends BaseModel {
 
   @hasMany(() => Certificacion, { foreignKey: 'turnoId' })
   declare certificaciones: HasMany<typeof Certificacion>
+
+  @hasOne(() => TurnoLlamado, { foreignKey: 'turnoId' })
+  declare llamado: HasOne<typeof TurnoLlamado>
 }
