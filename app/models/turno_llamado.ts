@@ -24,6 +24,14 @@ export default class TurnoLlamado extends BaseModel {
   @column.dateTime({ columnName: 'llamado_at' })
   declare llamadoAt: DateTime
 
+  // Flujo Entregar / No se presentó (pantalla de exhibición del Turnero) —
+  // exclusivos de esta tabla, no afectan turnos_rtms.estado.
+  @column.dateTime({ columnName: 'entregado_at' })
+  declare entregadoAt: DateTime | null
+
+  @column({ columnName: 'no_presentado' })
+  declare noPresentado: boolean
+
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime
 

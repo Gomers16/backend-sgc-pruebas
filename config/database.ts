@@ -13,6 +13,10 @@ const dbConfig = defineConfig({
         password: env.get('DB_PASSWORD'),
         database: env.get('DB_DATABASE'),
         timezone: '-05:00',
+        // Explícito en vez de confiar en el default del driver mysql2:
+        // hoy ya negocia utf8mb4 igual, pero declararlo endurece la conexión
+        // contra un cambio de default en una futura versión del driver.
+        charset: 'utf8mb4',
       },
       migrations: {
         naturalSort: true,

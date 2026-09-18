@@ -189,9 +189,64 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
       ])
 
-    // Único endpoint que consume TurneroCDAPro (proyecto independiente,
-    // pantalla de solo lectura en la sala de espera) — rol exclusivo TURNERO,
-    // sin acceso a ningún otro endpoint de turnos.
+    // ---- Flujo Entregar / No se presentó (segunda sección de
+    // TurnosParaLlamar.vue) — mismo patrón de roles que arriba. ----
+    router
+      .get('/turnos-rtm/en-modulo-pendientes-entrega', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().pendientesEntrega(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    router
+      .patch('/turnos-rtm/:id/entregar', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().entregar(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    router
+      .patch('/turnos-rtm/:id/no-presentado', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().marcarNoPresentado(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    router
+      .patch('/turnos-rtm/:id/volver-a-llamar', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().volverALlamar(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    // Pantalla de exhibición del turnero (ahora vive en front-sgc-pruebas,
+    // /turnero). SUPER_ADMIN/GERENCIA también pueden abrir esa vista (ver
+    // roles en el router del frontend), así que este endpoint de datos tiene
+    // que aceptar los mismos roles — si no, la pantalla carga pero
+    // useTurnos.ts recibe 403 y se queda en blanco sin ningún aviso.
     router
       .get('/turnero/cola', async (ctx) => {
         const { default: TurnoLlamadosController } = await import(
@@ -199,7 +254,96 @@ router
         )
         return new TurnoLlamadosController().colaTurnero(ctx)
       })
-      .use([middleware.auth(), middleware.checkRole({ roles: ['TURNERO'] })])
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['TURNERO', 'SUPER_ADMIN', 'GERENCIA'] }),
+      ])
+
+    /* ---- Multimedia del panel de publicidad (ConfiguracionTurnero.vue) ----
+       Lectura: también TURNERO, porque la pantalla de exhibición necesita
+       leer el catálogo. Escritura: solo SUPER_ADMIN/GERENCIA. */
+    router
+      .get('/turnero/multimedia', async (ctx) => {
+        const { default: TurneroMultimediaController } = await import(
+          '#controllers/turnero_multimedia_controller'
+        )
+        return new TurneroMultimediaController().index(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TURNERO'] }),
+      ])
+
+    router
+      .post('/turnero/multimedia', async (ctx) => {
+        const { default: TurneroMultimediaController } = await import(
+          '#controllers/turnero_multimedia_controller'
+        )
+        return new TurneroMultimediaController().store(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .patch('/turnero/multimedia/:id', async (ctx) => {
+        const { default: TurneroMultimediaController } = await import(
+          '#controllers/turnero_multimedia_controller'
+        )
+        return new TurneroMultimediaController().update(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .delete('/turnero/multimedia/:id', async (ctx) => {
+        const { default: TurneroMultimediaController } = await import(
+          '#controllers/turnero_multimedia_controller'
+        )
+        return new TurneroMultimediaController().destroy(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    /* ---- Mensajes de la cinta (ticker) — mismo patrón de roles ---- */
+    router
+      .get('/turnero/ticker', async (ctx) => {
+        const { default: TurneroMensajesTickerController } = await import(
+          '#controllers/turnero_mensajes_ticker_controller'
+        )
+        return new TurneroMensajesTickerController().index(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TURNERO'] }),
+      ])
+
+    router
+      .post('/turnero/ticker', async (ctx) => {
+        const { default: TurneroMensajesTickerController } = await import(
+          '#controllers/turnero_mensajes_ticker_controller'
+        )
+        return new TurneroMensajesTickerController().store(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .patch('/turnero/ticker/:id', async (ctx) => {
+        const { default: TurneroMensajesTickerController } = await import(
+          '#controllers/turnero_mensajes_ticker_controller'
+        )
+        return new TurneroMensajesTickerController().update(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .delete('/turnero/ticker/:id', async (ctx) => {
+        const { default: TurneroMensajesTickerController } = await import(
+          '#controllers/turnero_mensajes_ticker_controller'
+        )
+        return new TurneroMensajesTickerController().destroy(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
 
     /* =========================== REP GENERAL RTM ======================= */
     router
@@ -2217,19 +2361,30 @@ router
       ])
 
     /* ================================ UPLOADS ========================== */
-
-    router.post('/media/upload', async (ctx) => {
-      const { default: UploadsController } = await import('#controllers/uploads_controller')
-      return new UploadsController().uploadImage(ctx)
-    })
+    // POST y DELETE exigen sesión (cualquier rol, sin restringir todavía —
+    // ver hallazgo de seguridad de la revisión QA del Turnero: este endpoint
+    // lo comparten Dateos, Comprobantes y Multimedia del Turnero, y no
+    // conocemos con certeza todos los flujos que dependen de él, así que el
+    // cambio mínimo que cierra "cualquiera sin cuenta puede subir/borrar" es
+    // exigir auth sin acotar por rol). GET se deja público a propósito: las
+    // pantallas de exhibición (ej. /turnero) referencian estas URLs desde
+    // <img>/<video> directo, que no puede mandar el header Authorization.
+    router
+      .post('/media/upload', async (ctx) => {
+        const { default: UploadsController } = await import('#controllers/uploads_controller')
+        return new UploadsController().uploadImage(ctx)
+      })
+      .use(middleware.auth())
     router.get('/uploads/*', async (ctx) => {
       const { default: UploadsController } = await import('#controllers/uploads_controller')
       return new UploadsController().serve(ctx)
     })
-    router.delete('/uploads/*', async (ctx) => {
-      const { default: UploadsController } = await import('#controllers/uploads_controller')
-      return new UploadsController().remove(ctx)
-    })
+    router
+      .delete('/uploads/*', async (ctx) => {
+        const { default: UploadsController } = await import('#controllers/uploads_controller')
+        return new UploadsController().remove(ctx)
+      })
+      .use(middleware.auth())
     /* ======================== HISTÓRICO RTM =========================== */
 
     router

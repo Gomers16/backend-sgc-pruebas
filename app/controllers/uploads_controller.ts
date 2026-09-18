@@ -6,7 +6,11 @@ import * as fsp from 'node:fs/promises'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-const ALLOWED = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'] as const
+const ALLOWED_IMAGEN = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'] as const
+// Videos institucionales del panel de publicidad del Turnero (ver
+// ConfiguracionTurnero.vue) — mismo endpoint de subida, límite más alto.
+const ALLOWED_VIDEO = ['mp4', 'webm', 'mov'] as const
+const ALLOWED = [...ALLOWED_IMAGEN, ...ALLOWED_VIDEO] as const
 
 function sanitizeSegments(seg: string[]) {
   // Une como ruta, normaliza y elimina intentos de path traversal
@@ -21,17 +25,23 @@ export default class UploadsController {
    * Respuesta: { id, url, mime, size, hash }
    */
   public async uploadImage({ request, response }: HttpContext) {
+    // Límite único de 100mb para todo lo que pasa por este endpoint: alcanza
+    // de sobra para imágenes (nunca se acercan a eso) y es el techo acordado
+    // para los videos institucionales del Turnero (ver
+    // config/bodyparser.ts, que también sube su límite global a la par).
+    const LIMITE_TAMANO = '100mb'
+
     const candidates = ['file', 'image', 'imagen', 'photo', 'picture']
     let file =
       candidates
-        .map((k) => request.file(k, { size: '8mb', extnames: [...ALLOWED] }))
+        .map((k) => request.file(k, { size: LIMITE_TAMANO, extnames: [...ALLOWED] }))
         .find((f) => !!f) || null
 
     if (!file) {
       const all = request.allFiles()
       const first = Object.values(all).flat()[0] as any | undefined
       if (first) {
-        first.sizeLimit = '8mb'
+        first.sizeLimit = LIMITE_TAMANO
         first.allowedExtensions = [...ALLOWED]
         file = first
       }
@@ -57,10 +67,17 @@ export default class UploadsController {
     const y = String(now.getFullYear())
     const m = String(now.getMonth() + 1).padStart(2, '0')
 
-    const baseDir = app.makePath('uploads', 'dateos', y, m)
+    const ext = (file.extname || 'jpg').toLowerCase()
+    // Los videos van a su propia carpeta (uploads/turnero/...) en vez de
+    // "dateos": ese nombre es historia de cuando este endpoint solo servía
+    // a Dateos, y no se toca para no invalidar URLs de imágenes ya guardadas
+    // en la base — el ramal de imagen sigue exactamente igual que antes.
+    const esVideo = (ALLOWED_VIDEO as readonly string[]).includes(ext)
+    const carpeta = esVideo ? 'turnero' : 'dateos'
+
+    const baseDir = app.makePath('uploads', carpeta, y, m)
     await fsp.mkdir(baseDir, { recursive: true })
 
-    const ext = (file.extname || 'jpg').toLowerCase()
     const filename = `${cuid()}.${ext}`
     const absPath = path.join(baseDir, filename)
 
@@ -68,7 +85,7 @@ export default class UploadsController {
 
     const stat = await fsp.stat(absPath)
     // URL relativa servida por GET /api/uploads/*
-    const url = `/api/uploads/dateos/${y}/${m}/${filename}`
+    const url = `/api/uploads/${carpeta}/${y}/${m}/${filename}`
 
     return response.created({
       id: filename,

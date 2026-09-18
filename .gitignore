@@ -30,6 +30,7 @@ uploads/pagos/
 uploads/certificaciones/
 uploads/tickets/
 uploads/dateos/
+uploads/turnero/
 
 # Respaldos de base de datos — nunca van en el repo
 backups/

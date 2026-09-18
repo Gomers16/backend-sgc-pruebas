@@ -45,9 +45,11 @@ const bodyParserConfig = defineConfig({
 
     /**
      * Maximum limit of data to parse including all files
-     * and fields
+     * and fields. Subido de 50mb a 110mb para permitir videos
+     * institucionales del Turnero de hasta 100mb (ver
+     * uploads_controller.ts) con margen para el resto del multipart.
      */
-    limit: '50mb',
+    limit: '110mb',
     types: ['multipart/form-data'],
   },
 })
