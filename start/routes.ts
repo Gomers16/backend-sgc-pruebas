@@ -242,6 +242,35 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
       ])
 
+    router
+      .patch('/turnos-rtm/:id/llamar-pregunta', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().llamarPregunta(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    // "Preguntar" sobre un turno todavía sin llamar (tabla "Turnos para
+    // Llamar"): crea/actualiza su fila como llamado NO oficial — ver
+    // turno_llamados_controller.ts::preguntar().
+    router
+      .post('/turnos-rtm/:id/preguntar', async (ctx) => {
+        const { default: TurnoLlamadosController } = await import(
+          '#controllers/turno_llamados_controller'
+        )
+        return new TurnoLlamadosController().preguntar(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
     // Pantalla de exhibición del turnero (ahora vive en front-sgc-pruebas,
     // /turnero). SUPER_ADMIN/GERENCIA también pueden abrir esa vista (ver
     // roles en el router del frontend), así que este endpoint de datos tiene
