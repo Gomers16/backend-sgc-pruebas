@@ -2182,6 +2182,8 @@ export default class TurnosRtmController {
         { header: 'Turno Global', key: 'turnoGlobal', width: 14 },
         { header: 'Turno Servicio', key: 'turnoServicio', width: 16 },
         { header: 'Servicio', key: 'servicio', width: 18 },
+        // Marca operativa: la segunda vez (reinspección gratuita) se lista, pero no es ingreso.
+        { header: '2ª vez', key: 'segundaVez', width: 8 },
         { header: 'Hora Ingreso', key: 'horaIngreso', width: 12 },
         { header: 'Hora Salida', key: 'horaSalida', width: 12 },
         { header: 'Tiempo Servicio', key: 'tiempoServicio', width: 16 },
@@ -2246,6 +2248,7 @@ export default class TurnosRtmController {
           turnoGlobal,
           turnoServicio,
           servicio: t.servicio ? t.servicio.codigoServicio : '-',
+          segundaVez: esTurnoSegundaVez(t) ? 'Sí' : '',
           horaIngreso: t.horaIngreso,
           horaSalida: t.horaSalida || '-',
           tiempoServicio: t.tiempoServicio || '-',
