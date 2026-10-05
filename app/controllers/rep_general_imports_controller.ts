@@ -14,6 +14,7 @@ import Comision from '#models/comision'
 import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
 import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
+import { esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 type TipoVehiculoDB = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
 
@@ -407,10 +408,12 @@ export default class RepGeneralImportController {
 
     let ultimoTurno: TurnoRtm | null = null
 
+    // La última visita ignora las segundas veces (el origen rechazado sí cuenta).
     if (clienteId) {
       const q = TurnoRtm.query()
         .where('cliente_id', clienteId)
         .where('estado', 'finalizado')
+        .where('es_segunda_vez', 0)
         .where('fecha', '<', fechaActualISO)
         .orderBy('fecha', 'desc')
       if (turnoActualId) q.whereNot('id', turnoActualId)
@@ -421,6 +424,7 @@ export default class RepGeneralImportController {
       const q = TurnoRtm.query()
         .where('conductor_id', conductorId)
         .where('estado', 'finalizado')
+        .where('es_segunda_vez', 0)
         .where('fecha', '<', fechaActualISO)
         .orderBy('fecha', 'desc')
       if (turnoActualId) q.whereNot('id', turnoActualId)
@@ -1097,7 +1101,10 @@ export default class RepGeneralImportController {
       const cambioDeDueno =
         clienteIdFinal !== null && turno.clienteId !== null && clienteIdFinal !== turno.clienteId
 
-      const necesitaClasificar = turno.mesesDesdeUltimaVisita === null || cambioDeDueno
+      // Una segunda vez no se clasifica (recurrencia/continuidad) ni recalcula
+      // comisión: solo recibe los vínculos de vehículo/cliente/conductor.
+      const necesitaClasificar =
+        !esTurnoSegundaVez(turno) && (turno.mesesDesdeUltimaVisita === null || cambioDeDueno)
 
       if (necesitaClasificar) {
         let fechaTurnoISO: string
@@ -1130,7 +1137,11 @@ export default class RepGeneralImportController {
         await turno.save()
         turnosActualizados++
 
-        if (turno.captacionDateoId && turno.mesesDesdeUltimaVisita !== null) {
+        if (
+          !esTurnoSegundaVez(turno) &&
+          turno.captacionDateoId &&
+          turno.mesesDesdeUltimaVisita !== null
+        ) {
           const recParaComision: RecurrenciaResult = {
             esRecurrente: turno.esRecurrente,
             esRecuperacion: turno.esRecuperacion,
@@ -1223,7 +1234,10 @@ export default class RepGeneralImportController {
     }
 
     // Actualizar flags en el turno
-    const turnoParaActualizar = await TurnoRtm.query().where('captacion_dateo_id', dateoId).first()
+    const turnoParaActualizar = await TurnoRtm.query()
+      .where('captacion_dateo_id', dateoId)
+      .where('es_segunda_vez', 0)
+      .first()
 
     if (turnoParaActualizar) {
       turnoParaActualizar.esRecurrente = rec.esRecurrente

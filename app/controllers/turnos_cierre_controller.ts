@@ -8,6 +8,12 @@ import CaptacionDateo from '#models/captacion_dateo'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
+import {
+  aplicaSegundaVez,
+  conflictoFinalizarSinCertificacion,
+  conflictoTurnoSegundaVez,
+  esTurnoSegundaVez,
+} from '#services/segunda_vez_service'
 
 type EstadoComision = 'PENDIENTE' | 'APROBADA' | 'PAGADA' | 'ANULADA'
 
@@ -44,6 +50,20 @@ export default class TurnosCierreController {
       if (!turno) {
         await trx.rollback()
         return response.notFound({ message: 'Turno no encontrado' })
+      }
+
+      // Segunda vez: sin cierre ni comisión.
+      if (esTurnoSegundaVez(turno)) {
+        await trx.rollback()
+        return response.conflict(conflictoTurnoSegundaVez('cierre ni comisión'))
+      }
+      // RTM/PREV solo se finalizan por Certificación (resultado obligatorio).
+      if (turno.estado !== 'finalizado') {
+        const svc = await Servicio.find(turno.servicioId, { client: trx })
+        if (aplicaSegundaVez(svc?.codigoServicio)) {
+          await trx.rollback()
+          return response.conflict(conflictoFinalizarSinCertificacion(svc?.codigoServicio))
+        }
       }
 
       // 2) Finalizar turno si no está finalizado

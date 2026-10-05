@@ -23,6 +23,7 @@ import {
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
+import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 function readOptionalNumber(input: unknown): number | null {
   if (input === undefined || input === null) return null
@@ -239,6 +240,10 @@ export default class TicketsExcepcionDateoController {
 
     const turno = await TurnoRtm.find(turnoId)
     if (!turno) return response.notFound({ message: 'Turno no encontrado' })
+    // Segunda vez: sin dateo ni ticket de excepción de dateo.
+    if (esTurnoSegundaVez(turno)) {
+      return response.conflict(conflictoTurnoSegundaVez('dateo ni ticket de excepción de dateo'))
+    }
     if (turno.captacionDateoId) {
       return response.badRequest({ message: 'Este turno ya tiene un dateo vinculado' })
     }

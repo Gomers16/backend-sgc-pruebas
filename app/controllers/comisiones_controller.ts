@@ -21,6 +21,7 @@ import {
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
 import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
+import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 /* ========= Helpers ========= */
 function toNumber(v: any): number {
@@ -1207,6 +1208,11 @@ export default class ComisionesController {
       if (!turno) {
         await trx.rollback()
         return response.notFound({ message: 'Turno no encontrado' })
+      }
+      // Segunda vez: sin comisión ni dateo.
+      if (esTurnoSegundaVez(turno)) {
+        await trx.rollback()
+        return response.conflict(conflictoTurnoSegundaVez('comisión ni dateo'))
       }
       turno.useTransaction(trx)
 

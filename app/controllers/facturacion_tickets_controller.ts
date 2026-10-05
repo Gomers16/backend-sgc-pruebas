@@ -25,6 +25,7 @@ import {
   type EscenarioCliente,
   type OrigenDescuento,
 } from '#services/comision_calculo_service'
+import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
 
 /** Carpeta para subir tickets (local). */
 const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
@@ -355,6 +356,11 @@ export default class FacturacionTicketsController {
     const sedeId = toIntOrNull(request.input('sede_id'))
     const servicioId = toIntOrNull(request.input('servicio_id'))
 
+    // Segunda vez: sin facturación.
+    if (await turnoIdEsSegundaVez(turnoId)) {
+      return response.conflict(conflictoTurnoSegundaVez('facturación'))
+    }
+
     let esServicioSimplificado = false
     if (servicioId) {
       const s = await Servicio.find(servicioId)
@@ -669,6 +675,10 @@ export default class FacturacionTicketsController {
 
     const newTurnoId = toIntOrNull(up.turno_id)
     const newDateoId = toIntOrNull(up.dateo_id)
+    // Segunda vez: sin facturación (ni vinculando el ticket a ella).
+    if (await turnoIdEsSegundaVez(ticket.turnoId ?? newTurnoId)) {
+      return response.conflict(conflictoTurnoSegundaVez('facturación'))
+    }
     if (newTurnoId && !ticket.turnoId) ticket.turnoId = newTurnoId
     if (newDateoId && !ticket.dateoId) ticket.dateoId = newDateoId
 
@@ -748,6 +758,11 @@ export default class FacturacionTicketsController {
     const forzar = Boolean(request.input('forzar'))
     const ticket = await FacturacionTicket.find(params.id)
     if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
+
+    // Segunda vez: sin facturación ni comisión.
+    if (await turnoIdEsSegundaVez(ticket.turnoId)) {
+      return response.conflict(conflictoTurnoSegundaVez('facturación ni comisión'))
+    }
 
     const esSOAT = isSOAT(ticket.servicioCodigo, ticket.servicioNombre)
 
