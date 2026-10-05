@@ -33,8 +33,12 @@ test.group('Segunda vez · vigencia: RECHAZADO no bloquea', (group) => {
   let tokenComercial: string
   let hoy: DateTime
 
-  async function crearRtmFinalizado(placa: string, resultado: 'APROBADA' | 'RECHAZADA' | null) {
-    const fecha = hoy.minus({ days: 3 })
+  async function crearRtmFinalizado(
+    placa: string,
+    resultado: 'APROBADA' | 'RECHAZADA' | null,
+    diasAtras = 3
+  ) {
+    const fecha = hoy.minus({ days: diasAtras })
     await TurnoRtm.create({
       sedeId: SEDE_ID,
       funcionarioId: superAdmin.id,
@@ -100,7 +104,10 @@ test.group('Segunda vez · vigencia: RECHAZADO no bloquea', (group) => {
     tokenAdmin = tokenAdminObj.value!.release()
     tokenComercial = tokenComercialObj.value!.release()
 
-    await crearRtmFinalizado(PLACAS.TURNO_RECHAZADO, 'RECHAZADA')
+    // Rechazo de hace 20 días: su ventana de segunda vez (360 h) ya venció, así
+    // que el regreso es un turno normal y aquí solo se mide la regla de vigencia.
+    // La ventana abierta (SEGUNDA_VEZ_DISPONIBLE) se prueba en segunda_vez_flujo.spec.ts.
+    await crearRtmFinalizado(PLACAS.TURNO_RECHAZADO, 'RECHAZADA', 20)
     await crearRtmFinalizado(PLACAS.TURNO_APROBADO, 'APROBADA')
     await crearRtmFinalizado(PLACAS.TURNO_NULL, null)
     await crearRtmFinalizado(PLACAS.DATEO_RECHAZADO, 'RECHAZADA')
@@ -126,6 +133,8 @@ test.group('Segunda vez · vigencia: RECHAZADO no bloquea', (group) => {
     console.log('--- turno RECHAZADO ---', res.status(), JSON.stringify(res.body()).slice(0, 300))
     assert.notEqual(res.body()?.code, 'WINDOW_BLOCK')
     res.assertStatus(201)
+    const creado = await TurnoRtm.findOrFail(res.body().id)
+    assert.isFalse(Boolean(creado.esSegundaVez))
   })
 
   test('RTM APROBADO finalizado SÍ dispara WINDOW_BLOCK (regresión)', async ({ client }) => {

@@ -9,9 +9,11 @@ import {
   esTurnoQueDaVigencia,
   esTurnoSegundaVez,
   estadoVentana,
+  horasRestantes,
   instanteRechazo,
   parseResultadoCertificacion,
 } from '#services/segunda_vez_service'
+import { computeEtapasTurno, getEtapasRequeridas } from '#services/turno_etapas_service'
 
 const ZONA = 'America/Bogota'
 const rechazo = DateTime.fromISO('2026-10-05T14:30:15', { zone: ZONA })
@@ -163,5 +165,74 @@ test.group('segunda_vez_service · esTurnoQueDaVigencia', () => {
     )
     assert.isFalse(esTurnoQueDaVigencia({ estado: 'activo', resultadoCertificacion: 'APROBADA' }))
     assert.isFalse(esTurnoQueDaVigencia({ estado: 'cancelado', resultadoCertificacion: null }))
+  })
+})
+
+test.group('segunda_vez_service · estadoVentana completo (B1)', () => {
+  const hasta = calcularVentanaHasta(rechazo)
+  const origen = {
+    ventanaSegundaVezHasta: hasta,
+    estado: 'finalizado',
+    resultadoCertificacion: 'RECHAZADA' as const,
+  }
+  const dentro = hasta.minus({ hours: 1 })
+
+  test('ABIERTA sin hija ni turno posterior', ({ assert }) => {
+    assert.equal(estadoVentana(origen, dentro), 'ABIERTA')
+    assert.equal(
+      estadoVentana(origen, dentro, { hijoActivo: false, turnoPosterior: false }),
+      'ABIERTA'
+    )
+  })
+
+  test('USADA si tiene una segunda vez activa (aunque ya haya vencido)', ({ assert }) => {
+    assert.equal(estadoVentana(origen, dentro, { hijoActivo: true }), 'USADA')
+    assert.equal(estadoVentana(origen, hasta.plus({ days: 1 }), { hijoActivo: true }), 'USADA')
+  })
+
+  test('SUPERADA si hubo un turno posterior que no es su segunda vez', ({ assert }) => {
+    assert.equal(estadoVentana(origen, dentro, { turnoPosterior: true }), 'SUPERADA')
+  })
+
+  test('ANULADA si el origen ya no es un rechazo finalizado', ({ assert }) => {
+    assert.equal(estadoVentana({ ...origen, estado: 'cancelado' }, dentro), 'ANULADA')
+    assert.equal(
+      estadoVentana({ ...origen, resultadoCertificacion: 'APROBADA' as const }, dentro),
+      'ANULADA'
+    )
+  })
+
+  test('VENCIDA en el borde exacto también con contexto vacío', ({ assert }) => {
+    assert.equal(estadoVentana(origen, hasta, {}), 'VENCIDA')
+    assert.equal(estadoVentana(origen, hasta.minus({ milliseconds: 1 }), {}), 'ABIERTA')
+  })
+
+  test('horasRestantes: 0 si ya venció, con decimales si no', ({ assert }) => {
+    assert.equal(horasRestantes(hasta, hasta.plus({ minutes: 1 })), 0)
+    assert.equal(horasRestantes(hasta, hasta.minus({ minutes: 90 })), 1.5)
+  })
+})
+
+test.group('turno_etapas_service · segunda vez', () => {
+  test('segunda vez: solo Puerta y Certificación (también con 0/1)', ({ assert }) => {
+    assert.deepEqual(getEtapasRequeridas('RTM', true), ['puerta', 'certificacion'])
+    assert.deepEqual(getEtapasRequeridas('PREV', 1), ['puerta', 'certificacion'])
+    assert.deepEqual(getEtapasRequeridas('RTM', 0), ['puerta', 'facturacion', 'certificacion'])
+    assert.deepEqual(getEtapasRequeridas('SOAT'), ['puerta', 'facturacion'])
+  })
+
+  test('segunda vez certificada sin facturación queda "finalizado", no "incompleto"', ({
+    assert,
+  }) => {
+    const r = computeEtapasTurno({
+      servicioCodigo: 'RTM',
+      esSegundaVez: 1,
+      estado: 'finalizado',
+      horaIngreso: '08:00',
+      tieneFacturacion: false,
+      horaSalida: '09:00:00',
+    })
+    assert.equal(r.estadoVisual, 'finalizado')
+    assert.equal(r.totalRequeridas, 2)
   })
 })

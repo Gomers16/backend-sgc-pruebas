@@ -83,6 +83,12 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     // propósito — ver comentario en el test — así que no cae en el IN(...)
     // de arriba.
     await Database.rawQuery(`DELETE FROM facturacion_tickets WHERE hash LIKE ?`, ['TEST-HASH-DIFERIDA-%'])
+    // Imágenes de certificación subidas por crearTurnoYRechazo()
+    const certs = await Database.from('certificaciones as c')
+      .join('turnos_rtms as t', 't.id', 'c.turno_id')
+      .whereIn('t.placa', placas)
+      .select('c.imagen_path')
+    for (const c of certs) fs.rmSync(path.join(process.cwd(), c.imagen_path), { force: true })
     await Database.rawQuery(`DELETE FROM turnos_rtms WHERE placa IN (${placeholders})`, placas)
     await Database.rawQuery(`DELETE FROM captacion_dateos WHERE placa IN (${placeholders})`, placas)
     await agenteTest.delete()
@@ -127,11 +133,15 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     assert.exists(turnoId)
     assert.isNull(resTurno.body().captacionDateoId)
 
-    const resSalida = await client
-      .put(`/api/turnos-rtm/${turnoId}/salida`)
+    // Un RTM solo se finaliza por Certificación (PUT /salida responde 409
+    // FINALIZAR_REQUIERE_CERTIFICACION desde la Entrega B1 de Segunda vez).
+    const resCertificacion = await client
+      .post('/api/certificaciones')
       .header('Authorization', `Bearer ${token}`)
-      .json({ usuarioId: usuarioTest.id })
-    resSalida.assertStatus(200)
+      .field('turno_id', String(turnoId))
+      .field('resultado', 'APROBADA')
+      .file('imagen', EVIDENCIA_PATH)
+    resCertificacion.assertStatus(201)
 
     const resDateoRechazado = await client
       .post('/api/captacion-dateos')
