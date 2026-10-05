@@ -1477,20 +1477,19 @@ export default class TurnosRtmController {
 
   /**
    * Busca el turno no-cancelado que choca con (sedeId, servicioId, fecha, placa)
-   * y devuelve el 409 DUPLICATE_DAY enriquecido con datos del turno en
-   * conflicto. Compartido entre el pre-chequeo de update() y el catch de
-   * ER_DUP_ENTRY, para que ambos caminos den al operador la misma info.
+   * y devuelve el cuerpo del 409 DUPLICATE_DAY enriquecido con datos del turno
+   * en conflicto (o null si no hay). Compartido entre el pre-chequeo de
+   * update() y el catch de ER_DUP_ENTRY, para que ambos caminos den al
+   * operador la misma info. Devuelve el cuerpo (no llama a response.conflict,
+   * que devuelve void): el llamador hace `return response.conflict(cuerpo)`.
    */
-  private async responderConflictoDuplicado(
-    response: HttpContext['response'],
-    opts: {
-      sedeId: number
-      servicioId: number
-      fechaISO: string
-      placa: string
-      excludeTurnoId?: number
-    }
-  ) {
+  private async buscarConflictoDuplicado(opts: {
+    sedeId: number
+    servicioId: number
+    fechaISO: string
+    placa: string
+    excludeTurnoId?: number
+  }) {
     let query = Database.from('turnos_rtms as t')
       .leftJoin('usuarios as u', 'u.id', 't.funcionario_id')
       .where('t.sede_id', opts.sedeId)
@@ -1512,13 +1511,13 @@ export default class TurnosRtmController {
     const nombreFuncionario =
       [turnoConflicto.nombres, turnoConflicto.apellidos].filter(Boolean).join(' ').trim() || null
 
-    return response.conflict({
+    return {
       code: 'DUPLICATE_DAY',
       message: `Ya existe el turno ${turnoConflicto.turno_codigo} para esta placa y servicio hoy, creado por ${nombreFuncionario ?? 'otro usuario'}. Si ese turno es un error, cancélalo en la pantalla de turnos en vez de editarle el servicio a este.`,
       conflictoConTurnoId: turnoConflicto.id,
       conflictoConTurnoCodigo: turnoConflicto.turno_codigo,
       conflictoConFuncionario: nombreFuncionario,
-    })
+    }
   }
 
   /** Actualizar turno */
@@ -1729,14 +1728,14 @@ export default class TurnosRtmController {
       }
 
       if (cambiaClaveDedupe && estadoEfectivo !== 'cancelado') {
-        const respuestaConflicto = await this.responderConflictoDuplicado(response, {
+        const conflicto = await this.buscarConflictoDuplicado({
           sedeId: turno.sedeId,
           servicioId: servicioIdEfectivo,
           fechaISO: fechaEfectiva.toISODate()!,
           placa: placaNext,
           excludeTurnoId: turno.id,
         })
-        if (respuestaConflicto) return respuestaConflicto
+        if (conflicto) return response.conflict(conflicto)
       }
 
       // ✅ FIX: regenerar turno_codigo cuando cambia el servicio, conservando
@@ -1793,14 +1792,14 @@ export default class TurnosRtmController {
         )
       ) {
         if (turno) {
-          const respuestaConflicto = await this.responderConflictoDuplicado(response, {
+          const conflicto = await this.buscarConflictoDuplicado({
             sedeId: turno.sedeId,
             servicioId: turno.servicioId,
             fechaISO: (turno.fecha as DateTime).toISODate()!,
             placa: turno.placa,
             excludeTurnoId: turno.id,
           })
-          if (respuestaConflicto) return respuestaConflicto
+          if (conflicto) return response.conflict(conflicto)
         }
         return response.conflict({
           code: 'DUPLICATE_DAY',
