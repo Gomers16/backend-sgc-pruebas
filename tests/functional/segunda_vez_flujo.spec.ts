@@ -33,6 +33,7 @@ const P = {
   BORDE_FUERA: 'TST952',
   MISMO_DIA: 'TST953',
   CONCURRENCIA: 'TST954',
+  CONCURRENCIA_MISMA_SEDE: 'TST963',
   DOBLE_RECHAZO: 'TST955',
   CANCELAR: 'TST956',
   OTRO_SERVICIO: 'TST957',
@@ -330,9 +331,53 @@ test.group('Segunda vez · flujo B1', (group) => {
     ])
     const estados = [a.status(), b.status()].sort()
     assert.deepEqual(estados, [201, 409])
+    console.log(
+      '--- concurrencia dos sedes ---',
+      a.status(),
+      a.body()?.code,
+      '|',
+      b.status(),
+      b.body()?.code
+    )
     const perdedor = a.status() === 409 ? a : b
     perdedor.assertBodyContains({ code: 'SEGUNDA_VEZ_NO_DISPONIBLE' })
     assert.equal(perdedor.body().ventana.estado, 'USADA')
+    assert.lengthOf(await hijosActivos(origen.id), 1)
+  })
+
+  test('Doble creación simultánea (misma sede): una sola segunda vez activa y la otra 409', async ({
+    client,
+    assert,
+  }) => {
+    // En la misma sede también la frenaría dedupe_key; se valida que el
+    // perdedor recibe un 409 (nunca 500) y que queda una sola hija activa.
+    const origen = await origenRechazado(P.CONCURRENCIA_MISMA_SEDE)
+    await esperarSegundo()
+    const [a, b] = await Promise.all([
+      crearTurnoHttp(
+        client,
+        P.CONCURRENCIA_MISMA_SEDE,
+        { segundaVezOrigenId: origen.id },
+        { esperar: false }
+      ),
+      crearTurnoHttp(
+        client,
+        P.CONCURRENCIA_MISMA_SEDE,
+        { segundaVezOrigenId: origen.id },
+        { esperar: false }
+      ),
+    ])
+    console.log(
+      '--- concurrencia misma sede ---',
+      a.status(),
+      a.body()?.code,
+      '|',
+      b.status(),
+      b.body()?.code
+    )
+    assert.deepEqual([a.status(), b.status()].sort(), [201, 409])
+    const perdedor = a.status() === 409 ? a : b
+    assert.include(['SEGUNDA_VEZ_NO_DISPONIBLE', 'DUPLICATE_DAY'], perdedor.body().code)
     assert.lengthOf(await hijosActivos(origen.id), 1)
   })
 
