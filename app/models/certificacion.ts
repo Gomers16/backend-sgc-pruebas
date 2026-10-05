@@ -5,6 +5,7 @@ import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import TurnoRtm from '#models/turno_rtm'
 import User from '#models/usuario'
+import type { ResultadoCertificacion } from '#services/segunda_vez_service'
 
 export default class Certificacion extends BaseModel {
   public static table = 'certificaciones'
@@ -23,6 +24,10 @@ export default class Certificacion extends BaseModel {
 
   @column()
   declare observaciones: string | null
+
+  /** Solo RTM/PREV. NULL = sin resultado (histórico o SOAT/PERI). */
+  @column()
+  declare resultado: ResultadoCertificacion | null
 
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime

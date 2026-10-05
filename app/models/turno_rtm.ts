@@ -15,6 +15,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 import Certificacion from '#models/certificacion'
 import Conductor from '#models/conductor'
 import TurnoLlamado from '#models/turno_llamado'
+import type { ResultadoCertificacion } from '#services/segunda_vez_service'
 
 export type TipoVehiculoUI =
   | 'Liviano Particular'
@@ -218,6 +219,35 @@ export default class TurnoRtm extends BaseModel {
 
   @column({ columnName: 'rep_general_verificado' })
   declare repGeneralVerificado: boolean
+
+  // ── Segunda vez (ver app/services/segunda_vez_service.ts)
+  /** Copia de certificaciones.resultado. NULL = sin resultado (cuenta como aprobado para vigencia). */
+  @column({ columnName: 'resultado_certificacion' })
+  declare resultadoCertificacion: ResultadoCertificacion | null
+
+  @column.dateTime({ columnName: 'rechazado_at' })
+  declare rechazadoAt: DateTime | null
+
+  /** rechazado_at + 360 h. Ventana abierta solo si ahora < este valor. */
+  @column.dateTime({ columnName: 'ventana_segunda_vez_hasta' })
+  declare ventanaSegundaVezHasta: DateTime | null
+
+  /** TINYINT(1): llega como 0/1 desde mysql2 → evaluar con Boolean(). */
+  @column({ columnName: 'es_segunda_vez' })
+  declare esSegundaVez: boolean
+
+  /** Turno rechazado que originó esta segunda vez (sin FK en BD). */
+  @column({ columnName: 'turno_origen_id' })
+  declare turnoOrigenId: number | null
+
+  @column({ columnName: 'segunda_vez_excepcion' })
+  declare segundaVezExcepcion: 'FORZADA' | 'NO_APLICADA' | null
+
+  @column({ columnName: 'segunda_vez_excepcion_por_id' })
+  declare segundaVezExcepcionPorId: number | null
+
+  @column({ columnName: 'segunda_vez_excepcion_motivo' })
+  declare segundaVezExcepcionMotivo: string | null
 
   // ── Timestamps
   @column.dateTime({ autoCreate: true, columnName: 'created_at' })
