@@ -36,6 +36,7 @@ import {
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
+import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
 
 /* ======================= Constantes / Tipos ======================= */
 const CANALES_DB = ['FACHADA', 'ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELE', 'REDES'] as const
@@ -1243,9 +1244,9 @@ export default class CaptacionDateosController {
     let excepcionRtmAprobada = false
 
     if (esDateoParaRtm) {
-      const lastRtmFinalizado = await TurnoRtm.query()
-        .where('placa', placa!)
-        .andWhere('estado', 'finalizado')
+      // Solo turnos que dan vigencia: un RTM certificado RECHAZADO no cuenta
+      // como "RTM vigente" (ver segunda_vez_service.ts).
+      const lastRtmFinalizado = await whereTurnoDaVigencia(TurnoRtm.query().where('placa', placa!))
         .whereHas('servicio', (q) => {
           q.where('codigo_servicio', 'RTM')
         })
@@ -1950,9 +1951,8 @@ export default class CaptacionDateosController {
     const placa = normalizePlaca(request.input('placa') as string | undefined)
     if (!placa) return response.badRequest({ message: 'placa requerida' })
 
-    const lastRtm = await TurnoRtm.query()
-      .where('placa', placa)
-      .andWhere('estado', 'finalizado')
+    // Mismo criterio que RTM_VIGENTE en store(): un RTM RECHAZADO no da vigencia.
+    const lastRtm = await whereTurnoDaVigencia(TurnoRtm.query().where('placa', placa))
       .whereHas('servicio', (q) => q.where('codigo_servicio', 'RTM'))
       .orderBy('fecha', 'desc')
       .first()

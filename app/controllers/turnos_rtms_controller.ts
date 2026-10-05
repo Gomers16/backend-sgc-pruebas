@@ -25,6 +25,7 @@ import {
   getEtapasRequeridas,
   type EstadoVisualTurno,
 } from '#services/turno_etapas_service'
+import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -565,10 +566,11 @@ export default class TurnosRtmController {
         })
       }
 
-      const lastFinalizado = await TurnoRtm.query({ client: trx })
-        .where('placa', placa)
-        .andWhere('servicio_id', servicio.id)
-        .andWhere('estado', 'finalizado')
+      // Solo turnos que dan vigencia: un RTM/PREV certificado RECHAZADO no
+      // bloquea el regreso (ver segunda_vez_service.ts).
+      const lastFinalizado = await whereTurnoDaVigencia(
+        TurnoRtm.query({ client: trx }).where('placa', placa).andWhere('servicio_id', servicio.id)
+      )
         .orderBy('fecha', 'desc')
         .first()
 
