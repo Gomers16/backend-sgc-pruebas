@@ -11,6 +11,9 @@
 */
 
 process.env.NODE_ENV = 'test'
+// Fijar la zona horaria del proceso: los tests de bordes de fechas/ventanas
+// (p. ej. Segunda vez, 360 h) no deben depender de la zona de la máquina.
+process.env.TZ = 'America/Bogota'
 
 import 'reflect-metadata'
 import { Ignitor, prettyPrintError } from '@adonisjs/core'
