@@ -24,8 +24,22 @@ import {
   computeEtapasTurno,
   getEtapasRequeridas,
   type EstadoVisualTurno,
+  type EtapaKey,
 } from '#services/turno_etapas_service'
-import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
+import {
+  aplicaSegundaVez,
+  conflictoFinalizarSinCertificacion,
+  conflictoOrigenConHijoActivo,
+  conflictoTurnoSegundaVez,
+  evaluarVentanaSegundaVez,
+  esTurnoSegundaVez,
+  excluirSegundaVez,
+  hijoActivoDeOrigen,
+  otroHijoActivo,
+  serializarVentana,
+  whereTurnoDaVigencia,
+} from '#services/segunda_vez_service'
+import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -268,6 +282,9 @@ export default class TurnosRtmController {
         etapasRequeridas: number
         etapasCompletadas: number
         estadoVisual: EstadoVisualTurno
+        /** Lista de etapas que aplican (fuente de verdad para el front). */
+        etapasRequeridasLista: EtapaKey[]
+        esSegundaVez: boolean
       }
     >
   > {
@@ -283,6 +300,9 @@ export default class TurnosRtmController {
         etapasRequeridas: number
         etapasCompletadas: number
         estadoVisual: EstadoVisualTurno
+        /** Lista de etapas que aplican (fuente de verdad para el front). */
+        etapasRequeridasLista: EtapaKey[]
+        esSegundaVez: boolean
       }
     >()
     if (turnos.length === 0) return resultado
@@ -325,10 +345,9 @@ export default class TurnosRtmController {
 
     const visitaLabel = (n: number | null): string => {
       if (!n || n <= 0) return '—'
-      if (n === 1) return 'Primera vez'
-      if (n === 2) return 'Segunda vez'
-      if (n === 3) return 'Tercera vez'
-      return `${n}ª vez`
+      // "visita" (no "vez") para no confundir con la Segunda vez gratuita.
+      if (n === 1) return 'Primera visita'
+      return `${n}ª visita`
     }
 
     turnos.forEach((t) => {
@@ -352,6 +371,7 @@ export default class TurnosRtmController {
       const tieneFacturacion = turnosConFactura.has(t.id)
       const etapasInfo = computeEtapasTurno({
         servicioCodigo: t.servicio ? (t.servicio as any).codigoServicio : null,
+        esSegundaVez: esTurnoSegundaVez(t),
         estado: t.estado,
         horaIngreso: t.horaIngreso,
         tieneFacturacion,
@@ -368,6 +388,8 @@ export default class TurnosRtmController {
         etapasRequeridas: etapasInfo.totalRequeridas,
         etapasCompletadas: etapasInfo.totalCompletadas,
         estadoVisual: etapasInfo.estadoVisual,
+        etapasRequeridasLista: etapasInfo.etapasRequeridas,
+        esSegundaVez: esTurnoSegundaVez(t),
       })
     })
 
@@ -413,7 +435,7 @@ export default class TurnosRtmController {
   }
 
   /** Crear turno */
-  public async store({ request, response }: HttpContext) {
+  public async store({ request, response, auth }: HttpContext) {
     const trx = await Database.transaction()
     try {
       const raw = request.only([
@@ -555,6 +577,32 @@ export default class TurnosRtmController {
         .first()
 
       const totalDup = Number((dupDiario as any)?.total ?? 0)
+
+      // ── Segunda vez (RTM/PREV) ─────────────────────────────────────────
+      // Detección automática con confirmación del operador: si placa+servicio
+      // tiene una ventana ABIERTA (ver segunda_vez_service.ts), sin
+      // segundaVezOrigenId se responde 409 SEGUNDA_VEZ_DISPONIBLE; con él se
+      // revalida aquí (con candado sobre el origen) y el turno se crea como
+      // segunda vez. SUPER_ADMIN/GERENCIA pueden FORZAR (sin ventana abierta)
+      // o NO_APLICAR (cobrar normal) con motivo obligatorio.
+      const sv = await this.resolverSegundaVez({
+        request,
+        auth,
+        response,
+        trx,
+        placa,
+        servicio,
+        hayTurnoMismoDia: totalDup > 0,
+        fechaISO: hoyISO,
+        sedeId: usuarioCreador.sedeId!,
+      })
+      if ('respuesta' in sv) {
+        await trx.rollback()
+        return sv.respuesta
+      }
+      const modoSegundaVez = sv.modo
+      const esSV = modoSegundaVez?.tipo === 'SEGUNDA_VEZ'
+
       if (totalDup > 0) {
         await trx.rollback()
         const manana = fechaGuardar.plus({ days: 1 }).toISODate()
@@ -574,7 +622,8 @@ export default class TurnosRtmController {
         .orderBy('fecha', 'desc')
         .first()
 
-      if (lastFinalizado) {
+      // Una segunda vez no pasa por el bloqueo de vigencia.
+      if (lastFinalizado && !esSV) {
         const meses = bloqueoMesesPorServicio((servicio as any).codigoServicio)
         if (meses > 0) {
           const ultimaFecha = lastFinalizado.fecha as DateTime
@@ -799,13 +848,21 @@ export default class TurnosRtmController {
       if (canalAtribucion === 'ASESOR') {
         agenteCaptacionId = raw.agenteCaptacionId ? Number(raw.agenteCaptacionId) || null : null
       }
+      // Segunda vez: canal del origen solo para trazabilidad; sin agente ni
+      // dateo (no genera comisión). Todo el bloque de dateo de abajo
+      // (explícito, fallback, reintento, red de seguridad y auto-dateo por
+      // teléfono) y la recurrencia se saltan con esSV.
+      if (esSV) {
+        canalAtribucion = modoSegundaVez!.origen.canalAtribucion ?? null
+        agenteCaptacionId = null
+      }
 
       // 🆕 Un dateo solo se vincula/hereda/consume si es del MISMO servicio
       // que se está creando (dateoAplicaAServicio, reserva_dateo_service.ts).
       // El frontend hoy solo muestra una alerta visual si el servicio no
       // coincide, no bloquea — el backend es la fuente de verdad real.
       let dateo: CaptacionDateo | null = null
-      if (raw.dateoId) {
+      if (!esSV && raw.dateoId) {
         // 🆕 Antes de consultar, validar que raw.dateoId sea un número finito
         // real. Un valor no numérico (ej. "abc") pasado crudo a `.where('id', NaN)`
         // rompía la query con un 500 ("Unknown column 'NaN'") en vez de caer al
@@ -828,7 +885,7 @@ export default class TurnosRtmController {
           })
         }
       }
-      if (!dateo) {
+      if (!esSV && !dateo) {
         dateo = await CaptacionDateo.query({ client: trx })
           .where((qb) => {
             qb.where('placa', placa)
@@ -948,11 +1005,14 @@ export default class TurnosRtmController {
       let fechaUltimaVisita: string | null = null
       let estadoContinuidad: 'CONTINUA' | 'ROTA' | 'SIN_EVIDENCIA' | null = null
 
-      if (clienteId) {
-        const ultimoTurno = await TurnoRtm.query({ client: trx })
-          .where('cliente_id', clienteId)
-          .where('estado', 'finalizado')
-          .where('fecha', '<', hoyISO)
+      if (!esSV && clienteId) {
+        // La última visita ignora las segundas veces (el origen rechazado sí cuenta).
+        const ultimoTurno = await excluirSegundaVez(
+          TurnoRtm.query({ client: trx })
+            .where('cliente_id', clienteId)
+            .where('estado', 'finalizado')
+            .where('fecha', '<', hoyISO)
+        )
           .orderBy('fecha', 'desc')
           .first()
 
@@ -1002,7 +1062,7 @@ export default class TurnosRtmController {
       // 🆕 Capa 2: red de seguridad final, independiente de la causa raíz.
       // Si a esta altura captacionDateoId sigue null, se intenta una última
       // vez por placa+servicio_id antes de crear el turno sin vincular.
-      if (!captacionDateoId) {
+      if (!esSV && !captacionDateoId) {
         const dateoUltimoIntento = await CaptacionDateo.query({ client: trx })
           .where('placa', placa)
           .andWhere('servicio_id', servicio.id)
@@ -1053,9 +1113,15 @@ export default class TurnosRtmController {
         ultimoTurnoId,
         fechaUltimaVisita,
         reasignadoDeTurnoId,
+        // Segunda vez / excepción (ver resolverSegundaVez)
+        esSegundaVez: esSV,
+        turnoOrigenId: modoSegundaVez?.origen.id ?? null,
+        segundaVezExcepcion: modoSegundaVez?.excepcion ?? null,
+        segundaVezExcepcionPorId: modoSegundaVez?.excepcion ? modoSegundaVez.excepcionPorId : null,
+        segundaVezExcepcionMotivo: modoSegundaVez?.excepcion ? modoSegundaVez.motivo : null,
       }
 
-      if (canalAtribucion) {
+      if (canalAtribucion && !esSV) {
         payload.medioEntero = medioFromCanal(canalAtribucion)
       }
 
@@ -1087,7 +1153,7 @@ export default class TurnosRtmController {
         condicion: esRTM && asesorDetectadoPorTelefono && placa,
       })
 
-      if (esRTM && asesorDetectadoPorTelefono && placa) {
+      if (!esSV && esRTM && asesorDetectadoPorTelefono && placa) {
         try {
           const dateoExistente = await CaptacionDateo.query({ client: trx })
             .where('agente_id', asesorDetectadoPorTelefono)
@@ -1195,6 +1261,231 @@ export default class TurnosRtmController {
         message: 'Error al crear el turno',
         error: error instanceof Error ? error.message : String(error),
       })
+    }
+  }
+
+  /**
+   * Una segunda vez cancelada no vuelve a activarse (activar() o el selector
+   * de estado de update()) si su origen ya tiene otra segunda vez activa.
+   */
+  private async conflictoReactivacionSegundaVez(turno: TurnoRtm, estadoNuevo: string) {
+    if (!esTurnoSegundaVez(turno)) return null
+    if (turno.estado !== 'cancelado' || estadoNuevo === 'cancelado') return null
+    const otro = await otroHijoActivo(turno)
+    if (!otro) return null
+    return {
+      code: 'SEGUNDA_VEZ_YA_ACTIVA',
+      message: 'El turno de origen ya tiene otra segunda vez activa; no se puede reactivar esta.',
+      hijoActivoId: otro,
+    }
+  }
+
+  /**
+   * Decide si el turno que se está creando es una segunda vez (o una
+   * excepción NO_APLICADA) o un turno normal. Devuelve `{ respuesta }` cuando
+   * hay que cortar store() con un error, o `{ modo }` (null = turno normal).
+   * Corre dentro de la trx de store(): evaluarVentanaSegundaVez() bloquea el
+   * origen con FOR UPDATE, así que solo una segunda vez activa por origen.
+   */
+  private async resolverSegundaVez(opts: {
+    request: HttpContext['request']
+    auth: HttpContext['auth']
+    response: HttpContext['response']
+    trx: TransactionClientContract
+    placa: string
+    servicio: Servicio
+    hayTurnoMismoDia: boolean
+    fechaISO: string
+    sedeId: number
+  }): Promise<
+    | { respuesta: any }
+    | {
+        modo: {
+          tipo: 'SEGUNDA_VEZ' | 'NO_APLICADA'
+          origen: TurnoRtm
+          excepcion: 'FORZADA' | 'NO_APLICADA' | null
+          excepcionPorId: number | null
+          motivo: string | null
+        } | null
+      }
+  > {
+    const { request, auth, response, trx, placa, servicio, hayTurnoMismoDia, fechaISO, sedeId } =
+      opts
+    const ahora = DateTime.now().setZone('America/Bogota')
+
+    const origenIdRaw = request.input('segundaVezOrigenId')
+    const origenIdPedido =
+      origenIdRaw !== undefined && origenIdRaw !== null && origenIdRaw !== ''
+        ? Number(origenIdRaw)
+        : null
+    const excepcion = String(request.input('segundaVezExcepcion') ?? '')
+      .toUpperCase()
+      .trim()
+    const motivo = String(request.input('segundaVezMotivo') ?? '').trim()
+
+    if (origenIdPedido !== null && !Number.isInteger(origenIdPedido)) {
+      return {
+        respuesta: response.unprocessableEntity({ message: 'segundaVezOrigenId inválido' }),
+      }
+    }
+    if (excepcion && excepcion !== 'FORZADA' && excepcion !== 'NO_APLICADA') {
+      return {
+        respuesta: response.unprocessableEntity({
+          message: 'segundaVezExcepcion debe ser FORZADA o NO_APLICADA',
+        }),
+      }
+    }
+
+    if (!aplicaSegundaVez(servicio.codigoServicio)) {
+      if (origenIdPedido !== null || excepcion) {
+        return {
+          respuesta: response.unprocessableEntity({
+            code: 'SEGUNDA_VEZ_NO_APLICA_SERVICIO',
+            message: `La segunda vez solo aplica a RTM y PREV (servicio: ${servicio.codigoServicio}).`,
+          }),
+        }
+      }
+      return { modo: null }
+    }
+
+    // Excepción manual: solo SUPER_ADMIN / GERENCIA (rol del usuario
+    // autenticado, no el usuarioId del body) y con motivo obligatorio.
+    let excepcionPorId: number | null = null
+    if (excepcion) {
+      const user = auth.user
+      if (user) await (user as any).load('rol')
+      const rol = (user as any)?.rol?.nombre ?? ''
+      if (!user || !['SUPER_ADMIN', 'GERENCIA'].includes(rol)) {
+        return {
+          respuesta: response.forbidden({
+            code: 'SEGUNDA_VEZ_EXCEPCION_NO_AUTORIZADA',
+            message: 'Solo SUPER_ADMIN o GERENCIA pueden forzar o desactivar la segunda vez.',
+          }),
+        }
+      }
+      if (motivo.length < 5 || motivo.length > 255) {
+        return {
+          respuesta: response.unprocessableEntity({
+            code: 'SEGUNDA_VEZ_MOTIVO_REQUERIDO',
+            message: 'El motivo de la excepción es obligatorio (entre 5 y 255 caracteres).',
+          }),
+        }
+      }
+      excepcionPorId = user.id
+    }
+
+    const mismoDia = () => ({
+      respuesta: response.conflict({
+        code: 'SEGUNDA_VEZ_MISMO_DIA_PENDIENTE_B2',
+        message:
+          'El vehículo regresó el mismo día de su rechazo en esta sede. La segunda vez del mismo día aún no está soportada (pendiente de la Entrega B2): créala desde mañana o en otra sede.',
+      }),
+    })
+
+    // ── FORZADA: segunda vez aunque la ventana no esté abierta.
+    if (excepcion === 'FORZADA') {
+      if (origenIdPedido === null) {
+        return {
+          respuesta: response.unprocessableEntity({
+            code: 'SEGUNDA_VEZ_ORIGEN_REQUERIDO',
+            message: 'Para forzar la segunda vez indica el turno rechazado de origen.',
+          }),
+        }
+      }
+      const origen = await TurnoRtm.query({ client: trx })
+        .where('id', origenIdPedido)
+        .forUpdate()
+        .first()
+      const hijo = origen ? await hijoActivoDeOrigen(origen) : null
+      const valido =
+        !!origen &&
+        origen.placa === placa &&
+        origen.servicioId === servicio.id &&
+        origen.estado === 'finalizado' &&
+        origen.resultadoCertificacion === 'RECHAZADA' &&
+        hijo === null
+      if (!valido) {
+        return {
+          respuesta: response.conflict({
+            code: 'SEGUNDA_VEZ_FORZADA_INVALIDA',
+            message:
+              'Solo se puede forzar la segunda vez sobre un turno RECHAZADO y finalizado de la misma placa y servicio que no tenga ya una segunda vez activa.',
+            hijoActivoId: hijo,
+          }),
+        }
+      }
+      // Mismo día solo si el choque es el propio origen; si es otro turno,
+      // store() responde DUPLICATE_DAY como siempre.
+      if (
+        hayTurnoMismoDia &&
+        (origen!.fecha as DateTime).toISODate() === fechaISO &&
+        origen!.sedeId === sedeId
+      ) {
+        return mismoDia()
+      }
+      return {
+        modo: {
+          tipo: 'SEGUNDA_VEZ',
+          origen: origen!,
+          excepcion: 'FORZADA',
+          excepcionPorId,
+          motivo,
+        },
+      }
+    }
+
+    // ── Detección automática
+    const ev = await evaluarVentanaSegundaVez(placa, servicio.id, ahora, trx)
+
+    if (ev?.estado !== 'ABIERTA') {
+      if (excepcion === 'NO_APLICADA' || origenIdPedido !== null) {
+        return {
+          respuesta: response.conflict({
+            code: 'SEGUNDA_VEZ_NO_DISPONIBLE',
+            message:
+              'Esta placa ya no tiene una ventana de segunda vez abierta para este servicio.',
+            ventana: ev ? serializarVentana(ev) : null,
+          }),
+        }
+      }
+      return { modo: null }
+    }
+
+    if (excepcion === 'NO_APLICADA') {
+      return {
+        modo: {
+          tipo: 'NO_APLICADA',
+          origen: ev.origen,
+          excepcion: 'NO_APLICADA',
+          excepcionPorId,
+          motivo,
+        },
+      }
+    }
+
+    // Regresa el mismo día y en la misma sede del rechazo: el único turno que
+    // puede chocar es el propio origen (con la ventana ABIERTA no hay hija ni
+    // turno posterior). dedupe_key/DUPLICATE_DAY lo impiden hasta la B2.
+    if (hayTurnoMismoDia) return mismoDia()
+
+    if (origenIdPedido !== ev.origen.id) {
+      return {
+        respuesta: response.conflict({
+          code: 'SEGUNDA_VEZ_DISPONIBLE',
+          message: `Esta placa tiene una segunda vez gratuita disponible hasta ${ev.hasta.toFormat('dd/LL/yyyy HH:mm')}. Confírmala para continuar.`,
+          ventana: serializarVentana(ev),
+        }),
+      }
+    }
+
+    return {
+      modo: {
+        tipo: 'SEGUNDA_VEZ',
+        origen: ev.origen,
+        excepcion: null,
+        excepcionPorId: null,
+        motivo: null,
+      },
     }
   }
 
@@ -1415,6 +1706,42 @@ export default class TurnosRtmController {
         placaNext !== turno.placa ||
         fechaEfectiva.toISODate() !== (turno.fecha as DateTime).toISODate()
 
+      // ── Segunda vez: placa/servicio/fecha no se cambian en una segunda vez
+      // ni en un origen con segunda vez activa (rompería el vínculo
+      // origen↔hija), el origen no se cancela/inhabilita con hija activa, y
+      // una segunda vez cancelada no se reactiva si ya hay otra activa.
+      const hijoActivoId = await hijoActivoDeOrigen(turno)
+      if (cambiaClaveDedupe && (esTurnoSegundaVez(turno) || hijoActivoId)) {
+        return response.conflict({
+          code: 'SEGUNDA_VEZ_CAMPOS_BLOQUEADOS',
+          message: esTurnoSegundaVez(turno)
+            ? 'En un turno de segunda vez no se puede cambiar placa, servicio ni fecha.'
+            : 'Este turno tiene una segunda vez activa: no se puede cambiar placa, servicio ni fecha.',
+          hijoActivoId,
+        })
+      }
+      if (
+        hijoActivoId &&
+        (estadoVal === 'cancelado' || estadoVal === 'inactivo') &&
+        estadoVal !== turno.estado
+      ) {
+        return response.conflict(conflictoOrigenConHijoActivo(hijoActivoId))
+      }
+      if (estadoVal) {
+        const conflictoSv = await this.conflictoReactivacionSegundaVez(turno, estadoVal)
+        if (conflictoSv) return response.conflict(conflictoSv)
+      }
+
+      // ── RTM/PREV solo se finalizan por Certificación (resultado obligatorio):
+      // el selector de estado de Editar turno no puede pasarlos a 'finalizado'.
+      if (estadoVal === 'finalizado' && turno.estado !== 'finalizado') {
+        const servicioActual = servicioCodigoNext ? null : await Servicio.find(turno.servicioId)
+        const codigoServicioEfectivo = servicioCodigoNext ?? servicioActual?.codigoServicio
+        if (aplicaSegundaVez(codigoServicioEfectivo)) {
+          return response.conflict(conflictoFinalizarSinCertificacion(codigoServicioEfectivo))
+        }
+      }
+
       if (cambiaClaveDedupe && estadoEfectivo !== 'cancelado') {
         const respuestaConflicto = await this.responderConflictoDuplicado(response, {
           sedeId: turno.sedeId,
@@ -1516,6 +1843,9 @@ export default class TurnosRtmController {
       const turno = await TurnoRtm.find(params.id)
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
 
+      const conflictoSv = await this.conflictoReactivacionSegundaVez(turno, 'activo')
+      if (conflictoSv) return response.conflict(conflictoSv)
+
       turno.estado = 'activo'
       await turno.save()
       return response.ok({ message: 'Turno activado', turnoId: turno.id })
@@ -1547,6 +1877,11 @@ export default class TurnosRtmController {
 
       const turno = await TurnoRtm.find(params.id)
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
+
+      const hijoActivoId = await hijoActivoDeOrigen(turno)
+      if (hijoActivoId) {
+        return response.conflict(conflictoOrigenConHijoActivo(hijoActivoId))
+      }
 
       turno.estado = 'cancelado'
       turno.motivoCancelacion = motivo
@@ -1585,6 +1920,11 @@ export default class TurnosRtmController {
       const turno = await TurnoRtm.find(params.id)
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
 
+      const hijoActivoId = await hijoActivoDeOrigen(turno)
+      if (hijoActivoId) {
+        return response.conflict(conflictoOrigenConHijoActivo(hijoActivoId))
+      }
+
       turno.estado = 'inactivo'
       await turno.save()
       return response.ok({ message: 'Turno inhabilitado (soft delete)' })
@@ -1607,8 +1947,18 @@ export default class TurnosRtmController {
       if (!usuarioOperador)
         return response.unauthorized({ message: `Usuario ${idNumericoUsuario} no encontrado` })
 
-      const turno = await TurnoRtm.find(params.id)
+      const turno = await TurnoRtm.query().where('id', params.id).preload('servicio').first()
       if (!turno) return response.notFound({ message: 'Turno no encontrado' })
+
+      if (esTurnoSegundaVez(turno)) {
+        return response.conflict(
+          conflictoTurnoSegundaVez('registro de salida (pasa por Certificación)')
+        )
+      }
+      // RTM/PREV solo se finalizan por Certificación (resultado obligatorio).
+      if (aplicaSegundaVez(turno.servicio?.codigoServicio)) {
+        return response.conflict(conflictoFinalizarSinCertificacion(turno.servicio?.codigoServicio))
+      }
 
       const salida = DateTime.local().setZone('America/Bogota')
 
@@ -1899,13 +2249,18 @@ export default class TurnosRtmController {
         // cubierta por Hora Ingreso/Usuario), fuente única: turno_etapas_service.
         // Certificación no aplica a SOAT, y los responsables se ocultan si el
         // turno quedó cancelado/inactivo.
-        const esSOAT = !getEtapasRequeridas(t.servicio?.codigoServicio).includes('certificacion')
+        // Segunda vez: no aplica Facturación (se deja en blanco, como
+        // Certificación en SOAT).
+        const etapasTurno = getEtapasRequeridas(t.servicio?.codigoServicio, esTurnoSegundaVez(t))
+        const esSOAT = !etapasTurno.includes('certificacion')
+        const sinFacturacion = !etapasTurno.includes('facturacion')
         const facturacionFuncionario = (t as any).facturacionFuncionario
         const certificacionFuncionario = (t as any).certificacionFuncionario
 
-        const horaFacturacion = t.horaFacturacion || '-'
-        const responsableFacturacion =
-          !isCancelOrInactive && facturacionFuncionario
+        const horaFacturacion = sinFacturacion ? '' : t.horaFacturacion || '-'
+        const responsableFacturacion = sinFacturacion
+          ? ''
+          : !isCancelOrInactive && facturacionFuncionario
             ? `${facturacionFuncionario.nombres} ${facturacionFuncionario.apellidos}`
             : '-'
 

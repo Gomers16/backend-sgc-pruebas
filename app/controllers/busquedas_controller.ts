@@ -9,6 +9,7 @@ import Convenio from '#models/convenio'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import TurnoRtm from '#models/turno_rtm'
 import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
+import { ventanasSegundaVezDePlaca } from '#services/segunda_vez_service'
 
 type CanalSimple = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
 
@@ -187,6 +188,15 @@ export default class BusquedasController {
     // Precalcular última visita (para todos los caminos)
     const ultimaVisita = await getUltimaVisita(placa ?? undefined, cliente?.id ?? undefined)
 
+    // Segunda vez: ventanas de la placa por servicio (RTM/PREV), en cualquier
+    // estado (el front muestra el banner si está ABIERTA y ofrece FORZADA a
+    // SUPER_ADMIN/GERENCIA si no). Solo lectura: el candado se toma en store().
+    const ventanasSegundaVez = placa ? await ventanasSegundaVezDePlaca(placa) : []
+    const segundaVezInfo = {
+      ventanaSegundaVez: ventanasSegundaVez.find((v) => v.estado === 'ABIERTA') ?? null,
+      ventanasSegundaVez,
+    }
+
     let reserva: { vigente: boolean; bloqueaHasta: string | null } | null = null
 
     if (dateo) {
@@ -252,6 +262,7 @@ export default class BusquedasController {
           origenBusqueda: placa ? 'placa' : 'telefono',
           detectadoPorConvenio: (dateo as any).detectadoPorConvenio ?? false,
           ultimaVisita,
+          ...segundaVezInfo,
         })
       }
     }
@@ -353,6 +364,7 @@ export default class BusquedasController {
         origenBusqueda: placa ? 'placa' : 'telefono',
         detectadoPorConvenio: true,
         ultimaVisita,
+        ...segundaVezInfo,
       })
     }
 
@@ -448,6 +460,7 @@ export default class BusquedasController {
       origenBusqueda: placa ? 'placa' : 'telefono',
       detectadoPorConvenio: false,
       ultimaVisita,
+      ...segundaVezInfo,
       asesorDetectado, // 👈 NUEVA LÍNEA
     })
   }

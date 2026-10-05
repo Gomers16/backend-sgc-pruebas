@@ -15,6 +15,7 @@ import type { ModelQueryBuilderContract } from '@adonisjs/lucid/types/model'
 import TurnoRtm from '#models/turno_rtm'
 import TurnoLlamado from '#models/turno_llamado'
 import UsuarioPreferenciaModulo from '#models/usuario_preferencia_modulo'
+import { esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 // Códigos reales en BD (servicios.codigo_servicio) que el turnero exhibe —
 // TRAMITES queda fuera a propósito (ver INTEGRACION.md, el turnero no lo
@@ -673,7 +674,9 @@ export default class TurnoLlamadosController {
       const colaSeguimiento = [
         ...activos.map((t) => {
           const esRtm = (t.servicio?.codigoServicio ?? '').toUpperCase() === 'RTM'
-          return mapearTurno(t, t.tieneFacturacion && esRtm ? 'certificacion' : 'en_proceso')
+          // Una segunda vez no factura: ya está lista para Certificación.
+          const listoParaCertificar = t.tieneFacturacion || esTurnoSegundaVez(t)
+          return mapearTurno(t, listoParaCertificar && esRtm ? 'certificacion' : 'en_proceso')
         }),
         ...listosParaEntrega.map((t) => mapearTurno(t, 'por_llamar')),
       ]
