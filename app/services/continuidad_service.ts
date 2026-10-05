@@ -62,9 +62,12 @@ export async function evaluarContinuidad(
   if (override?.estado === 'FORZAR_NO') return 'ROTA'
 
   // 2) Recorrer TODO el historial de turnos finalizados de la placa.
+  //    Una segunda vez (reinspección gratuita, nunca lleva dateo) no es una
+  //    visita: no rompe la continuidad. El origen rechazado sí cuenta.
   const query = Database.from('turnos_rtms')
     .where('placa', placa)
     .where('estado', 'finalizado')
+    .where('es_segunda_vez', 0)
     .orderBy('fecha', 'asc')
     .select('id', 'captacion_dateo_id')
   if (excluirTurnoId) query.whereNot('id', excluirTurnoId)

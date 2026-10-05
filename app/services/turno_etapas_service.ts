@@ -23,7 +23,12 @@ export type EstadoVisualTurno = 'cancelado' | 'en_proceso' | 'incompleto' | 'fin
 const SERVICIOS_SIN_CERTIFICACION = ['SOAT']
 
 /** Etapas que aplican a un turno según el código de su servicio. */
-export function getEtapasRequeridas(servicioCodigo?: string | null): EtapaKey[] {
+export function getEtapasRequeridas(
+  servicioCodigo?: string | null,
+  esSegundaVez?: boolean | number | null
+): EtapaKey[] {
+  // Segunda vez (reinspección gratuita RTM/PREV): sin facturación.
+  if (esSegundaVez) return ['puerta', 'certificacion']
   const codigo = (servicioCodigo || '').toUpperCase().trim()
   if (SERVICIOS_SIN_CERTIFICACION.includes(codigo)) {
     return ['puerta', 'facturacion']
@@ -33,6 +38,8 @@ export function getEtapasRequeridas(servicioCodigo?: string | null): EtapaKey[] 
 
 export interface TurnoEtapasInput {
   servicioCodigo?: string | null
+  /** TINYINT(1) es_segunda_vez: puede llegar como 0/1. */
+  esSegundaVez?: boolean | number | null
   estado: string
   horaIngreso?: string | null
   tieneFacturacion?: boolean | null
@@ -60,7 +67,7 @@ export function etapaCompletada(key: EtapaKey, input: TurnoEtapasInput): boolean
 
 /** Cuenta etapas completas de un turno y deriva su estado visual (semáforo). */
 export function computeEtapasTurno(input: TurnoEtapasInput): TurnoEtapasResult {
-  const etapasRequeridas = getEtapasRequeridas(input.servicioCodigo)
+  const etapasRequeridas = getEtapasRequeridas(input.servicioCodigo, input.esSegundaVez)
   const totalRequeridas = etapasRequeridas.length
   const totalCompletadas = etapasRequeridas.filter((k) => etapaCompletada(k, input)).length
 

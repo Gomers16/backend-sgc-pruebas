@@ -159,12 +159,15 @@ export async function buscarTurnoSinDateoHoy(
   const { default: TurnoRtm } = await import('#models/turno_rtm')
   const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
   const query = trx ? TurnoRtm.query({ client: trx }) : TurnoRtm.query()
+  // es_segunda_vez = 0: una segunda vez nunca lleva dateo, no exige
+  // REQUIERE_TICKET_DATEO.
   return query
     .where('placa', placa)
     .where('fecha', hoyISO)
     .where('servicio_id', servicioId)
     .whereIn('estado', ['activo', 'finalizado'])
     .whereNull('captacion_dateo_id')
+    .where('es_segunda_vez', 0)
     .orderBy('id', 'desc')
     .first()
 }
