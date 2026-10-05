@@ -20,6 +20,7 @@ import {
   contarUnidadesRtmPorAsesorConDesgloseConvenio,
   contarUnidadesRtmPorConvenio,
 } from '#services/meta_comercial_rtm_service'
+import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -176,13 +177,16 @@ async function obtenerConteoDiarioConFallback(
     // computeReporteServicios — SOAT/PREV/PERI no generan ticket en este
     // entorno, pero sí generan fila en turnos_rtms, así que sin este filtro
     // la Meta Mensual cuenta de más).
-    const rows = (await Database.from('turnos_rtms as t')
-      .join('servicios as s', 's.id', 't.servicio_id')
-      .where('t.estado', 'finalizado')
-      .where('s.codigo_servicio', 'RTM')
-      .whereRaw(FILTRO_PLACAS_PRUEBA)
-      .whereRaw('MONTH(t.fecha) = ? AND YEAR(t.fecha) = ?', [mes, anio])
-      .select(Database.raw("DATE_FORMAT(t.fecha, '%Y-%m-%d') as fecha"), 't.tipo_vehiculo')) as any[]
+    // Una segunda vez (reinspección gratuita) no es unidad ni meta.
+    const rows = (await excluirSegundaVez(
+      Database.from('turnos_rtms as t')
+        .join('servicios as s', 's.id', 't.servicio_id')
+        .where('t.estado', 'finalizado')
+        .where('s.codigo_servicio', 'RTM')
+        .whereRaw(FILTRO_PLACAS_PRUEBA)
+        .whereRaw('MONTH(t.fecha) = ? AND YEAR(t.fecha) = ?', [mes, anio]),
+      't'
+    ).select(Database.raw("DATE_FORMAT(t.fecha, '%Y-%m-%d') as fecha"), 't.tipo_vehiculo')) as any[]
 
     const agregados = new Map<string, ConteoDiarioMeta>()
     for (const r of rows) {
@@ -1758,11 +1762,15 @@ export default class ReportesAdministrativosController {
     // siguen siendo de facturacion_tickets — por eso pueden no coincidir.
     // estado='finalizado': mismo filtro que obtenerConteoDiarioConFallback()
     // (Meta Mensual) — sin esto se contaban también turnos cancelados/activos.
-    const turnosPorServicio = (await Database.from('turnos_rtms as t')
-      .join('servicios as s', 's.id', 't.servicio_id')
-      .where('t.estado', 'finalizado')
-      .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .whereRaw("t.placa NOT LIKE 'TST%'")
+    // Una segunda vez no es unidad de producción (excluirSegundaVez).
+    const turnosPorServicio = (await excluirSegundaVez(
+      Database.from('turnos_rtms as t')
+        .join('servicios as s', 's.id', 't.servicio_id')
+        .where('t.estado', 'finalizado')
+        .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+        .whereRaw("t.placa NOT LIKE 'TST%'"),
+      't'
+    )
       .select('t.sede_id', 's.codigo_servicio')
       .count('* as turnos')
       .groupBy('t.sede_id', 's.codigo_servicio')) as any[]
@@ -1871,6 +1879,7 @@ export default class ReportesAdministrativosController {
         WHERE t.estado = 'finalizado'
           AND s.codigo_servicio = 'RTM'
           AND t.placa NOT LIKE 'TST%'
+          AND ${excluirSegundaVezSql('t')}
           AND DATE(t.fecha) BETWEEN ? AND ?
       ) x
       GROUP BY categoria
@@ -2522,6 +2531,7 @@ export default class ReportesAdministrativosController {
       WHERE t.estado = 'finalizado'
         AND DATE(t.fecha) BETWEEN ? AND ?
         AND t.placa NOT LIKE 'TST%'
+        AND ${excluirSegundaVezSql('t')}
       GROUP BY s.id, s.codigo_servicio, s.nombre_servicio, tipo_vehiculo_clasificado
       ORDER BY s.id ASC, tipo_vehiculo_clasificado ASC
     `
