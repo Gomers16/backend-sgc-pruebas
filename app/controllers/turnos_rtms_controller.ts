@@ -567,18 +567,6 @@ export default class TurnosRtmController {
 
       const hoyISO = fechaGuardar.toISODate()!
 
-      const dupDiario = await trx
-        .from('turnos_rtms')
-        .where('sede_id', usuarioCreador.sedeId!)
-        .andWhere('servicio_id', servicio.id)
-        .andWhere('fecha', hoyISO)
-        .andWhere('placa', placa)
-        .whereNot('estado', 'cancelado')
-        .count('* as total')
-        .first()
-
-      const totalDup = Number((dupDiario as any)?.total ?? 0)
-
       // ── Segunda vez (RTM/PREV) ─────────────────────────────────────────
       // Detección automática con confirmación del operador: si placa+servicio
       // tiene una ventana ABIERTA (ver segunda_vez_service.ts), sin
@@ -593,9 +581,6 @@ export default class TurnosRtmController {
         trx,
         placa,
         servicio,
-        hayTurnoMismoDia: totalDup > 0,
-        fechaISO: hoyISO,
-        sedeId: usuarioCreador.sedeId!,
       })
       if ('respuesta' in sv) {
         await trx.rollback()
@@ -604,6 +589,21 @@ export default class TurnosRtmController {
       const modoSegundaVez = sv.modo
       const esSV = modoSegundaVez?.tipo === 'SEGUNDA_VEZ'
 
+      // DUPLICATE_DAY: misma regla que dedupe_key (incluye es_segunda_vez,
+      // Entrega B2). Una segunda vez solo choca con otra segunda vez del día,
+      // así que ignora a su origen (rechazado hoy en esta sede). Un turno
+      // normal se sigue bloqueando con cualquier turno no cancelado del día.
+      const dupDiarioQuery = trx
+        .from('turnos_rtms')
+        .where('sede_id', usuarioCreador.sedeId!)
+        .andWhere('servicio_id', servicio.id)
+        .andWhere('fecha', hoyISO)
+        .andWhere('placa', placa)
+        .whereNot('estado', 'cancelado')
+      if (esSV) dupDiarioQuery.andWhere('es_segunda_vez', 1)
+      const dupDiario = await dupDiarioQuery.count('* as total').first()
+
+      const totalDup = Number((dupDiario as any)?.total ?? 0)
       if (totalDup > 0) {
         await trx.rollback()
         const manana = fechaGuardar.plus({ days: 1 }).toISODate()
@@ -1257,6 +1257,17 @@ export default class TurnosRtmController {
             'Ya existe un turno activo o finalizado hoy para esta placa y servicio en esta sede.',
         })
       }
+      // Índice único de B2: una sola segunda vez activa por origen (respaldo
+      // en BD del candado de resolverSegundaVez()).
+      if (
+        error?.code === 'ER_DUP_ENTRY' &&
+        String(error?.sqlMessage ?? error?.message ?? '').includes('uq_segunda_vez_origen_activo')
+      ) {
+        return response.conflict({
+          code: 'SEGUNDA_VEZ_NO_DISPONIBLE',
+          message: 'El turno de origen ya tiene una segunda vez activa.',
+        })
+      }
       console.error('Error al crear turno:', error)
       return response.internalServerError({
         message: 'Error al crear el turno',
@@ -1295,9 +1306,6 @@ export default class TurnosRtmController {
     trx: TransactionClientContract
     placa: string
     servicio: Servicio
-    hayTurnoMismoDia: boolean
-    fechaISO: string
-    sedeId: number
   }): Promise<
     | { respuesta: any }
     | {
@@ -1310,8 +1318,7 @@ export default class TurnosRtmController {
         } | null
       }
   > {
-    const { request, auth, response, trx, placa, servicio, hayTurnoMismoDia, fechaISO, sedeId } =
-      opts
+    const { request, auth, response, trx, placa, servicio } = opts
     const ahora = DateTime.now().setZone('America/Bogota')
 
     const origenIdRaw = request.input('segundaVezOrigenId')
@@ -1375,14 +1382,6 @@ export default class TurnosRtmController {
       excepcionPorId = user.id
     }
 
-    const mismoDia = () => ({
-      respuesta: response.conflict({
-        code: 'SEGUNDA_VEZ_MISMO_DIA_PENDIENTE_B2',
-        message:
-          'El vehículo regresó el mismo día de su rechazo en esta sede. La segunda vez del mismo día aún no está soportada (pendiente de la Entrega B2): créala desde mañana o en otra sede.',
-      }),
-    })
-
     // ── FORZADA: segunda vez aunque la ventana no esté abierta.
     if (excepcion === 'FORZADA') {
       if (origenIdPedido === null) {
@@ -1414,15 +1413,6 @@ export default class TurnosRtmController {
             hijoActivoId: hijo,
           }),
         }
-      }
-      // Mismo día solo si el choque es el propio origen; si es otro turno,
-      // store() responde DUPLICATE_DAY como siempre.
-      if (
-        hayTurnoMismoDia &&
-        (origen!.fecha as DateTime).toISODate() === fechaISO &&
-        origen!.sedeId === sedeId
-      ) {
-        return mismoDia()
       }
       return {
         modo: {
@@ -1463,11 +1453,6 @@ export default class TurnosRtmController {
         },
       }
     }
-
-    // Regresa el mismo día y en la misma sede del rechazo: el único turno que
-    // puede chocar es el propio origen (con la ventana ABIERTA no hay hija ni
-    // turno posterior). dedupe_key/DUPLICATE_DAY lo impiden hasta la B2.
-    if (hayTurnoMismoDia) return mismoDia()
 
     if (origenIdPedido !== ev.origen.id) {
       return {
