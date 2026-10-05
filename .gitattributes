@@ -1,0 +1,3 @@
+# Finales de línea: LF en el repositorio y en la copia de trabajo (igual que
+# front-sgc-pruebas y .editorconfig). Git detecta los binarios por contenido.
+* text=auto eol=lf
