@@ -306,16 +306,24 @@ test.group('Segunda vez · flujo B1', (group) => {
     assert.isNull(t.turnoOrigenId)
   })
 
-  test('Mismo día y misma sede: 409 SEGUNDA_VEZ_MISMO_DIA_PENDIENTE_B2 (no 500)', async ({
+  test('Mismo día y misma sede (B2): 409 SEGUNDA_VEZ_DISPONIBLE y con confirmación 201', async ({
     client,
+    assert,
   }) => {
     const origen = await origenRechazado(P.MISMO_DIA, { horas: 0 })
     const r1 = await crearTurnoHttp(client, P.MISMO_DIA)
     r1.assertStatus(409)
-    r1.assertBodyContains({ code: 'SEGUNDA_VEZ_MISMO_DIA_PENDIENTE_B2' })
+    r1.assertBodyContains({ code: 'SEGUNDA_VEZ_DISPONIBLE', ventana: { origenId: origen.id } })
     const r2 = await crearTurnoHttp(client, P.MISMO_DIA, { segundaVezOrigenId: origen.id })
-    r2.assertStatus(409)
-    r2.assertBodyContains({ code: 'SEGUNDA_VEZ_MISMO_DIA_PENDIENTE_B2' })
+    r2.assertStatus(201)
+    const t = await TurnoRtm.findOrFail(r2.body().id)
+    assert.isTrue(Boolean(t.esSegundaVez))
+    assert.equal(t.turnoOrigenId, origen.id)
+    assert.equal(
+      (t.fecha as DateTime).toISODate(),
+      (origen.fecha as DateTime).toISODate(),
+      'origen y segunda vez el mismo día'
+    )
   })
 
   // ───────────────────────── Concurrencia ─────────────────────────
@@ -631,10 +639,11 @@ test.group('Segunda vez · flujo B1', (group) => {
     const hoyTurno = await turnoDirecto(P.CONTINUIDAD)
     const sinDateo = await buscarTurnoSinDateoHoy(P.CONTINUIDAD, SERVICIO.RTM)
     assert.equal(sinDateo?.id, hoyTurno.id)
-    // ...como segunda vez, no.
+    // ...como segunda vez, no. (Sin origen: `origen` ya tiene una segunda vez
+    // no cancelada y uq_segunda_vez_origen_activo (B2) no admite otra.)
     await Database.from('turnos_rtms')
       .where('id', hoyTurno.id)
-      .update({ es_segunda_vez: 1, turno_origen_id: origen.id })
+      .update({ es_segunda_vez: 1, turno_origen_id: null })
     assert.isNull(await buscarTurnoSinDateoHoy(P.CONTINUIDAD, SERVICIO.RTM))
 
     const dateoHttp = await client
