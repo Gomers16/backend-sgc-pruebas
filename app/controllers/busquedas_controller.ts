@@ -9,7 +9,7 @@ import Convenio from '#models/convenio'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import TurnoRtm from '#models/turno_rtm'
 import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
-import { ventanasSegundaVezDePlaca } from '#services/segunda_vez_service'
+import { haySegundaVezEnCurso, ventanasSegundaVezDePlaca } from '#services/segunda_vez_service'
 
 type CanalSimple = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
 
@@ -284,6 +284,38 @@ export default class BusquedasController {
       let asesorAsignado: AgenteInstance | null = null
       const info = await getAsesorActivoDeConvenio(prospecto.convenioId)
       if (info?.asesor) asesorAsignado = info.asesor
+
+      // Segunda vez abierta o en curso (RTM/PREV): no se crea el dateo
+      // automático ni se cierran dateos viejos — una segunda vez no lleva
+      // dateo, y uno nuevo quedaría PENDIENTE para la placa. Se devuelve el
+      // convenio/asesor solo como sugerencia informativa.
+      if (await haySegundaVezEnCurso(ventanasSegundaVez)) {
+        const asesorSV = asesorAsignado
+          ? { id: asesorAsignado.id, nombre: asesorAsignado.nombre, tipo: asesorAsignado.tipo }
+          : null
+        return response.ok({
+          fuente: 'CONVENIO',
+          dateoId: null,
+          vehiculo: serializeVehiculo(vehiculo),
+          cliente: serializeCliente(cliente),
+          dateoReciente: null,
+          reserva: null,
+          captacionSugerida: { canal: 'ASESOR', agente: asesorSV },
+          convenio: convenio
+            ? {
+                id: convenio.id,
+                nombre: (convenio as any).nombre,
+                codigo: (convenio as any).codigo ?? (convenio as any).codigo_convenio ?? null,
+              }
+            : null,
+          asesorAsignado: asesorSV,
+          origenBusqueda: placa ? 'placa' : 'telefono',
+          detectadoPorConvenio: true,
+          dateoOmitidoPorSegundaVez: true,
+          ultimaVisita,
+          ...segundaVezInfo,
+        })
+      }
 
       // 🆕 Bug fix: cierra dateo(s) viejos en RE_DATEAR de esta misma
       // placa/teléfono antes de crear el nuevo automático — mismo criterio

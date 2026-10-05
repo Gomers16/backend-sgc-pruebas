@@ -16,7 +16,7 @@ import { evaluarVentanaSegundaVez } from '#services/segunda_vez_service'
 // "Segunda vez" — Entrega B1: detección en store() con confirmación,
 // excepciones FORZADA/NO_APLICADA, guards de facturación/comisión/cierre,
 // exclusiones comerciales, etapas y Turnero. Escribe en la BD compartida:
-// placas TST950–TST965, limpieza completa al final.
+// placas TST950–TST969, limpieza completa al final.
 //
 // Nota: turno_codigo se genera con resolución de segundos (bug conocido,
 // pendiente B); por eso se espera >1 s antes de cada creación por HTTP.
@@ -44,6 +44,10 @@ const P = {
   FORZADA: 'TST962',
   GUARDS: 'TST964',
   UPDATE: 'TST965',
+  CONVENIO_ABIERTA: 'TST966',
+  CONVENIO_HIJA_ACTIVA: 'TST967',
+  CONVENIO_SIN_VENTANA: 'TST968',
+  CONVENIO_HIJA_CERTIFICADA: 'TST969',
 }
 
 const PNG_1X1 = Buffer.from(
@@ -196,6 +200,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     if (ticketIds.length)
       await Database.from('facturacion_tickets').whereIn('id', ticketIds).delete()
     await Database.rawQuery(`DELETE FROM captacion_dateos WHERE placa IN (${marks})`, placas)
+    await Database.rawQuery(`DELETE FROM prospectos WHERE placa IN (${marks})`, placas)
     // Hijas antes que orígenes (turno_origen_id no tiene FK, pero por orden)
     await Database.rawQuery(
       `DELETE FROM turnos_rtms WHERE placa IN (${marks}) ORDER BY es_segunda_vez DESC, id DESC`,
@@ -788,5 +793,74 @@ test.group('Segunda vez · flujo B1', (group) => {
     assert.equal(v.servicioCodigo, 'RTM')
     assert.isAbove(v.horasRestantes, 0)
     assert.isArray(r.body().ventanasSegundaVez)
+  })
+
+  // ───────── Búsqueda unificada: dateo automático de convenio ─────────
+  async function buscarConProspectoConvenio(client: any, placa: string) {
+    const convenio = await Database.from('convenios').select('id').first()
+    await Database.table('prospectos').insert({ placa, convenio_id: convenio.id })
+    const antes = await CaptacionDateo.query().where('placa', placa)
+    const r = await client
+      .get('/api/buscar')
+      .header('Authorization', `Bearer ${tokens.ADMIN}`)
+      .qs({ placa })
+    r.assertStatus(200)
+    const despues = await CaptacionDateo.query().where('placa', placa)
+    return { r, creados: despues.length - antes.length, convenioId: convenio.id }
+  }
+
+  test('Búsqueda: con segunda vez ABIERTA no se crea el dateo automático de convenio', async ({
+    client,
+    assert,
+  }) => {
+    await origenRechazado(P.CONVENIO_ABIERTA)
+    const { r, creados, convenioId } = await buscarConProspectoConvenio(client, P.CONVENIO_ABIERTA)
+    assert.equal(creados, 0)
+    assert.equal(r.body().fuente, 'CONVENIO')
+    assert.isNull(r.body().dateoId)
+    assert.isTrue(r.body().dateoOmitidoPorSegundaVez)
+    assert.equal(r.body().convenio.id, convenioId)
+    assert.equal(r.body().ventanaSegundaVez.estado, 'ABIERTA')
+  })
+
+  test('Búsqueda: con segunda vez hija activa sin certificar no se crea el dateo automático', async ({
+    client,
+    assert,
+  }) => {
+    const origen = await origenRechazado(P.CONVENIO_HIJA_ACTIVA)
+    await turnoDirecto(P.CONVENIO_HIJA_ACTIVA, { esSegundaVez: true, turnoOrigenId: origen.id })
+    const { r, creados } = await buscarConProspectoConvenio(client, P.CONVENIO_HIJA_ACTIVA)
+    assert.equal(creados, 0)
+    assert.isTrue(r.body().dateoOmitidoPorSegundaVez)
+    assert.equal(r.body().ventanasSegundaVez[0].estado, 'USADA')
+  })
+
+  test('Búsqueda (control): sin ventana se sigue creando el dateo automático de convenio', async ({
+    client,
+    assert,
+  }) => {
+    const { r, creados } = await buscarConProspectoConvenio(client, P.CONVENIO_SIN_VENTANA)
+    assert.equal(creados, 1)
+    assert.equal(r.body().fuente, 'CONVENIO')
+    assert.isNotNull(r.body().dateoId)
+    assert.notProperty(r.body(), 'dateoOmitidoPorSegundaVez')
+  })
+
+  test('Búsqueda (control): con la segunda vez ya certificada se crea el dateo automático', async ({
+    client,
+    assert,
+  }) => {
+    const origen = await origenRechazado(P.CONVENIO_HIJA_CERTIFICADA, { horas: 48 })
+    await turnoDirecto(P.CONVENIO_HIJA_CERTIFICADA, {
+      fecha: ahora().minus({ days: 1 }),
+      estado: 'finalizado',
+      resultado: 'APROBADA',
+      esSegundaVez: true,
+      turnoOrigenId: origen.id,
+    })
+    const { r, creados } = await buscarConProspectoConvenio(client, P.CONVENIO_HIJA_CERTIFICADA)
+    assert.equal(creados, 1)
+    assert.isNotNull(r.body().dateoId)
+    assert.equal(r.body().ventanasSegundaVez[0].estado, 'USADA')
   })
 })

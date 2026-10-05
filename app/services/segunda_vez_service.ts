@@ -383,3 +383,22 @@ export async function ventanasSegundaVezDePlaca(
   }
   return ventanas
 }
+
+/**
+ * ¿Hay una segunda vez abierta o en curso? (ventana ABIERTA, o una segunda
+ * vez hija todavía 'activo', es decir, sin certificar). La búsqueda unificada
+ * lo usa para no crear el dateo automático de convenio en ese caso.
+ */
+export async function haySegundaVezEnCurso(
+  ventanas: Array<{ estado: EstadoVentanaSegundaVez; hijoActivoId: number | null }>
+): Promise<boolean> {
+  if (ventanas.some((v) => v.estado === 'ABIERTA')) return true
+  const hijos = ventanas.map((v) => v.hijoActivoId).filter((id): id is number => !!id)
+  if (hijos.length === 0) return false
+  const enCurso = await Database.from('turnos_rtms')
+    .whereIn('id', hijos)
+    .where('estado', 'activo')
+    .select('id')
+    .first()
+  return !!enCurso
+}
