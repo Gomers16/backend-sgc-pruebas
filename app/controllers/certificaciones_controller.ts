@@ -14,6 +14,7 @@ import {
   parseResultadoCertificacion,
   type ResultadoCertificacion,
 } from '#services/segunda_vez_service'
+import { marcarDateoExitosoAlFinalizarNoRtm } from '#services/reserva_dateo_service'
 
 export default class CertificacionesController {
   /**
@@ -166,6 +167,10 @@ export default class CertificacionesController {
         ...segundaVez,
       })
       await turno.save()
+
+      // Servicio NO RTM (PREV, PERI): su dateo pasa a EXITOSO al certificar,
+      // con resultado APROBADA o RECHAZADA (misma regla que registrarSalida).
+      await marcarDateoExitosoAlFinalizarNoRtm(turno, codigoServicio, trx)
 
       await trx.commit()
 

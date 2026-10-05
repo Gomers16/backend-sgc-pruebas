@@ -139,6 +139,37 @@ export function dateoAplicaAServicio(
 }
 
 /**
+ * Al finalizar un turno de un servicio NO RTM (PREV, PERI…), su dateo pasa a
+ * EXITOSO — siempre que sea del mismo servicio del turno (dateoAplicaAServicio)
+ * y no lo esté ya. RTM no: su dateo se cierra al confirmar Facturación
+ * (applyCommissionHook en facturacion_tickets_controller.ts).
+ *
+ * Única fuente de esta regla: la usan Certificación (dentro de su
+ * transacción) y registrarSalida(). Devuelve el id del dateo marcado o null.
+ */
+export async function marcarDateoExitosoAlFinalizarNoRtm(
+  turno: { captacionDateoId?: number | null; servicioId: number },
+  codigoServicio: string | null | undefined,
+  trx?: TransactionClientContract
+): Promise<number | null> {
+  if (!turno.captacionDateoId) return null
+  if ((codigoServicio ?? '').toUpperCase().includes('RTM')) return null
+
+  const { default: CaptacionDateo } = await import('#models/captacion_dateo')
+  const dateo = trx
+    ? await CaptacionDateo.query({ client: trx }).where('id', turno.captacionDateoId).first()
+    : await CaptacionDateo.find(turno.captacionDateoId)
+  if (!dateo || dateo.resultado === 'EXITOSO' || !dateoAplicaAServicio(dateo, turno.servicioId)) {
+    return null
+  }
+
+  dateo.resultado = 'EXITOSO'
+  if (trx) dateo.useTransaction(trx)
+  await dateo.save()
+  return dateo.id
+}
+
+/**
  * Turno de HOY, misma placa y mismo servicio, aún SIN dateo vinculado
  * (captacion_dateo_id NULL) — dispara el 409 REQUIERE_TICKET_DATEO. Extraída
  * de captacion_dateos_controller.ts::store() (antes vivía inline solo ahí)

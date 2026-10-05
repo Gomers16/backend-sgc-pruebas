@@ -18,6 +18,7 @@ import {
   buildReserva,
   cerrarDateosViejosPorPlacaTelefono,
   dateoAplicaAServicio,
+  marcarDateoExitosoAlFinalizarNoRtm,
 } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
@@ -1984,29 +1985,14 @@ export default class TurnosRtmController {
       await turno.save()
 
       // 🆕 Para servicios NO RTM (PREV, PERITAJE) → marcar dateo EXITOSO al finalizar turno
+      // Regla compartida con Certificación (marcarDateoExitosoAlFinalizarNoRtm):
+      // solo dateos del mismo servicio del turno.
       if ((turno as any).captacionDateoId) {
         try {
-          const servicioTurno = await Servicio.find(turno.servicioId)
-          const codigoServicio = servicioTurno?.codigoServicio ?? ''
-          const esRTM = codigoServicio.toUpperCase().includes('RTM')
-          if (!esRTM) {
-            const dateo = await CaptacionDateo.find((turno as any).captacionDateoId)
-            // 🆕 Defensa adicional: si por alguna vía captacionDateoId quedó
-            // seteado con un dateo de otro servicio, no marcar EXITOSO. La
-            // fuente principal de la validación es turnos_rtms_controller.ts
-            // ::store() (ya no vincula si el servicio no coincide), esto es
-            // un segundo seguro.
-            if (
-              dateo &&
-              dateo.resultado !== 'EXITOSO' &&
-              dateoAplicaAServicio(dateo, turno.servicioId)
-            ) {
-              dateo.resultado = 'EXITOSO'
-              await dateo.save()
-              console.log(
-                `✅ Dateo ${dateo.id} marcado EXITOSO (turno ${codigoServicio} finalizado)`
-              )
-            }
+          const codigoServicio = turno.servicio?.codigoServicio ?? ''
+          const dateoId = await marcarDateoExitosoAlFinalizarNoRtm(turno, codigoServicio)
+          if (dateoId) {
+            console.log(`✅ Dateo ${dateoId} marcado EXITOSO (turno ${codigoServicio} finalizado)`)
           }
         } catch (e) {
           console.error('❌ Error marcando EXITOSO en registrarSalida:', e)
