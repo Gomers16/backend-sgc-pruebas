@@ -166,15 +166,21 @@ export function whereTurnoDaVigencia<Q extends { where: (...args: any[]) => any 
 /**
  * Excluye las segundas veces de una consulta sobre turnos_rtms. Para la
  * lógica comercial (recurrencia, continuidad, última visita, exigencia de
- * dateo): el turno de origen rechazado SÍ cuenta como visita, la segunda
- * vez no.
+ * dateo) y los reportes (meta, producción, reconciliación, discrepancias):
+ * el turno de origen rechazado SÍ cuenta como visita/unidad, la segunda vez
+ * no (no es ingreso, unidad, meta ni turno pendiente de facturar).
  */
-export function excluirSegundaVez<Q extends { where: (...args: any[]) => any }>(
+export function excluirSegundaVez<Q extends { whereRaw: (...args: any[]) => any }>(
   query: Q,
   tabla: string = 'turnos_rtms'
 ): Q {
-  query.where(`${tabla}.es_segunda_vez`, 0)
+  query.whereRaw(excluirSegundaVezSql(tabla))
   return query
+}
+
+/** Mismo filtro que excluirSegundaVez() para SQL crudo (`AND ${excluirSegundaVezSql('t')}`). */
+export function excluirSegundaVezSql(tabla: string = 'turnos_rtms'): string {
+  return `${tabla}.es_segunda_vez = 0`
 }
 
 // ───────────────────────── Acceso a BD ─────────────────────────
