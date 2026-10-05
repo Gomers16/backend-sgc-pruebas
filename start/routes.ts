@@ -2317,6 +2317,17 @@ router
         }),
       ])
 
+    // Corrección del resultado (Segunda vez, Entrega C2): solo SUPER_ADMIN/GERENCIA.
+    router
+      .patch('/certificaciones/:turnoId/resultado', async (ctx) => {
+        const { default: CertificacionesController } = await import(
+          '#controllers/certificaciones_controller'
+        )
+        return new CertificacionesController().corregirResultado(ctx)
+      })
+      .where('turnoId', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
     /* =============================== OCR (BACKEND) ===================== */
 
     router.post('/ocr/parse-ticket', async (ctx) => {

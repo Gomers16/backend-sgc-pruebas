@@ -8,9 +8,13 @@ import db from '@adonisjs/lucid/services/db'
 
 import Certificacion from '#models/certificacion'
 import TurnoRtm from '#models/turno_rtm'
+import CertificacionResultadoCambio from '#models/certificacion_resultado_cambio'
 import {
   aplicaSegundaVez,
   camposAlCertificar,
+  conflictoOrigenConHijoActivo,
+  esTurnoSegundaVez,
+  hijoActivoDeOrigen,
   parseResultadoCertificacion,
   type ResultadoCertificacion,
 } from '#services/segunda_vez_service'
@@ -182,6 +186,140 @@ export default class CertificacionesController {
     } catch (error) {
       if (!trx.isCompleted) await trx.rollback()
       if (archivoMovido) await fs.unlink(archivoMovido).catch(() => {})
+      throw error
+    }
+  }
+
+  /**
+   * PATCH /api/certificaciones/:turnoId/resultado
+   * body: { resultado: 'APROBADA' | 'RECHAZADA', motivo: string (5–255) }
+   * Solo SUPER_ADMIN / GERENCIA (middleware de la ruta). Corrige el resultado
+   * de un turno RTM/PREV finalizado y certificado, con auditoría en
+   * certificacion_resultado_cambios. Los efectos sobre la ventana de segunda
+   * vez salen de camposAlCertificar() — la misma regla que al certificar:
+   *  - → APROBADA: rechazado_at y ventana_segunda_vez_hasta quedan NULL (la
+   *    ventana se anula). 409 si el turno ya tiene una segunda vez activa.
+   *  - → RECHAZADA: ventana de 360 h desde AHORA (hora del servidor), salvo
+   *    que el turno sea una segunda vez (nunca abre ventana).
+   * certificaciones.resultado y turnos_rtms.resultado_certificacion se
+   * actualizan en la misma transacción, con el turno bloqueado (FOR UPDATE;
+   * crear una segunda vez bloquea el mismo origen, así que no hay carrera).
+   */
+  public async corregirResultado({ params, request, auth, response }: HttpContext) {
+    const turnoId = Number(params.turnoId)
+    if (!Number.isInteger(turnoId)) {
+      return response.badRequest({ message: 'turnoId debe ser numérico' })
+    }
+    const resultadoNuevo = parseResultadoCertificacion(request.input('resultado'))
+    if (!resultadoNuevo) {
+      return response.unprocessableEntity({
+        code: 'RESULTADO_REQUERIDO',
+        message: 'Indica el resultado corregido: APROBADA o RECHAZADA.',
+      })
+    }
+    const motivo = String(request.input('motivo') ?? '').trim()
+    if (motivo.length < 5 || motivo.length > 255) {
+      return response.unprocessableEntity({
+        code: 'MOTIVO_REQUERIDO',
+        message: 'El motivo de la corrección es obligatorio (entre 5 y 255 caracteres).',
+      })
+    }
+
+    const trx = await db.transaction()
+    try {
+      const turno = await TurnoRtm.query({ client: trx })
+        .where('id', turnoId)
+        .forUpdate()
+        .preload('servicio')
+        .first()
+      if (!turno) {
+        await trx.rollback()
+        return response.notFound({ message: 'Turno no encontrado' })
+      }
+
+      const codigoServicio = turno.servicio?.codigoServicio ?? null
+      if (!aplicaSegundaVez(codigoServicio)) {
+        await trx.rollback()
+        return response.unprocessableEntity({
+          code: 'SERVICIO_SIN_RESULTADO',
+          message: `El resultado de certificación solo aplica a RTM y PREV (servicio: ${codigoServicio}).`,
+        })
+      }
+
+      const certificacion = await Certificacion.query({ client: trx })
+        .where('turno_id', turno.id)
+        .orderBy('id', 'desc')
+        .first()
+      if (turno.estado !== 'finalizado' || !certificacion) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TURNO_SIN_CERTIFICACION',
+          message: 'Solo se corrige el resultado de un turno finalizado con certificación.',
+          estado: turno.estado,
+        })
+      }
+
+      const resultadoAnterior = turno.resultadoCertificacion ?? null
+      if (resultadoAnterior === resultadoNuevo) {
+        await trx.rollback()
+        return response.unprocessableEntity({
+          code: 'SIN_CAMBIO',
+          message: `El turno ya tiene resultado ${resultadoNuevo}.`,
+        })
+      }
+
+      // De RECHAZADA a APROBADA con una segunda vez ya creada: no se anula.
+      if (resultadoNuevo === 'APROBADA' && !esTurnoSegundaVez(turno)) {
+        const hijoActivoId = await hijoActivoDeOrigen(turno)
+        if (hijoActivoId) {
+          await trx.rollback()
+          return response.conflict(conflictoOrigenConHijoActivo(hijoActivoId))
+        }
+      }
+
+      const ahora = DateTime.now().setZone('America/Bogota')
+      const campos = camposAlCertificar({
+        codigoServicio,
+        resultado: resultadoNuevo,
+        esSegundaVez: turno.esSegundaVez,
+        ahora,
+      })
+
+      turno.useTransaction(trx)
+      turno.merge(campos)
+      await turno.save()
+
+      certificacion.useTransaction(trx)
+      certificacion.resultado = resultadoNuevo
+      await certificacion.save()
+
+      const usuario = auth.user
+      const cambio = await CertificacionResultadoCambio.create(
+        {
+          turnoId: turno.id,
+          resultadoAnterior,
+          resultadoNuevo,
+          motivo,
+          usuarioId: usuario?.id ?? null,
+        },
+        { client: trx }
+      )
+
+      await trx.commit()
+
+      return response.ok({
+        message: `Resultado corregido: ${resultadoAnterior ?? 'sin resultado'} → ${resultadoNuevo}`,
+        turno: {
+          id: turno.id,
+          resultadoCertificacion: turno.resultadoCertificacion,
+          rechazadoAt: turno.rechazadoAt?.toISO() ?? null,
+          ventanaSegundaVezHasta: turno.ventanaSegundaVezHasta?.toISO() ?? null,
+          esSegundaVez: esTurnoSegundaVez(turno),
+        },
+        cambio,
+      })
+    } catch (error) {
+      if (!trx.isCompleted) await trx.rollback()
       throw error
     }
   }

@@ -227,23 +227,49 @@ export interface EvaluacionVentana {
  * cambiarlos).
  */
 async function contextoOrigen(origen: TurnoRtm) {
-  const rows: Array<{ id: number; es_segunda_vez: number; turno_origen_id: number | null }> =
-    await Database.from('turnos_rtms')
-      .where('placa', origen.placa)
-      .where('servicio_id', origen.servicioId)
-      .where('id', '>', origen.id)
-      .whereNot('estado', 'cancelado')
-      .select('id', 'es_segunda_vez', 'turno_origen_id')
-      .orderBy('id', 'asc')
+  const rows: FilaPosterior[] = await Database.from('turnos_rtms')
+    .where('placa', origen.placa)
+    .where('servicio_id', origen.servicioId)
+    .where('id', '>', origen.id)
+    .whereNot('estado', 'cancelado')
+    .select('id', 'placa', 'servicio_id', 'estado', 'es_segunda_vez', 'turno_origen_id')
+    .orderBy('id', 'asc')
 
-  let hijoActivoId: number | null = null
-  let turnoPosteriorId: number | null = null
-  for (const r of rows) {
+  const { hijo, posterior } = clasificarPosteriores(origen, rows)
+  return { hijoActivoId: hijo?.id ?? null, turnoPosteriorId: posterior?.id ?? null }
+}
+
+/** Fila mínima de turnos_rtms para clasificar lo que vino después de un origen. */
+export interface FilaPosterior {
+  id: number
+  placa: string
+  servicio_id: number
+  estado: string
+  es_segunda_vez: number | boolean
+  turno_origen_id: number | null
+}
+
+/**
+ * Regla única (pura) de "qué pasó después del origen": entre los turnos de la
+ * misma placa+servicio creados después (id mayor) y no cancelados, la
+ * segunda vez hija (es_segunda_vez=1 y turno_origen_id = origen) → USADA; cualquier
+ * otro → SUPERADA (ver estadoVentana). Las filas pueden venir mezcladas (otras
+ * placas/servicios/orígenes): se filtran aquí. Devuelve la primera de cada una.
+ */
+export function clasificarPosteriores<F extends FilaPosterior>(
+  origen: { id: number; placa: string; servicioId: number },
+  filas: F[]
+): { hijo: F | null; posterior: F | null } {
+  let hijo: F | null = null
+  let posterior: F | null = null
+  for (const r of [...filas].sort((a, b) => a.id - b.id)) {
+    if (r.id <= origen.id || r.estado === 'cancelado') continue
+    if (r.placa !== origen.placa || Number(r.servicio_id) !== origen.servicioId) continue
     const esHijo = Boolean(r.es_segunda_vez) && Number(r.turno_origen_id) === origen.id
-    if (esHijo) hijoActivoId ??= r.id
-    else turnoPosteriorId ??= r.id
+    if (esHijo) hijo ??= r
+    else posterior ??= r
   }
-  return { hijoActivoId, turnoPosteriorId }
+  return { hijo, posterior }
 }
 
 async function evaluarOrigen(origen: TurnoRtm, ahora: DateTime): Promise<EvaluacionVentana> {
