@@ -21,6 +21,12 @@ import {
   contarUnidadesRtmPorConvenio,
 } from '#services/meta_comercial_rtm_service'
 import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
+import {
+  ESTADOS_REPORTE,
+  calcularReporteSegundaVez,
+  construirExcelReporteSegundaVez,
+  type FiltrosReporteSegundaVez,
+} from '#services/reporte_segunda_vez_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -7142,6 +7148,53 @@ export default class ReportesAdministrativosController {
   }
 
   /* ==================== DISCREPANCIAS RTM (SGC vs TECNOINGENIERÍA) ==================== */
+
+  /**
+   * GET /reportes-admin/segunda-vez?fecha_inicio=&fecha_fin=&servicio=&sede_id=&placa=&estado=
+   * Reporte de segundas veces (solo conteos). Cálculo en
+   * reporte_segunda_vez_service.ts sobre las reglas de segunda_vez_service.ts.
+   */
+  public async segundaVez({ request, response }: HttpContext) {
+    const filtros = this.parseFiltrosSegundaVez(request)
+    if ('error' in filtros) return response.badRequest({ message: filtros.error })
+    return await calcularReporteSegundaVez(filtros)
+  }
+
+  /** GET /reportes-admin/segunda-vez/excel — mismos filtros, hojas Resumen y Detalle. */
+  public async segundaVezExcel({ request, response }: HttpContext) {
+    const filtros = this.parseFiltrosSegundaVez(request)
+    if ('error' in filtros) return response.badRequest({ message: filtros.error })
+    const data = await calcularReporteSegundaVez(filtros)
+    const buffer = await construirExcelReporteSegundaVez(data)
+    const fileName = `Segunda_Vez_${filtros.fechaInicio}_${filtros.fechaFin}.xlsx`
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="${fileName}"`)
+    return response.send(buffer)
+  }
+
+  private parseFiltrosSegundaVez(
+    request: HttpContext['request']
+  ): FiltrosReporteSegundaVez | { error: string } {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return { error }
+    const servicio = request.input('servicio')
+      ? String(request.input('servicio')).toUpperCase()
+      : null
+    if (servicio && servicio !== 'RTM' && servicio !== 'PREV') {
+      return { error: 'servicio debe ser RTM o PREV' }
+    }
+    const estado = request.input('estado') ? String(request.input('estado')).toUpperCase() : null
+    if (estado && !(ESTADOS_REPORTE as string[]).includes(estado)) {
+      return { error: `estado debe ser uno de: ${ESTADOS_REPORTE.join(', ')}` }
+    }
+    const sedeId = request.input('sede_id') ? Number(request.input('sede_id')) : null
+    if (sedeId !== null && !Number.isInteger(sedeId)) return { error: 'sede_id inválido' }
+    const placa = request.input('placa') ? String(request.input('placa')) : null
+    return { fechaInicio, fechaFin, servicio, sedeId, placa, estado }
+  }
 
   /**
    * GET /reportes-admin/discrepancias-rtm?page=&per_page=&fecha_inicio=&fecha_fin=

@@ -2724,6 +2724,19 @@ router
           )
           return new ReportesAdministrativosController().discrepanciasRtmHistorial(ctx)
         })
+        // Segunda vez (Entrega C2): solo conteos.
+        router.get('/segunda-vez', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().segundaVez(ctx)
+        })
+        router.get('/segunda-vez/excel', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().segundaVezExcel(ctx)
+        })
       })
       .prefix('/reportes-admin')
       .use([
