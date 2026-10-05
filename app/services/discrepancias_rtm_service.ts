@@ -21,6 +21,7 @@ import Database from '@adonisjs/lucid/services/db'
 import TurnoRtm from '#models/turno_rtm'
 import InformeDiscrepanciaRtm from '#models/informe_discrepancia_rtm'
 import { getEtapasRequeridas, etapaCompletada, type EtapaKey } from '#services/turno_etapas_service'
+import { excluirSegundaVez } from '#services/segunda_vez_service'
 
 // ==================== ÍNDICES DE COLUMNA DEL CSV TECNO (RepGeneral) ====================
 const IDX_FECHA = 2
@@ -412,11 +413,15 @@ export default class DiscrepanciasRtmService {
     const fechaFin = fechasOrdenadas[fechasOrdenadas.length - 1] ?? fechaInicio
 
     // Turnos SGC del período, servicio RTM, en estado activo o finalizado.
-    const turnosSgc = await TurnoRtm.query()
-      .where('servicio_id', 1)
-      .whereIn('estado', ['activo', 'finalizado'])
-      .whereBetween('fecha', [fechaInicio.toISODate()!, fechaFin.toISODate()!])
-      .orderBy('id', 'asc')
+    // Sin segundas veces: el CSV de Tecno solo trae la "primera vez"
+    // (parseTecnoRows), así que una reinspección no debe cruzarse, ni contar
+    // como tipo 7 ni como duplicado de su origen.
+    const turnosSgc = await excluirSegundaVez(
+      TurnoRtm.query()
+        .where('servicio_id', 1)
+        .whereIn('estado', ['activo', 'finalizado'])
+        .whereBetween('fecha', [fechaInicio.toISODate()!, fechaFin.toISODate()!])
+    ).orderBy('id', 'asc')
 
     // Facturación RTM confirmada, precargada en bloque (evita N+1).
     const turnoIds = turnosSgc.map((t) => t.id)
