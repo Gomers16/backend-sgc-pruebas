@@ -4,7 +4,7 @@ import { DateTime } from 'luxon'
 import ExcelJS from 'exceljs'
 import Database from '@adonisjs/lucid/services/db'
 
-import TurnoRtm from '#models/turno_rtm'
+import TurnoRtm, { type CanalAtribucion, type MedioEntero } from '#models/turno_rtm'
 import Usuario from '#models/usuario'
 import Servicio from '#models/servicio'
 import Vehiculo from '#models/vehiculo'
@@ -54,7 +54,7 @@ const VALID_TIPOS_VEHICULO: TipoVehiculoDB[] = [
   'Motocicleta',
 ]
 
-type CanalAtrib = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
+type CanalAtrib = CanalAtribucion
 
 type HistItem = {
   id: number
@@ -85,20 +85,21 @@ function bloqueoMesesPorServicio(codigo?: string): number {
 
 const normalizeCanal = (v?: string): CanalAtrib | null => {
   const x = (v || '').toUpperCase().trim()
-  if (['FACHADA', 'ASESOR', 'TELE', 'REDES'].includes(x)) return x as CanalAtrib
+  if (['FACHADA', 'ASESOR', 'TELE', 'REDES', 'GOOGLE_ADS'].includes(x)) return x as CanalAtrib
   if (['REDES_SOCIALES', 'RRSS'].includes(x)) return 'REDES'
+  if (['GOOGLE ADS', 'GOOGLEADS'].includes(x)) return 'GOOGLE_ADS'
   if (['CALLCENTER', 'CALL_CENTER', 'TELEMERCADEO', 'TELEMARKETING', 'TELEFONO'].includes(x))
     return 'TELE'
   if (['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'].includes(x)) return 'ASESOR'
   return null
 }
 
-function medioFromCanal(
-  canal: CanalAtrib
-): 'Fachada' | 'Redes Sociales' | 'Call Center' | 'Asesor Comercial' {
+function medioFromCanal(canal: CanalAtrib): MedioEntero {
   switch (canal) {
     case 'REDES':
       return 'Redes Sociales'
+    case 'GOOGLE_ADS':
+      return 'Google ADS'
     case 'TELE':
       return 'Call Center'
     case 'ASESOR':
@@ -210,7 +211,7 @@ export default class TurnosRtmController {
 
       // Filtros adicionales
       if (canalAtribucion) {
-        const allowed: CanalAtrib[] = ['FACHADA', 'ASESOR', 'TELE', 'REDES']
+        const allowed: CanalAtrib[] = ['FACHADA', 'ASESOR', 'TELE', 'REDES', 'GOOGLE_ADS']
         const canales = String(canalAtribucion)
           .split(',')
           .map((c) => c.trim().toUpperCase())
@@ -1627,7 +1628,7 @@ export default class TurnosRtmController {
         canalAtribucionNext = normalizeCanal(raw.canal)
       }
 
-      let medioBDNext: 'Fachada' | 'Redes Sociales' | 'Call Center' | 'Asesor Comercial' | undefined
+      let medioBDNext: MedioEntero | undefined
       if (canalAtribucionNext) {
         medioBDNext = medioFromCanal(canalAtribucionNext)
       }
@@ -2157,7 +2158,7 @@ export default class TurnosRtmController {
       }
 
       if (canalAtribucion) {
-        const allowed: CanalAtrib[] = ['FACHADA', 'ASESOR', 'TELE', 'REDES']
+        const allowed: CanalAtrib[] = ['FACHADA', 'ASESOR', 'TELE', 'REDES', 'GOOGLE_ADS']
         const canales = String(canalAtribucion)
           .split(',')
           .map((c) => c.trim().toUpperCase())
@@ -2254,7 +2255,12 @@ export default class TurnosRtmController {
           tiempoServicio: t.tiempoServicio || '-',
           placa: t.placa,
           tipoVehiculo: t.tipoVehiculo,
-          canalAtribucion: (t as any).canalAtribucion ?? '-',
+          // Los demás canales se exportan con su código (FACHADA, REDES…);
+          // Google ADS con su nombre.
+          canalAtribucion:
+            (t as any).canalAtribucion === 'GOOGLE_ADS'
+              ? 'Google ADS'
+              : ((t as any).canalAtribucion ?? '-'),
           agente,
           observaciones: t.observaciones || '-',
           estado: t.estado,

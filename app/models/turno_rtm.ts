@@ -23,9 +23,14 @@ export type TipoVehiculoUI =
   | 'Liviano Público'
   | 'Motocicleta'
 
-export type MedioEntero = 'Fachada' | 'Redes Sociales' | 'Call Center' | 'Asesor Comercial'
+export type MedioEntero =
+  | 'Fachada'
+  | 'Redes Sociales'
+  | 'Call Center'
+  | 'Asesor Comercial'
+  | 'Google ADS'
 export type EstadoTurno = 'activo' | 'inactivo' | 'cancelado' | 'finalizado'
-export type CanalAtribucion = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
+export type CanalAtribucion = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES' | 'GOOGLE_ADS'
 export type CanalDateo = 'FACHADA' | 'ASESOR_COMERCIAL' | 'ASESOR_CONVENIO' | 'TELE' | 'REDES'
 
 export default class TurnoRtm extends BaseModel {
