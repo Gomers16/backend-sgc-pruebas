@@ -1679,10 +1679,9 @@ export default class ReportesAdministrativosController {
     // tickets CONFIRMADA de turnos cancelados/activos (ver diagnóstico
     // de reconciliación RTM, julio 2026: turnos 57168/57349/57618).
     // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
-    const rows = (await joinCanalReporte(
-      this.baseIngresosPorCanal(fechaInicio, fechaFin),
-      { unirTurno: false }
-    )
+    const rows = (await joinCanalReporte(this.baseIngresosPorCanal(fechaInicio, fechaFin), {
+      unirTurno: false,
+    })
       .select(Database.raw(`${grupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
@@ -2707,7 +2706,12 @@ export default class ReportesAdministrativosController {
       .countDistinct('ft.descuento_id as tipos_usados')
       .first()) as any
 
-    type MD = { cantidad: number; total_descuentos: number; tipos_usados: number; porcentaje: number }
+    type MD = {
+      cantidad: number
+      total_descuentos: number
+      tipos_usados: number
+      porcentaje: number
+    }
     const porGrupo = new Map<string, MD>(
       rows.map((r) => [
         r.grupo,
@@ -2727,13 +2731,15 @@ export default class ReportesAdministrativosController {
         canal === 'ASESOR' ? { ...m, tipos_usados: Number(asesorTipos?.tipos_usados) || 0 } : m
     )
 
-    const totales = porCanalBase.filter((c) => !c.es_subcanal).reduce(
-      (acc, r) => ({
-        cantidad: acc.cantidad + r.cantidad,
-        total_descuentos: acc.total_descuentos + r.total_descuentos,
-      }),
-      { cantidad: 0, total_descuentos: 0 }
-    )
+    const totales = porCanalBase
+      .filter((c) => !c.es_subcanal)
+      .reduce(
+        (acc, r) => ({
+          cantidad: acc.cantidad + r.cantidad,
+          total_descuentos: acc.total_descuentos + r.total_descuentos,
+        }),
+        { cantidad: 0, total_descuentos: 0 }
+      )
 
     const porCanal = porCanalBase.map((c) => ({
       ...c,
@@ -4452,7 +4458,10 @@ export default class ReportesAdministrativosController {
     seccion('Por canal de captación')
     encabezadoFila(['Canal', 'Turnos', 'Monto', '%'])
     if (data.aviso_canal.aplica && data.aviso_canal.mensaje) {
-      ws.addRow([`Aviso: ${data.aviso_canal.mensaje}`]).font = { italic: true, color: { argb: 'FFB45309' } }
+      ws.addRow([`Aviso: ${data.aviso_canal.mensaje}`]).font = {
+        italic: true,
+        color: { argb: 'FFB45309' },
+      }
     }
     data.por_canal.forEach((c) =>
       ws.addRow([c.es_subcanal ? `    · ${c.nombre}` : c.nombre, c.cantidad, c.monto, c.porcentaje])
