@@ -43,4 +43,13 @@ export default await Env.create(new URL('../', import.meta.url), {
   |----------------------------------------------------------
   */
   DRIVE_DISK: Env.schema.enum(['fs'] as const),
+
+  /*
+  |----------------------------------------------------------
+  | Reportes por canal: desde qué fecha (AAAA-MM-DD) el canal del turno es
+  | lo que eligió el operador. Se fija al desplegar la corrección del
+  | desplegable "¿Cómo se enteró de nosotros?". Sin valor, se avisa siempre.
+  |----------------------------------------------------------
+  */
+  CANAL_CONFIABLE_DESDE: Env.schema.string.optional(),
 })
