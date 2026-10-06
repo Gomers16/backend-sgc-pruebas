@@ -1513,8 +1513,10 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       cantidad: formatNumPdf(c.cantidad),
       total: formatPesoPdf(c.total_descuentos),
       tiposUsados: formatNumPdf(c.tipos_usados),
-      pct: formatPctPdf(c.porcentaje),
-    }))
+      pct: c.es_informativa ? '—' : formatPctPdf(c.porcentaje),
+    })),
+    null,
+    siIndicesInformativos(filasDescuentosCanal)
   )
   doc.moveDown(0.8)
   siDibujarSubtitulo(doc, 'Por Autorizador (Top 15 por monto)')
@@ -2723,14 +2725,22 @@ export default class ReportesAdministrativosController {
       .countDistinct('ft.descuento_id as tipos_usados')
       .groupByRaw(subgrupoCanalSql())) as any[]
 
-    // "Tipos usados" es un conteo de distintos: el de la fila Asesor no es
-    // la suma de sus subcanales, se cuenta aparte.
-    const asesorTipos = (await whereCanalReporte(
-      joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin)),
-      'ASESOR'
-    )
-      .countDistinct('ft.descuento_id as tipos_usados')
-      .first()) as any
+    // "Tipos usados" es un conteo de distintos: el de las filas que juntan
+    // varios subgrupos (Asesor, Asesor comercial) no es la suma, se cuenta aparte.
+    const tiposDistintos = async (canal: string) => {
+      const r = (await whereCanalReporte(
+        joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin)),
+        canal
+      )
+        .countDistinct('ft.descuento_id as tipos_usados')
+        .first()) as any
+      return Number(r?.tipos_usados) || 0
+    }
+    const tiposAparte: Record<string, number> = {
+      ASESOR: await tiposDistintos('ASESOR'),
+      ASESOR_COMERCIAL: await tiposDistintos('ASESOR_COMERCIAL'),
+    }
+
 
     type MD = {
       cantidad: number
@@ -2753,8 +2763,8 @@ export default class ReportesAdministrativosController {
       porGrupo,
       () => ({ cantidad: 0, total_descuentos: 0, tipos_usados: 0, porcentaje: 0 }),
       sumarMetricas,
-      (m, canal) =>
-        canal === 'ASESOR' ? { ...m, tipos_usados: Number(asesorTipos?.tipos_usados) || 0 } : m
+      (m, canal) => (canal in tiposAparte ? { ...m, tipos_usados: tiposAparte[canal] } : m),
+      'total_descuentos'
     )
 
     const totales = porCanalBase
@@ -2769,9 +2779,12 @@ export default class ReportesAdministrativosController {
 
     const porCanal = porCanalBase.map((c) => ({
       ...c,
-      porcentaje: totales.total_descuentos
-        ? Math.round((c.total_descuentos / totales.total_descuentos) * 10000) / 100
-        : 0,
+      // La línea informativa no tiene % del total (su % es sobre Asesor comercial).
+      porcentaje: c.es_informativa
+        ? null
+        : totales.total_descuentos
+          ? Math.round((c.total_descuentos / totales.total_descuentos) * 10000) / 100
+          : 0,
     }))
 
     return {
