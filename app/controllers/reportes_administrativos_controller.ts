@@ -22,6 +22,15 @@ import {
 } from '#services/meta_comercial_rtm_service'
 import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
 import {
+  armarFilasCanal,
+  avisoCanal,
+  grupoCanalSql,
+  joinCanalReporte,
+  nombreCanalReporte,
+  sumarMetricas,
+  whereCanalReporte,
+} from '#services/canal_reporte_service'
+import {
   ESTADOS_REPORTE,
   calcularReporteSegundaVez,
   construirExcelReporteSegundaVez,
@@ -898,6 +907,22 @@ const SI_CANAL_LABELS: Record<string, string> = {
 }
 const siNombreCanal = (canal: string) => SI_CANAL_LABELS[canal] ?? canal
 
+/** Nombre de una fila por canal (canal_reporte_service); los subcanales de Asesor van sangrados. */
+const siNombreFilaCanal = (c: { nombre: string; es_subcanal: boolean }) =>
+  c.es_subcanal ? `    · ${c.nombre}` : c.nombre
+
+/** Aviso de fecha confiable del desglose por canal (si el rango empieza antes). */
+function siDibujarAvisoCanal(doc: any, aviso: { aplica: boolean; mensaje: string | null }) {
+  if (!aviso.aplica || !aviso.mensaje) return
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor('#b45309')
+    .text(`Aviso: ${aviso.mensaje}`, SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
+  doc.fillColor('#000000')
+  doc.moveDown(0.4)
+}
+
 const SI_CANALES_CANONICOS = ['FACHADA', 'ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELEMERCADEO', 'REDES']
 
 /**
@@ -1205,13 +1230,8 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     'Vehículos facturados e ingresos por canal de captación (RTM, estado CONFIRMADA), comparado contra el período inmediatamente anterior de igual duración. Fuente: facturacion_tickets.'
   )
   siDibujarReconciliacionRtm(doc, datos.reconciliacionRtm)
-  const filasIngresosCanal = siCompletarCanales(datos.ingresosCanal.por_canal, (canal) => ({
-    canal,
-    cantidad: 0,
-    total_bruto: 0,
-    total_neto: 0,
-    promedio_ticket: 0,
-  }))
+  siDibujarAvisoCanal(doc, datos.ingresosCanalAnterior.aviso_canal)
+  const filasIngresosCanal = datos.ingresosCanal.por_canal
   const canalAnteriorMap = new Map(datos.ingresosCanalAnterior.por_canal.map((c) => [c.canal, c]))
   doc
     .font('Helvetica-Oblique')
@@ -1244,7 +1264,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
           ? Math.round((c.total_bruto / datos.ingresosCanal.totales.total_bruto) * 10000) / 100
           : 0
         return {
-          canal: siNombreCanal(c.canal),
+          canal: siNombreFilaCanal(c),
           vehiculos: formatNumPdf(c.cantidad),
           totalBruto: formatPesoPdf(c.total_bruto),
           totalNeto: formatPesoPdf(c.total_neto),
@@ -1657,6 +1677,20 @@ export default class ReportesAdministrativosController {
     return await this.computeIngresosPorCanal(fechaInicio, fechaFin)
   }
 
+  /**
+   * Tickets de Ingresos por canal: lo comparten el resumen y su detalle
+   * (detallePorCanal) para que el detalle sume lo mismo que su fila.
+   */
+  private baseIngresosPorCanal(fechaInicio: string, fechaFin: string) {
+    return Database.from('facturacion_tickets as ft')
+      .join('turnos_rtms as t', 't.id', 'ft.turno_id')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .where('t.estado', 'finalizado')
+      .whereRaw("t.placa NOT LIKE 'TST%'")
+      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+  }
+
   /** Cálculo compartido por ingresosPorCanal() y el Súper Informe. */
   private async computeIngresosPorCanal(fechaInicio: string, fechaFin: string) {
     // JOIN a turnos_rtms + estado='finalizado' + placa NOT LIKE 'TST%':
@@ -1664,41 +1698,54 @@ export default class ReportesAdministrativosController {
     // computeReconciliacionFacturacionRtm() — sin esto se contaban
     // tickets CONFIRMADA de turnos cancelados/activos (ver diagnóstico
     // de reconciliación RTM, julio 2026: turnos 57168/57349/57618).
-    const rows = (await Database.from('facturacion_tickets as ft')
-      .join('turnos_rtms as t', 't.id', 'ft.turno_id')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .where('t.estado', 'finalizado')
-      .whereRaw("t.placa NOT LIKE 'TST%'")
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"))
+    // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
+    const rows = (await joinCanalReporte(
+      this.baseIngresosPorCanal(fechaInicio, fechaFin),
+      { unirTurno: false }
+    )
+      .select(Database.raw(`${grupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
       .sum('ft.subtotal as total_neto')
-      .avg('ft.total as promedio_ticket')
-      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
-      .orderBy('total_bruto', 'desc')) as any[]
+      .groupByRaw(grupoCanalSql())) as any[]
 
-    const porCanal = rows.map((r) => ({
-      canal: r.captacion_canal,
-      cantidad: Number(r.cantidad),
-      total_bruto: Number(r.total_bruto) || 0,
-      total_neto: Number(r.total_neto) || 0,
-      promedio_ticket: Number(r.promedio_ticket) || 0,
-    }))
-
-    const totales = porCanal.reduce(
-      (acc, r) => ({
-        cantidad: acc.cantidad + r.cantidad,
-        total_bruto: acc.total_bruto + r.total_bruto,
-        total_neto: acc.total_neto + r.total_neto,
-      }),
-      { cantidad: 0, total_bruto: 0, total_neto: 0 }
+    type M = { cantidad: number; total_bruto: number; total_neto: number; promedio_ticket: number }
+    const porGrupo = new Map<string, M>(
+      rows.map((r) => [
+        r.grupo,
+        {
+          cantidad: Number(r.cantidad),
+          total_bruto: Number(r.total_bruto) || 0,
+          total_neto: Number(r.total_neto) || 0,
+          promedio_ticket: 0,
+        },
+      ])
     )
+    const porCanal = armarFilasCanal<M>(
+      porGrupo,
+      () => ({ cantidad: 0, total_bruto: 0, total_neto: 0, promedio_ticket: 0 }),
+      sumarMetricas,
+      (m) => ({
+        ...m,
+        promedio_ticket: m.cantidad ? Math.round((m.total_bruto / m.cantidad) * 100) / 100 : 0,
+      })
+    )
+
+    const totales = porCanal
+      .filter((r) => !r.es_subcanal)
+      .reduce(
+        (acc, r) => ({
+          cantidad: acc.cantidad + r.cantidad,
+          total_bruto: acc.total_bruto + r.total_bruto,
+          total_neto: acc.total_neto + r.total_neto,
+        }),
+        { cantidad: 0, total_bruto: 0, total_neto: 0 }
+      )
 
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
+      aviso_canal: avisoCanal(fechaInicio),
       por_canal: porCanal,
       totales: {
         canal: 'TOTAL',
@@ -2189,19 +2236,12 @@ export default class ReportesAdministrativosController {
     const canal = request.input('canal') as string | undefined
     if (!canal) return response.badRequest({ message: 'canal es requerido' })
 
-    const rows = (await Database.from('facturacion_tickets as ft')
-      .leftJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
-      .leftJoin('clientes as c', 'c.id', 't.cliente_id')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .where((q) => {
-        if (canal === 'FACHADA') {
-          q.where('ft.captacion_canal', 'FACHADA').orWhereNull('ft.captacion_canal')
-        } else {
-          q.where('ft.captacion_canal', canal)
-        }
-      })
+    // Mismos tickets que el resumen (turno finalizado, sin placas TST) y el
+    // mismo canal: el detalle suma lo mismo que su fila.
+    const base = joinCanalReporte(this.baseIngresosPorCanal(fechaInicio, fechaFin), {
+      unirTurno: false,
+    }).leftJoin('clientes as c', 'c.id', 't.cliente_id')
+    const rows = (await whereCanalReporte(base, canal)
       .select(
         'ft.placa',
         'ft.captacion_canal',
@@ -2235,6 +2275,7 @@ export default class ReportesAdministrativosController {
 
     return {
       canal,
+      nombre: nombreCanalReporte(canal),
       total_vehiculos: detalle.length,
       total_bruto: totalBruto,
       detalle,
