@@ -908,16 +908,11 @@ function siDibujarPortada(
   doc.fillColor('#000000')
 }
 
-const SI_CANAL_LABELS: Record<string, string> = {
-  FACHADA: 'Fachada',
-  ASESOR_COMERCIAL: 'Asesor Comercial',
-  ASESOR_CONVENIO: 'Asesor Convenio',
-  TELEMERCADEO: 'Telemercadeo',
-  REDES: 'Redes / Marketing Digital',
-}
-const siNombreCanal = (canal: string) => SI_CANAL_LABELS[canal] ?? canal
-
-/** Nombre de una fila por canal (canal_reporte_service); los subcanales de Asesor van sangrados. */
+/**
+ * Nombre de una fila por canal (canal_reporte_service: las tablas ya traen
+ * los 5 canales en orden fijo, con ceros); los subcanales de Asesor van
+ * sangrados.
+ */
 const siNombreFilaCanal = (c: { nombre: string; es_subcanal: boolean }) =>
   c.es_subcanal ? `    · ${c.nombre}` : c.nombre
 
@@ -931,19 +926,6 @@ function siDibujarAvisoCanal(doc: any, aviso: { aplica: boolean; mensaje: string
     .text(`Aviso: ${aviso.mensaje}`, SI_MARGEN_X, doc.y, { width: SI_ANCHO_UTIL })
   doc.fillColor('#000000')
   doc.moveDown(0.4)
-}
-
-const SI_CANALES_CANONICOS = ['FACHADA', 'ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELEMERCADEO', 'REDES']
-
-/**
- * Completa una tabla "por canal" para que SIEMPRE aparezcan los 5 canales
- * canónicos, aunque no tengan datos en el rango (fila en ceros) — pedido
- * explícito para el Súper Informe. No afecta los reportes individuales en
- * pantalla (esos solo muestran los canales que sí tienen datos).
- */
-function siCompletarCanales<T extends { canal: string }>(rows: T[], filaVacia: (canal: string) => T): T[] {
-  const porCanal = new Map(rows.map((r) => [r.canal, r]))
-  return SI_CANALES_CANONICOS.map((canal) => porCanal.get(canal) ?? filaVacia(canal))
 }
 
 /**
