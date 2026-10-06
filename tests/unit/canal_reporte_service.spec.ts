@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import {
   armarFilasCanal,
   avisoCanal,
+  filasQueSuman,
   nombreCanalReporte,
   normalizarCanalReporte,
   sumarMetricas,
@@ -11,28 +12,55 @@ type M = { cantidad: number; total: number }
 const vacia = (): M => ({ cantidad: 0, total: 0 })
 
 test.group('canal_reporte_service', () => {
-  test('filas en orden fijo con ceros; Asesor = suma de Comercial + Convenio', ({ assert }) => {
+  test('filas en orden fijo con ceros; Asesor = Asesor comercial + Asesor convenio; la línea por convenio no suma', ({
+    assert,
+  }) => {
     const filas = armarFilasCanal<M>(
       new Map([
         ['TELE', { cantidad: 2, total: 20 }],
         ['ASESOR_COMERCIAL', { cantidad: 1, total: 10 }],
+        ['ASESOR_COMERCIAL_CONVENIO', { cantidad: 4, total: 30 }],
         ['ASESOR_CONVENIO', { cantidad: 3, total: 30 }],
       ]),
       vacia,
-      sumarMetricas
+      sumarMetricas,
+      (m) => m,
+      'total'
     )
     assert.deepEqual(
-      filas.map((f) => [f.canal, f.nombre, f.es_subcanal, f.cantidad]),
+      filas.map((f) => [f.canal, f.nombre, f.es_subcanal, f.es_informativa, f.cantidad]),
       [
-        ['FACHADA', 'Fachada', false, 0],
-        ['REDES', 'Redes Sociales', false, 0],
-        ['TELE', 'Call Center', false, 2],
-        ['ASESOR', 'Asesor', false, 4],
-        ['ASESOR_COMERCIAL', 'Comercial', true, 1],
-        ['ASESOR_CONVENIO', 'Convenio', true, 3],
-        ['GOOGLE_ADS', 'Google ADS', false, 0],
+        ['FACHADA', 'Fachada', false, false, 0],
+        ['REDES', 'Redes Sociales', false, false, 0],
+        ['TELE', 'Call Center', false, false, 2],
+        ['ASESOR', 'Asesor', false, false, 8],
+        ['ASESOR_COMERCIAL', 'Asesor comercial', true, false, 5],
+        ['ASESOR_COMERCIAL_CONVENIO', 'de los cuales, por convenio', true, true, 4],
+        ['ASESOR_CONVENIO', 'Asesor convenio', true, false, 3],
+        ['GOOGLE_ADS', 'Google ADS', false, false, 0],
       ]
     )
+    // 30 de 40 de Asesor comercial.
+    assert.equal(filas[5].porcentaje_sobre_asesor_comercial, 75)
+    // Solo las filas sin subcanal suman: 2 + 8.
+    assert.equal(
+      filasQueSuman(filas).reduce((a, f) => a + f.cantidad, 0),
+      10
+    )
+  })
+
+  test('la línea por convenio no tiene % del total (null)', ({ assert }) => {
+    const filas = armarFilasCanal<{ cantidad: number; porcentaje: number }>(
+      new Map([['ASESOR_COMERCIAL_CONVENIO', { cantidad: 1, porcentaje: 0 }]]),
+      () => ({ cantidad: 0, porcentaje: 0 }),
+      sumarMetricas,
+      (m) => ({ ...m, porcentaje: 50 }),
+      'cantidad'
+    )
+    const inf = filas.find((f) => f.es_informativa)!
+    assert.isNull(inf.porcentaje)
+    assert.equal(inf.porcentaje_sobre_asesor_comercial, 100)
+    assert.equal(filas.find((f) => f.canal === 'ASESOR_COMERCIAL')!.porcentaje, 50)
   })
 
   test('"Asesor (sin detalle)" solo aparece si tiene datos y suma en Asesor', ({ assert }) => {

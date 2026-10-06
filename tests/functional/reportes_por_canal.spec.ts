@@ -1,6 +1,7 @@
 import { test } from '@japa/runner'
 import { DateTime } from 'luxon'
 import { randomUUID } from 'node:crypto'
+import ExcelJS from 'exceljs'
 import Database from '@adonisjs/lucid/services/db'
 import Usuario from '#models/usuario'
 import TurnoRtm from '#models/turno_rtm'
@@ -10,8 +11,10 @@ import AgenteCaptacion from '#models/agente_captacion'
 // Reportes por canal = "¿Cómo se enteró de nosotros?" del turno
 // (canal_reporte_service). Siembra un caso por canal en un día aislado
 // (2031) y comprueba por HTTP: reparto nuevo, totales iguales al método
-// anterior, detalles que suman lo mismo que su fila, segunda vez excluida.
-// Placas GZC9xx (no TST: los reportes excluyen TST). Limpieza completa.
+// anterior, detalles que suman lo mismo que su fila, segunda vez excluida y
+// la línea informativa "de los cuales, por convenio" (solo comerciales con
+// convenio; no suma). Placas GZC9xx (no TST: los reportes excluyen TST).
+// Limpieza completa.
 
 const DIA = '2031-03-14'
 const DIA_SV = '2031-03-21'
@@ -36,10 +39,15 @@ const P = {
   ACTIVO: 'GZC914',
   SV_ORIGEN: 'GZC915',
   SV: 'GZC916',
+  COMERCIAL_CONV: 'GZC917',
+  COMERCIAL_CONV_NOMBRE: 'GZC918',
+  FACHADA_CONV: 'GZC919',
+  ASESOR_CONV_CONV: 'GZC920',
+  SIN_DETALLE_CONV: 'GZC921',
 }
 const PLACAS = Object.values(P)
 
-/** Canal esperado por placa con el método nuevo (nivel subcanal). */
+/** Subgrupo esperado por placa con el método nuevo (ASESOR_COMERCIAL_CONVENIO = la línea informativa). */
 const ESPERADO: Record<string, string> = {
   [P.FACHADA]: 'FACHADA',
   [P.REDES]: 'REDES',
@@ -55,6 +63,14 @@ const ESPERADO: Record<string, string> = {
   [P.NULL_CONVENIO]: 'ASESOR_CONVENIO',
   [P.SIN_TURNO]: 'REDES',
   [P.ACTIVO]: 'FACHADA',
+  [P.COMERCIAL_CONV]: 'ASESOR_COMERCIAL_CONVENIO',
+  [P.COMERCIAL_CONV_NOMBRE]: 'ASESOR_COMERCIAL_CONVENIO',
+  // Fachada elegida con dateo de comercial con convenio: se respeta Fachada.
+  [P.FACHADA_CONV]: 'FACHADA',
+  // Asesor convenio con convenio: su fila, no la línea informativa.
+  [P.ASESOR_CONV_CONV]: 'ASESOR_CONVENIO',
+  // Sin detalle (no se sabe si es comercial): fuera de la línea aunque traiga convenio.
+  [P.SIN_DETALLE_CONV]: 'ASESOR_SIN_DETALLE',
 }
 
 test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
@@ -65,6 +81,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
   let agenteConvenio: AgenteCaptacion
   let agenteComercial: AgenteCaptacion
   let descuentoId: number
+  let convenioId: number
   let numero = 0
   const ticketIds: number[] = []
 
@@ -77,6 +94,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       canal?: string | null
       estado?: string
       dateoCanal?: string
+      dateoConvenio?: boolean
       agenteId?: number | null
       fecha?: string
       esSegundaVez?: boolean
@@ -92,6 +110,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
         placa,
         servicioId: SERVICIO_RTM,
         resultado: 'EXITOSO',
+        convenioId: o.dateoConvenio ? convenioId : null,
       } as any)
       dateoId = d.id
     }
@@ -123,6 +142,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       turnoId: number | null
       captacion?: string | null
       agenteId?: number | null
+      convenioNombre?: string
       total: number
       descuento?: number
       dia?: string
@@ -137,6 +157,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       turno_id: o.turnoId,
       captacion_canal: o.captacion ?? null,
       agente_id: o.agenteId ?? null,
+      convenio_nombre: o.convenioNombre ?? null,
       total: o.total,
       subtotal: Math.round(o.total / 1.19),
       descuento_id: o.descuento ? descuentoId : null,
@@ -174,6 +195,8 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     } as any)
     const desc = await Database.from('descuentos').select('id').orderBy('id').first()
     descuentoId = desc.id
+    const conv = await Database.from('convenios').select('id').orderBy('id').first()
+    convenioId = conv.id
 
     // Un caso por canal (turno con su ticket); montos distintos para
     // poder distinguir cada fila.
@@ -225,6 +248,34 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     // Turno no finalizado: fuera de Ingresos/Retención, dentro de Liquidación.
     await t(P.ACTIVO, { canal: 'FACHADA', estado: 'activo' }, { total: 230_000 })
 
+    // Línea "de los cuales, por convenio" (solo comerciales con convenio).
+    await t(
+      P.COMERCIAL_CONV,
+      { canal: 'ASESOR', dateoCanal: 'ASESOR_COMERCIAL', dateoConvenio: true },
+      { captacion: 'ASESOR_COMERCIAL', total: 240_000, descuento: 4_000 }
+    )
+    // Sin dateo vinculado: el convenio sale del nombre copiado al ticket.
+    await t(
+      P.COMERCIAL_CONV_NOMBRE,
+      { canal: 'ASESOR', agenteId: agenteComercial.id },
+      { convenioNombre: 'CONVENIO GZC', total: 250_000 }
+    )
+    await t(
+      P.FACHADA_CONV,
+      { canal: 'FACHADA', dateoCanal: 'ASESOR_COMERCIAL', dateoConvenio: true },
+      { captacion: 'ASESOR_COMERCIAL', convenioNombre: 'CONVENIO GZC', total: 260_000 }
+    )
+    await t(
+      P.ASESOR_CONV_CONV,
+      { canal: 'ASESOR', dateoCanal: 'ASESOR_CONVENIO', dateoConvenio: true },
+      { captacion: 'ASESOR_CONVENIO', convenioNombre: 'CONVENIO GZC', total: 270_000 }
+    )
+    await t(
+      P.SIN_DETALLE_CONV,
+      { canal: 'ASESOR' },
+      { convenioNombre: 'CONVENIO GZC', total: 280_000 }
+    )
+
     // Segunda vez con ticket (la app no lo permite: se fuerza en BD) en otro día.
     const origen = await turno(P.SV_ORIGEN, { canal: 'GOOGLE_ADS', fecha: DIA_SV })
     await ticket(P.SV_ORIGEN, { turnoId: origen.id, total: 300_000, dia: DIA_SV })
@@ -263,6 +314,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     'TELE',
     'ASESOR',
     'ASESOR_COMERCIAL',
+    'ASESOR_COMERCIAL_CONVENIO',
     'ASESOR_CONVENIO',
     'ASESOR_SIN_DETALLE',
     'GOOGLE_ADS',
@@ -272,8 +324,9 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     'Redes Sociales',
     'Call Center',
     'Asesor',
-    'Comercial',
-    'Convenio',
+    'Asesor comercial',
+    'de los cuales, por convenio',
+    'Asesor convenio',
     'Asesor (sin detalle)',
     'Google ADS',
   ]
@@ -294,10 +347,24 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       e.v += Number(f[campo])
       m.set(c, e)
     }
-    const asesor = ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'ASESOR_SIN_DETALLE']
-      .map((s) => m.get(s) ?? { n: 0, v: 0 })
-      .reduce((a, b) => ({ n: a.n + b.n, v: a.v + b.v }), { n: 0, v: 0 })
-    m.set('ASESOR', asesor)
+    const suma = (claves: string[]) =>
+      claves
+        .map((s) => m.get(s) ?? { n: 0, v: 0 })
+        .reduce((a, b) => ({ n: a.n + b.n, v: a.v + b.v }), { n: 0, v: 0 })
+    const comercialSin = m.get('ASESOR_COMERCIAL') ?? { n: 0, v: 0 }
+    m.set(
+      'ASESOR',
+      suma([
+        'ASESOR_COMERCIAL',
+        'ASESOR_COMERCIAL_CONVENIO',
+        'ASESOR_CONVENIO',
+        'ASESOR_SIN_DETALLE',
+      ])
+    )
+    m.set('ASESOR_COMERCIAL', {
+      n: comercialSin.n + (m.get('ASESOR_COMERCIAL_CONVENIO')?.n ?? 0),
+      v: comercialSin.v + (m.get('ASESOR_COMERCIAL_CONVENIO')?.v ?? 0),
+    })
     return m
   }
 
@@ -331,8 +398,27 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     assert.equal(fila('GOOGLE_ADS').cantidad, 2)
     assert.equal(fila('REDES').cantidad, 1)
     assert.equal(fila('TELE').cantidad, 2)
-    assert.equal(fila('FACHADA').cantidad, 2)
+    // Fachada elegida con dateo de comercial con convenio: sigue en Fachada.
+    assert.equal(fila('FACHADA').cantidad, 3)
     assert.isFalse(body.aviso_canal.aplica)
+
+    // Línea informativa: dentro de Asesor comercial, no suma.
+    const inf = fila('ASESOR_COMERCIAL_CONVENIO')
+    assert.isTrue(inf.es_informativa)
+    assert.isTrue(inf.es_subcanal)
+    assert.equal(inf.cantidad, 2)
+    assert.equal(inf.total_bruto, 490_000)
+    // 490.000 de 630.000 de Asesor comercial (140.000 + 240.000 + 250.000).
+    assert.equal(fila('ASESOR_COMERCIAL').total_bruto, 630_000)
+    assert.equal(inf.porcentaje_sobre_asesor_comercial, 77.78)
+    const asesor = fila('ASESOR')
+    const subs = ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'ASESOR_SIN_DETALLE']
+    assert.equal(
+      asesor.cantidad,
+      subs.reduce((a, c) => a + (fila(c)?.cantidad ?? 0), 0)
+    )
+    for (const r of body.por_canal)
+      assert.equal(r.es_informativa, r.canal === 'ASESOR_COMERCIAL_CONVENIO')
   })
 
   test('Ingresos por canal: totales iguales al método anterior; cada detalle suma lo mismo que su fila', async ({
@@ -416,15 +502,27 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       body.por_canal.map((r: any) => r.canal),
       ORDEN.filter((c) => c !== 'ASESOR_SIN_DETALLE')
     )
-    const conDescuento = [P.FACHADA, P.TELE, P.GADS, P.ASESOR_COMERCIAL, P.SIN_TURNO]
+    const conDescuento = [
+      P.FACHADA,
+      P.TELE,
+      P.GADS,
+      P.ASESOR_COMERCIAL,
+      P.SIN_TURNO,
+      P.COMERCIAL_CONV,
+    ]
     const esperado = await esperadoPorCanal(conDescuento, 'descuento_monto_aplicado')
     for (const r of body.por_canal) {
       const e = esperado.get(r.canal) ?? { n: 0, v: 0 }
       assert.equal(r.cantidad, e.n, `descuentos ${r.canal}`)
       assert.equal(r.total_descuentos, e.v, `descuentos monto ${r.canal}`)
     }
-    assert.equal(body.totales.cantidad, 5)
-    assert.equal(body.totales.total_descuentos, 35_000)
+    assert.equal(body.totales.cantidad, 6)
+    assert.equal(body.totales.total_descuentos, 39_000)
+    const inf = body.por_canal.find((r: any) => r.canal === 'ASESOR_COMERCIAL_CONVENIO')
+    assert.isTrue(inf.es_informativa)
+    assert.isNull(inf.porcentaje)
+    assert.equal(inf.tipos_usados, 1)
+    assert.equal(inf.porcentaje_sobre_asesor_comercial, 33.33)
     for (const r of body.por_canal) {
       const d = await get(client, '/detalle-descuentos', { ...rango(), canal: r.canal })
       d.assertStatus(200)
@@ -482,6 +580,38 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
       enCanal.map((m: any) => m.canal),
       ['GOOGLE_ADS']
     )
+
+    // Comercial con convenio: la línea informativa y su fila Asesor comercial.
+    const buscarConv = await get(client, '/liquidacion-rtm/buscar-placa', {
+      ...rango(),
+      placa: P.COMERCIAL_CONV,
+    })
+    const enCanalConv = (buscarConv.body().matches ?? []).filter((m: any) => m.seccion === 'canal')
+    assert.sameMembers(
+      enCanalConv.map((m: any) => m.canal),
+      ['ASESOR_COMERCIAL_CONVENIO', 'ASESOR_COMERCIAL']
+    )
+
+    // Excel: la línea informativa marcada y sin % del total.
+    const qs = new URLSearchParams(rango())
+    const r = await fetch(
+      `http://${process.env.HOST}:${process.env.PORT}/api/reportes-admin/liquidacion-rtm/excel?${qs}`,
+      { headers: auth() }
+    )
+    assert.equal(r.status, 200)
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load((await r.arrayBuffer()) as any)
+    const filas: string[][] = []
+    wb.worksheets[0].eachRow((row) => {
+      filas.push((row.values as any[]).slice(1).map((v) => String(v ?? '')))
+    })
+    const filaInf = filas.find((f) => f[0].includes('de los cuales, por convenio'))
+    assert.exists(filaInf)
+    assert.include(filaInf![0], '(informativa, no suma)')
+    assert.equal(filaInf![1], '2')
+    assert.include(filaInf![3], '% de Asesor comercial')
+    assert.isTrue(filas.some((f) => f[0].trim() === '· Asesor comercial'))
+    assert.isTrue(filas.some((f) => f[0].trim() === '· Asesor convenio'))
   })
 
   test('segunda vez: su ticket (forzado en BD) no entra en ningún reporte por canal', async ({
