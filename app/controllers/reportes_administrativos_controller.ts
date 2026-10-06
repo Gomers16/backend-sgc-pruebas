@@ -1496,13 +1496,8 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   }
   doc.moveDown(0.8)
   siDibujarSubtitulo(doc, 'Por Canal')
-  const filasDescuentosCanal = siCompletarCanales(datos.descuentosCanal.por_canal, (canal) => ({
-    canal,
-    cantidad: 0,
-    total_descuentos: 0,
-    tipos_usados: 0,
-    porcentaje: 0,
-  }))
+  siDibujarAvisoCanal(doc, datos.descuentosCanal.aviso_canal)
+  const filasDescuentosCanal = datos.descuentosCanal.por_canal
   await siDibujarTabla(
     doc,
     [
@@ -1513,7 +1508,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       { label: '% del Total', property: 'pct', width: 132, align: 'right' },
     ],
     filasDescuentosCanal.map((c) => ({
-      canal: siNombreCanal(c.canal),
+      canal: siNombreFilaCanal(c),
       cantidad: formatNumPdf(c.cantidad),
       total: formatPesoPdf(c.total_descuentos),
       tiposUsados: formatNumPdf(c.tipos_usados),
@@ -2701,29 +2696,56 @@ export default class ReportesAdministrativosController {
     return await this.computeDescuentosPorCanal(fechaInicio, fechaFin)
   }
 
-  /** Cálculo compartido por descuentosPorCanal() y el Súper Informe. */
-  private async computeDescuentosPorCanal(fechaInicio: string, fechaFin: string) {
-    const rows = (await Database.from('facturacion_tickets as ft')
+  /** Tickets con descuento: los comparten el resumen por canal y detalleDescuentos. */
+  private baseDescuentosPorCanal(fechaInicio: string, fechaFin: string) {
+    return Database.from('facturacion_tickets as ft')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
       .whereNotNull('ft.descuento_id')
       .where('ft.descuento_monto_aplicado', '>', 0)
       .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
+  }
+
+  /** Cálculo compartido por descuentosPorCanal() y el Súper Informe. */
+  private async computeDescuentosPorCanal(fechaInicio: string, fechaFin: string) {
+    // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
+    const rows = (await joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin))
+      .select(Database.raw(`${grupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.descuento_monto_aplicado as total_descuentos')
       .countDistinct('ft.descuento_id as tipos_usados')
-      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
-      .orderBy('cantidad', 'desc')) as any[]
+      .groupByRaw(grupoCanalSql())) as any[]
 
-    const porCanalBase = rows.map((r) => ({
-      canal: r.canal,
-      cantidad: Number(r.cantidad),
-      total_descuentos: Number(r.total_descuentos) || 0,
-      tipos_usados: Number(r.tipos_usados),
-    }))
+    // "Tipos usados" es un conteo de distintos: el de la fila Asesor no es
+    // la suma de sus subcanales, se cuenta aparte.
+    const asesorTipos = (await whereCanalReporte(
+      joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin)),
+      'ASESOR'
+    )
+      .countDistinct('ft.descuento_id as tipos_usados')
+      .first()) as any
 
-    const totales = porCanalBase.reduce(
+    type MD = { cantidad: number; total_descuentos: number; tipos_usados: number; porcentaje: number }
+    const porGrupo = new Map<string, MD>(
+      rows.map((r) => [
+        r.grupo,
+        {
+          cantidad: Number(r.cantidad),
+          total_descuentos: Number(r.total_descuentos) || 0,
+          tipos_usados: Number(r.tipos_usados),
+          porcentaje: 0,
+        },
+      ])
+    )
+    const porCanalBase = armarFilasCanal<MD>(
+      porGrupo,
+      () => ({ cantidad: 0, total_descuentos: 0, tipos_usados: 0, porcentaje: 0 }),
+      sumarMetricas,
+      (m, canal) =>
+        canal === 'ASESOR' ? { ...m, tipos_usados: Number(asesorTipos?.tipos_usados) || 0 } : m
+    )
+
+    const totales = porCanalBase.filter((c) => !c.es_subcanal).reduce(
       (acc, r) => ({
         cantidad: acc.cantidad + r.cantidad,
         total_descuentos: acc.total_descuentos + r.total_descuentos,
@@ -2741,6 +2763,7 @@ export default class ReportesAdministrativosController {
     return {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
+      aviso_canal: avisoCanal(fechaInicio),
       por_canal: porCanal,
       totales,
     }
@@ -2807,24 +2830,20 @@ export default class ReportesAdministrativosController {
     const tipo = (request.input('tipo') as string | undefined) || null
     const canal = (request.input('canal') as string | undefined) || null
 
-    const query = Database.from('facturacion_tickets as ft')
+    // Misma base y canal que el resumen por canal (canal_reporte_service).
+    const query = joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin))
       .join('descuentos as d', 'd.id', 'ft.descuento_id')
       .leftJoin('usuarios as u', 'u.id', 'ft.autorizado_por_id')
-      .leftJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereNotNull('ft.descuento_id')
-      .where('ft.descuento_monto_aplicado', '>', 0)
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
 
     if (tipo) query.where('d.codigo', tipo)
-    if (canal) query.where('ft.captacion_canal', canal)
+    if (canal) whereCanalReporte(query, canal)
 
     const rows = (await query
       .select(
         'ft.placa',
         Database.raw('DATE(ft.created_at) as fecha'),
+        Database.raw(`${grupoCanalSql()} as canal`),
         'ft.captacion_canal',
         'ft.tipo_vehiculo',
         'ft.total',
@@ -2844,6 +2863,8 @@ export default class ReportesAdministrativosController {
     const detalle = rows.map((r) => ({
       placa: r.placa,
       fecha: r.fecha,
+      canal: r.canal,
+      canal_nombre: nombreCanalReporte(r.canal),
       captacion_canal: r.captacion_canal,
       tipo_vehiculo: r.tipo_vehiculo ?? null,
       total: Number(r.total) || 0,
