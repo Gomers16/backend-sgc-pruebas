@@ -22,6 +22,7 @@ import {
 } from '#services/meta_comercial_rtm_service'
 import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
 import {
+  COMERCIAL_POR_CONVENIO,
   armarFilasCanal,
   avisoCanal,
   subgrupoCanalSql,
@@ -3378,7 +3379,8 @@ export default class ReportesAdministrativosController {
       (m) => ({
         ...m,
         porcentaje: totalMonto > 0 ? Number(((m.monto / totalMonto) * 100).toFixed(2)) : 0,
-      })
+      }),
+      'monto'
     )
 
     return { porCanal, totalMonto, avisoCanal: avisoCanal(fechaInicio) }
@@ -3749,6 +3751,9 @@ export default class ReportesAdministrativosController {
       .distinct()) as any[]
     for (const r of filasCanal) {
       matches.push({ seccion: 'canal', canal: r.canal })
+      if (r.canal === COMERCIAL_POR_CONVENIO) {
+        matches.push({ seccion: 'canal', canal: 'ASESOR_COMERCIAL' })
+      }
     }
 
     const filasDescuento = (await Database.from('facturacion_tickets as ft')
@@ -4504,9 +4509,20 @@ export default class ReportesAdministrativosController {
         color: { argb: 'FFB45309' },
       }
     }
-    data.por_canal.forEach((c) =>
+    data.por_canal.forEach((c) => {
+      if (c.es_informativa) {
+        // Ya está dentro de Asesor comercial: no suma. % sobre Asesor comercial.
+        const row = ws.addRow([
+          `        ${c.nombre} (informativa, no suma)`,
+          c.cantidad,
+          c.monto,
+          `— (${c.porcentaje_sobre_asesor_comercial ?? 0}% de Asesor comercial)`,
+        ])
+        row.font = { italic: true, color: { argb: 'FF666666' } }
+        return
+      }
       ws.addRow([c.es_subcanal ? `    · ${c.nombre}` : c.nombre, c.cantidad, c.monto, c.porcentaje])
-    )
+    })
     ws.addRow([])
 
     seccion('Asesores Comerciales')
