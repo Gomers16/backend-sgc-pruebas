@@ -1333,8 +1333,7 @@ export default class TurnosRtmController {
         if (!ultimoIntento) throw new ColisionNumeracionTurno()
         return response.conflict({
           code: 'TURNO_CODIGO_DUPLICADO',
-          message:
-            'Se creó otro turno del mismo servicio en este mismo segundo. Intenta de nuevo.',
+          message: 'Se creó otro turno del mismo servicio en este mismo segundo. Intenta de nuevo.',
         })
       }
       console.error('Error al crear turno:', error)
