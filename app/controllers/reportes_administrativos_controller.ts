@@ -24,7 +24,7 @@ import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_s
 import {
   armarFilasCanal,
   avisoCanal,
-  grupoCanalSql,
+  subgrupoCanalSql,
   joinCanalReporte,
   nombreCanalReporte,
   sumarMetricas,
@@ -812,7 +812,8 @@ async function siDibujarTabla(
   doc: any,
   headers: { label: string; property: string; width: number; align?: 'left' | 'right' | 'center' }[],
   filas: Record<string, string | number>[],
-  filaTotalIndex: number | null = null
+  filaTotalIndex: number | null = null,
+  filasInformativas: number[] = []
 ) {
   // pdfkit-table solo lee headerColor/headerOpacity de CADA objeto de
   // columna (dh.headerColor dentro de document.js), no de la opción global
@@ -830,10 +831,11 @@ async function siDibujarTabla(
       prepareHeader: () => doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff'),
       prepareRow: (_row: any, _col: number, indexRow: number) => {
         const esTotal = filaTotalIndex !== null && indexRow === filaTotalIndex
+        const esInformativa = filasInformativas.includes(indexRow)
         doc
-          .font(esTotal ? 'Helvetica-Bold' : 'Helvetica')
+          .font(esTotal ? 'Helvetica-Bold' : esInformativa ? 'Helvetica-Oblique' : 'Helvetica')
           .fontSize(8)
-          .fillColor('#000000')
+          .fillColor(esInformativa ? SI_COLOR_GRIS : '#000000')
       },
       columnSpacing: 4,
       padding: 5,
@@ -911,10 +913,20 @@ function siDibujarPortada(
 /**
  * Nombre de una fila por canal (canal_reporte_service: las tablas ya traen
  * los 5 canales en orden fijo, con ceros); los subcanales de Asesor van
- * sangrados.
+ * sangrados y la línea informativa "de los cuales, por convenio" lleva su %
+ * sobre Asesor comercial (no tiene % del total y no suma).
  */
-const siNombreFilaCanal = (c: { nombre: string; es_subcanal: boolean }) =>
-  c.es_subcanal ? `    · ${c.nombre}` : c.nombre
+const siNombreFilaCanal = (c: {
+  nombre: string
+  es_subcanal: boolean
+  es_informativa?: boolean
+  porcentaje_sobre_asesor_comercial?: number
+}) => {
+  if (c.es_informativa) {
+    return `        ${c.nombre} (${formatPctPdf(c.porcentaje_sobre_asesor_comercial ?? 0)} de Asesor comercial)`
+  }
+  return c.es_subcanal ? `    · ${c.nombre}` : c.nombre
+}
 
 /** Aviso de fecha confiable del desglose por canal (si el rango empieza antes). */
 function siDibujarAvisoCanal(doc: any, aviso: { aplica: boolean; mensaje: string | null }) {
@@ -1682,11 +1694,11 @@ export default class ReportesAdministrativosController {
     const rows = (await joinCanalReporte(this.baseIngresosPorCanal(fechaInicio, fechaFin), {
       unirTurno: false,
     })
-      .select(Database.raw(`${grupoCanalSql()} as grupo`))
+      .select(Database.raw(`${subgrupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
       .sum('ft.subtotal as total_neto')
-      .groupByRaw(grupoCanalSql())) as any[]
+      .groupByRaw(subgrupoCanalSql())) as any[]
 
     type M = { cantidad: number; total_bruto: number; total_neto: number; promedio_ticket: number }
     const porGrupo = new Map<string, M>(
@@ -2354,12 +2366,12 @@ export default class ReportesAdministrativosController {
     // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
     const canalRows = (await joinCanalReporte(baseQuery(), { unirTurno: false })
       .select(
-        Database.raw(`${grupoCanalSql()} as grupo`),
+        Database.raw(`${subgrupoCanalSql()} as grupo`),
         Database.raw(`${CLASIFICACION_SQL} as categoria`)
       )
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
-      .groupByRaw(grupoCanalSql())
+      .groupByRaw(subgrupoCanalSql())
       .groupByRaw(CLASIFICACION_SQL)) as any[]
 
     type MC = {
@@ -2471,7 +2483,7 @@ export default class ReportesAdministrativosController {
       .select(
         'ft.placa',
         Database.raw('DATE(t.fecha) as fecha'),
-        Database.raw(`${grupoCanalSql()} as canal`),
+        Database.raw(`${subgrupoCanalSql()} as canal`),
         Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"),
         'ft.total',
         'ft.subtotal',
@@ -2691,11 +2703,11 @@ export default class ReportesAdministrativosController {
   private async computeDescuentosPorCanal(fechaInicio: string, fechaFin: string) {
     // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
     const rows = (await joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin))
-      .select(Database.raw(`${grupoCanalSql()} as grupo`))
+      .select(Database.raw(`${subgrupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.descuento_monto_aplicado as total_descuentos')
       .countDistinct('ft.descuento_id as tipos_usados')
-      .groupByRaw(grupoCanalSql())) as any[]
+      .groupByRaw(subgrupoCanalSql())) as any[]
 
     // "Tipos usados" es un conteo de distintos: el de la fila Asesor no es
     // la suma de sus subcanales, se cuenta aparte.
@@ -2831,7 +2843,7 @@ export default class ReportesAdministrativosController {
       .select(
         'ft.placa',
         Database.raw('DATE(ft.created_at) as fecha'),
-        Database.raw(`${grupoCanalSql()} as canal`),
+        Database.raw(`${subgrupoCanalSql()} as canal`),
         'ft.captacion_canal',
         'ft.tipo_vehiculo',
         'ft.total',
@@ -3319,10 +3331,10 @@ export default class ReportesAdministrativosController {
   private async buildPorCanalFacturacionRtm(fechaInicio: string, fechaFin: string) {
     // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
     const rows = (await this.baseFacturacionRtmPorCanal(fechaInicio, fechaFin)
-      .select(Database.raw(`${grupoCanalSql()} as grupo`))
+      .select(Database.raw(`${subgrupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.total as monto')
-      .groupByRaw(grupoCanalSql())) as any[]
+      .groupByRaw(subgrupoCanalSql())) as any[]
 
     const totalMonto = rows.reduce((acc, r) => acc + (Number(r.monto) || 0), 0)
 
@@ -3706,7 +3718,7 @@ export default class ReportesAdministrativosController {
     // Fila del "por canal" donde está la placa (subcanal en el caso de Asesor).
     const filasCanal = (await this.baseFacturacionRtmPorCanal(fechaInicio, fechaFin)
       .whereRaw("REPLACE(REPLACE(UPPER(ft.placa), '-', ''), ' ', '') = ?", [placaNorm])
-      .select(Database.raw(`${grupoCanalSql()} as canal`))
+      .select(Database.raw(`${subgrupoCanalSql()} as canal`))
       .distinct()) as any[]
     for (const r of filasCanal) {
       matches.push({ seccion: 'canal', canal: r.canal })
@@ -4413,9 +4425,11 @@ export default class ReportesAdministrativosController {
         canal: string
         nombre: string
         es_subcanal: boolean
+        es_informativa: boolean
         cantidad: number
         monto: number
-        porcentaje: number
+        porcentaje?: number | null
+        porcentaje_sobre_asesor_comercial?: number
       }[]
       comerciales: { asesor_nombre: string; cantidad_vehiculos: number; total_asesor: number; estados: string }[]
       asesores_convenio: {
