@@ -112,6 +112,28 @@ function medioFromCanal(canal: CanalAtrib): MedioEntero {
 
 // ============================================================================
 
+/**
+ * Reintentos de store() cuando el INSERT choca con los índices de numeración
+ * (uq_turno_numero_activo_por_dia_sede / uq_turno_numero_servicio_activo_por_dia_sede)
+ * o cuando dos creaciones concurrentes se bloquean mutuamente (deadlock por
+ * los gap locks del FOR UPDATE sobre el MAX), y cuando dos creaciones del
+ * mismo segundo toman el mismo turno_codigo. Toda la escritura de store()
+ * va por la misma trx, así que tras el rollback repetirlo es seguro.
+ */
+const MAX_INTENTOS_NUMERACION = 3
+
+class ColisionNumeracionTurno extends Error {}
+
+function esColisionNumeracion(error: any): boolean {
+  if (error?.code === 'ER_LOCK_DEADLOCK') return true
+  if (error?.code !== 'ER_DUP_ENTRY') return false
+  const msg = String(error?.sqlMessage ?? error?.message ?? '')
+  return (
+    msg.includes('uq_turno_numero_activo_por_dia_sede') ||
+    msg.includes('uq_turno_numero_servicio_activo_por_dia_sede')
+  )
+}
+
 export default class TurnosRtmController {
   /** 🔥 Lista turnos con filtros Y PAGINACIÓN */
   public async index({ request, response }: HttpContext) {
@@ -437,7 +459,18 @@ export default class TurnosRtmController {
   }
 
   /** Crear turno */
-  public async store({ request, response, auth }: HttpContext) {
+  public async store(ctx: HttpContext) {
+    for (let intento = 1; ; intento++) {
+      try {
+        return await this.crearTurno(ctx, intento >= MAX_INTENTOS_NUMERACION)
+      } catch (error) {
+        if (!(error instanceof ColisionNumeracionTurno)) throw error
+        console.warn(`⚠️ Colisión de numeración al crear turno (intento ${intento}), reintentando`)
+      }
+    }
+  }
+
+  private async crearTurno({ request, response, auth }: HttpContext, ultimoIntento: boolean) {
     const trx = await Database.transaction()
     try {
       const raw = request.only([
@@ -755,7 +788,10 @@ export default class TurnosRtmController {
           .where('sede_id', usuarioCreador.sedeId!)
           .where('fecha', hoyISO)
           .where('turno_numero', '>', 0)
-          .whereIn('estado', ['activo', 'finalizado'])
+          // Sin filtrar por estado: un número > 0 ocupa el índice único
+          // uq_turno_numero_activo_por_dia_sede sea cual sea el estado (p. ej.
+          // un cancelado por PUT o un inactivo no negaron su número), así
+          // que el MAX debe contarlo para no proponer un número ya tomado.
           .max('turno_numero as max')
           .forUpdate()
           .first()
@@ -773,7 +809,6 @@ export default class TurnosRtmController {
           .where('servicio_id', servicio.id)
           .where('fecha', hoyISO)
           .where('turno_numero_servicio', '>', 0)
-          .whereIn('estado', ['activo', 'finalizado'])
           .max('turno_numero_servicio as max')
           .forUpdate()
           .first()
@@ -843,7 +878,18 @@ export default class TurnosRtmController {
       }
 
       const nowBog = DateTime.local().setZone('America/Bogota')
-      const turnoCodigo = `${servicio.codigoServicio}-${nowBog.toFormat('yyyyMMddHHmmss')}`
+      // turno_codigo es único y va al segundo: si otro turno del mismo
+      // servicio ya tomó este segundo se agrega sufijo -2, -3… (formato normal
+      // intacto en el caso común). Una carrera sobre el mismo sufijo cae en
+      // ER_DUP_ENTRY y store() reintenta viendo el ya confirmado.
+      const codigoBase = `${servicio.codigoServicio}-${nowBog.toFormat('yyyyMMddHHmmss')}`
+      const codigosDelSegundo = await trx
+        .from('turnos_rtms')
+        .where('turno_codigo', 'like', `${codigoBase}%`)
+        .count('* as total')
+        .first()
+      const nCodigos = Number(codigosDelSegundo?.total ?? 0)
+      const turnoCodigo = nCodigos === 0 ? codigoBase : `${codigoBase}-${nCodigos + 1}`
 
       let canalAtribucion: CanalAtrib | null = raw.canal ? normalizeCanal(raw.canal) : null
       let agenteCaptacionId: number | null = null
@@ -1269,6 +1315,28 @@ export default class TurnosRtmController {
           message: 'El turno de origen ya tiene una segunda vez activa.',
         })
       }
+      // Número de turno tomado por otra creación concurrente: store() recalcula
+      // y reintenta; agotados los intentos se responde 409 en vez de 500.
+      if (esColisionNumeracion(error)) {
+        if (!ultimoIntento) throw new ColisionNumeracionTurno()
+        console.error('Colisión de numeración persistente al crear turno:', error)
+        return response.conflict({
+          code: 'TURNO_NUMERO_OCUPADO',
+          message:
+            'No se pudo asignar un número de turno libre (varias creaciones simultáneas). Intenta de nuevo.',
+        })
+      }
+      if (
+        error?.code === 'ER_DUP_ENTRY' &&
+        String(error?.sqlMessage ?? error?.message ?? '').includes('turno_codigo')
+      ) {
+        if (!ultimoIntento) throw new ColisionNumeracionTurno()
+        return response.conflict({
+          code: 'TURNO_CODIGO_DUPLICADO',
+          message:
+            'Se creó otro turno del mismo servicio en este mismo segundo. Intenta de nuevo.',
+        })
+      }
       console.error('Error al crear turno:', error)
       return response.internalServerError({
         message: 'Error al crear el turno',
@@ -1612,7 +1680,6 @@ export default class TurnosRtmController {
           .where('servicio_id', servicioIdNext)
           .where('fecha', fechaISO)
           .where('turno_numero_servicio', '>', 0)
-          .whereIn('estado', ['activo', 'finalizado'])
           .whereNot('id', turno.id)
           .max('turno_numero_servicio as max')
           .first()
@@ -2043,7 +2110,6 @@ export default class TurnosRtmController {
           .where('fecha', hoy)
           .andWhere('sede_id', usuarioSolicitante.sedeId)
           .where('turno_numero', '>', 0)
-          .whereIn('estado', ['activo', 'finalizado'])
           .max('turno_numero as max')
           .first()
         siguiente = Number(rowGlobal?.max ?? 0) + 1
@@ -2084,7 +2150,6 @@ export default class TurnosRtmController {
             .andWhere('sede_id', usuarioSolicitante.sedeId)
             .andWhere('servicio_id', sid!)
             .where('turno_numero_servicio', '>', 0)
-            .whereIn('estado', ['activo', 'finalizado'])
             .max('turno_numero_servicio as max')
             .first()
           siguientePorServicio = Number(rowSvc?.max ?? 0) + 1
