@@ -928,6 +928,10 @@ const siNombreFilaCanal = (c: {
   return c.es_subcanal ? `    · ${c.nombre}` : c.nombre
 }
 
+/** Índices de las filas informativas (se dibujan en cursiva gris). */
+const siIndicesInformativos = (filas: { es_informativa?: boolean }[]) =>
+  filas.flatMap((f, i) => (f.es_informativa ? [i] : []))
+
 /** Aviso de fecha confiable del desglose por canal (si el rango empieza antes). */
 function siDibujarAvisoCanal(doc: any, aviso: { aplica: boolean; mensaje: string | null }) {
   if (!aviso.aplica || !aviso.mensaje) return
@@ -1274,7 +1278,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
           totalNeto: formatPesoPdf(c.total_neto),
           promedio: formatPesoPdf(c.promedio_ticket),
           variacion: `${variacion.variacion_abs >= 0 ? '+' : ''}${formatPctPdf(variacion.variacion_pct)}`,
-          pctTotal: formatPctPdf(pctTotal),
+          pctTotal: c.es_informativa ? '—' : formatPctPdf(pctTotal),
         }
       }),
       {
@@ -1292,7 +1296,8 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
         pctTotal: formatPctPdf(100),
       },
     ],
-    filasIngresosCanal.length
+    filasIngresosCanal.length,
+    siIndicesInformativos(filasIngresosCanal)
   )
 
   // ===== 4. Servicios (RTM) =====
@@ -1719,7 +1724,8 @@ export default class ReportesAdministrativosController {
       (m) => ({
         ...m,
         promedio_ticket: m.cantidad ? Math.round((m.total_bruto / m.cantidad) * 100) / 100 : 0,
-      })
+      }),
+      'total_bruto'
     )
 
     const totales = porCanal
