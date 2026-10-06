@@ -131,10 +131,7 @@ export function whereCanalReporte<Q extends { whereRaw: (...args: any[]) => any 
 ): Q {
   const c = normalizarCanalReporte(canal)
   const subgrupos = SUBGRUPOS_DE[c] ?? [c]
-  query.whereRaw(
-    `${subgrupoCanalSql()} IN (${subgrupos.map(() => '?').join(', ')})`,
-    subgrupos
-  )
+  query.whereRaw(`${subgrupoCanalSql()} IN (${subgrupos.map(() => '?').join(', ')})`, subgrupos)
   return query
 }
 

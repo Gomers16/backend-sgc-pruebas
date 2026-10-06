@@ -2742,7 +2742,6 @@ export default class ReportesAdministrativosController {
       ASESOR_COMERCIAL: await tiposDistintos('ASESOR_COMERCIAL'),
     }
 
-
     type MD = {
       cantidad: number
       total_descuentos: number
