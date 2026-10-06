@@ -1435,8 +1435,10 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       recuperaciones: formatNumPdf(c.recuperaciones),
       total: formatNumPdf(c.total),
       totalBruto: formatPesoPdf(c.total_bruto),
-      pct: formatPctPdf(c.porcentaje),
-    }))
+      pct: c.es_informativa ? '—' : formatPctPdf(c.porcentaje),
+    })),
+    null,
+    siIndicesInformativos(filasRetencionCanal)
   )
   doc.moveDown(0.8)
   siDibujarSubtitulo(doc, 'Por Mes')
@@ -2409,10 +2411,16 @@ export default class ReportesAdministrativosController {
       entry.total_bruto += bruto
     }
 
-    const porCanal = armarFilasCanal<MC>(canalMap, vaciaCanal, sumarMetricas, (c) => ({
-      ...c,
-      porcentaje: totalCantidad ? Math.round((c.total / totalCantidad) * 10000) / 100 : 0,
-    }))
+    const porCanal = armarFilasCanal<MC>(
+      canalMap,
+      vaciaCanal,
+      sumarMetricas,
+      (c) => ({
+        ...c,
+        porcentaje: totalCantidad ? Math.round((c.total / totalCantidad) * 10000) / 100 : 0,
+      }),
+      'total'
+    )
 
     // ----- Por mes -----
     const mesRows = (await baseQuery()
