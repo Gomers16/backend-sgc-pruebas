@@ -70,6 +70,16 @@ function parseRangoFechas(request: HttpContext['request']): {
 }
 
 /** Convierte un GROUP_CONCAT(...) de MySQL ("1,2,3" | null | "") en number[]. */
+/** Clasificación de Retención (resumen y detalle) sobre turnos_rtms `t`. */
+const RETENCION_CLASIFICACION_SQL = `
+  (CASE
+    WHEN t.meses_desde_ultima_visita IS NULL THEN 'NUEVO'
+    WHEN t.es_recurrente = 1 THEN 'RECURRENTE'
+    WHEN t.es_recuperacion = 1 THEN 'RECUPERACION'
+    ELSE 'NUEVO'
+  END)
+`
+
 function parseIdList(raw: unknown): number[] {
   if (!raw) return []
   return String(raw)
@@ -1406,15 +1416,8 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   ])
   doc.moveDown(0.5)
   siDibujarSubtitulo(doc, 'Por Canal')
-  const filasRetencionCanal = siCompletarCanales(datos.retencion.por_canal, (canal) => ({
-    canal,
-    nuevos: 0,
-    recurrentes: 0,
-    recuperaciones: 0,
-    total: 0,
-    total_bruto: 0,
-    porcentaje: 0,
-  }))
+  siDibujarAvisoCanal(doc, datos.retencion.aviso_canal)
+  const filasRetencionCanal = datos.retencion.por_canal
   await siDibujarTabla(
     doc,
     [
@@ -1427,7 +1430,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       { label: '% del Total', property: 'pct', width: 67, align: 'right' },
     ],
     filasRetencionCanal.map((c) => ({
-      canal: siNombreCanal(c.canal),
+      canal: siNombreFilaCanal(c),
       nuevos: formatNumPdf(c.nuevos),
       recurrentes: formatNumPdf(c.recurrentes),
       recuperaciones: formatNumPdf(c.recuperaciones),
@@ -2297,6 +2300,24 @@ export default class ReportesAdministrativosController {
     return await this.computeRetencionClientes(fechaInicio, fechaFin)
   }
 
+  /**
+   * Turnos facturados de Retención: los comparten el resumen y su detalle
+   * (detallePorRetencion) para que el detalle sume lo mismo que su fila.
+   * estado='finalizado' + placa NOT LIKE 'TST%': mismo estándar que
+   * computeProduccionPorLider()/computeReconciliacionFacturacionRtm()
+   * — sin esto se contaban turnos cancelados/activos (ver diagnóstico
+   * de reconciliación RTM, julio 2026).
+   */
+  private baseRetencion(fechaInicio: string, fechaFin: string) {
+    return Database.from('turnos_rtms as t')
+      .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 't.id')
+      .where('ft.estado', 'CONFIRMADA')
+      .where('ft.servicio_codigo', 'RTM')
+      .where('t.estado', 'finalizado')
+      .whereRaw("t.placa NOT LIKE 'TST%'")
+      .whereBetween('t.fecha', [fechaInicio, fechaFin])
+  }
+
   /** Cálculo compartido por retencionClientes() y el Súper Informe. */
   private async computeRetencionClientes(fechaInicio: string, fechaFin: string) {
     const configRecurrencia = await Database.from('configuracion_recurrencia_global')
@@ -2304,27 +2325,8 @@ export default class ReportesAdministrativosController {
       .first()
     const mesesMinimos = configRecurrencia ? Number(configRecurrencia.meses_minimos) : 24
 
-    const CLASIFICACION_SQL = `
-      CASE
-        WHEN t.meses_desde_ultima_visita IS NULL THEN 'NUEVO'
-        WHEN t.es_recurrente = 1 THEN 'RECURRENTE'
-        WHEN t.es_recuperacion = 1 THEN 'RECUPERACION'
-        ELSE 'NUEVO'
-      END
-    `
-
-    // estado='finalizado' + placa NOT LIKE 'TST%': mismo estándar que
-    // computeProduccionPorLider()/computeReconciliacionFacturacionRtm()
-    // — sin esto se contaban turnos cancelados/activos (ver diagnóstico
-    // de reconciliación RTM, julio 2026).
-    const baseQuery = () =>
-      Database.from('turnos_rtms as t')
-        .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 't.id')
-        .where('ft.estado', 'CONFIRMADA')
-        .where('ft.servicio_codigo', 'RTM')
-        .where('t.estado', 'finalizado')
-        .whereRaw("t.placa NOT LIKE 'TST%'")
-        .whereBetween('t.fecha', [fechaInicio, fechaFin])
+    const CLASIFICACION_SQL = RETENCION_CLASIFICACION_SQL
+    const baseQuery = () => this.baseRetencion(fechaInicio, fechaFin)
 
     // ----- Resumen general (NUEVO / RECURRENTE / RECUPERACION) -----
     const resumenRows = (await baseQuery()
@@ -2373,33 +2375,37 @@ export default class ReportesAdministrativosController {
     }
 
     // ----- Por canal -----
-    const canalRows = (await baseQuery()
+    // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
+    const canalRows = (await joinCanalReporte(baseQuery(), { unirTurno: false })
       .select(
-        Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"),
+        Database.raw(`${grupoCanalSql()} as grupo`),
         Database.raw(`${CLASIFICACION_SQL} as categoria`)
       )
       .count('* as cantidad')
       .sum('ft.total as total_bruto')
-      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
+      .groupByRaw(grupoCanalSql())
       .groupByRaw(CLASIFICACION_SQL)) as any[]
 
-    const canalMap = new Map<
-      string,
-      { canal: string; nuevos: number; recurrentes: number; recuperaciones: number; total: number; total_bruto: number }
-    >()
+    type MC = {
+      nuevos: number
+      recurrentes: number
+      recuperaciones: number
+      total: number
+      total_bruto: number
+      porcentaje: number
+    }
+    const vaciaCanal = (): MC => ({
+      nuevos: 0,
+      recurrentes: 0,
+      recuperaciones: 0,
+      total: 0,
+      total_bruto: 0,
+      porcentaje: 0,
+    })
+    const canalMap = new Map<string, MC>()
     for (const r of canalRows) {
-      const canal = r.canal
-      if (!canalMap.has(canal)) {
-        canalMap.set(canal, {
-          canal,
-          nuevos: 0,
-          recurrentes: 0,
-          recuperaciones: 0,
-          total: 0,
-          total_bruto: 0,
-        })
-      }
-      const entry = canalMap.get(canal)!
+      if (!canalMap.has(r.grupo)) canalMap.set(r.grupo, vaciaCanal())
+      const entry = canalMap.get(r.grupo)!
       const cantidad = Number(r.cantidad)
       const bruto = Number(r.total_bruto) || 0
       if (r.categoria === 'NUEVO') entry.nuevos += cantidad
@@ -2409,12 +2415,10 @@ export default class ReportesAdministrativosController {
       entry.total_bruto += bruto
     }
 
-    const porCanal = [...canalMap.values()]
-      .sort((a, b) => b.total - a.total)
-      .map((c) => ({
-        ...c,
-        porcentaje: totalCantidad ? Math.round((c.total / totalCantidad) * 10000) / 100 : 0,
-      }))
+    const porCanal = armarFilasCanal<MC>(canalMap, vaciaCanal, sumarMetricas, (c) => ({
+      ...c,
+      porcentaje: totalCantidad ? Math.round((c.total / totalCantidad) * 10000) / 100 : 0,
+    }))
 
     // ----- Por mes -----
     const mesRows = (await baseQuery()
@@ -2450,6 +2454,7 @@ export default class ReportesAdministrativosController {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       meses_minimos: mesesMinimos,
+      aviso_canal: avisoCanal(fechaInicio),
       resumen,
       por_canal: porCanal,
       por_mes: porMes,
@@ -2475,27 +2480,22 @@ export default class ReportesAdministrativosController {
       })
     }
 
-    const query = Database.from('facturacion_tickets as ft')
-      .innerJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
+    // Misma base, clasificación y canal que el resumen: el detalle suma lo
+    // mismo que su celda (antes NUEVO/RECURRENTE usaban otra condición y no
+    // filtraban turno finalizado ni placas TST).
+    const query = joinCanalReporte(this.baseRetencion(fechaInicio, fechaFin), {
+      unirTurno: false,
+    })
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereBetween('t.fecha', [fechaInicio, fechaFin])
+      .whereRaw(`${RETENCION_CLASIFICACION_SQL} = ?`, [categoria])
 
-    if (categoria === 'NUEVO') query.whereNull('t.meses_desde_ultima_visita')
-    else if (categoria === 'RECURRENTE') query.where('t.es_recurrente', 1)
-    else query.where('t.es_recuperacion', 1)
-
-    if (canal === 'FACHADA') {
-      query.where((q) => q.where('ft.captacion_canal', 'FACHADA').orWhereNull('ft.captacion_canal'))
-    } else if (canal) {
-      query.where('ft.captacion_canal', canal)
-    }
+    if (canal) whereCanalReporte(query, canal)
 
     const rows = (await query
       .select(
         'ft.placa',
         Database.raw('DATE(t.fecha) as fecha'),
+        Database.raw(`${grupoCanalSql()} as canal`),
         Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as captacion_canal"),
         'ft.total',
         'ft.subtotal',
@@ -2515,6 +2515,8 @@ export default class ReportesAdministrativosController {
       fecha: r.fecha,
       tipo_vehiculo: r.tipo_vehiculo ?? null,
       total: Number(r.total) || 0,
+      canal: r.canal,
+      canal_nombre: nombreCanalReporte(r.canal),
       captacion_canal: r.captacion_canal,
       agente_comercial_nombre: r.agente_comercial_nombre ?? null,
       asesor_convenio_nombre: r.asesor_convenio_nombre ?? null,
