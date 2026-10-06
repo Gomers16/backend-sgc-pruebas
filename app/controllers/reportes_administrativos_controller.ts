@@ -3300,30 +3300,43 @@ export default class ReportesAdministrativosController {
    * a servicio_codigo='RTM'. El % es sobre el total facturado del propio
    * desglose (no sobre el resumen de comisiones, que es otra fuente).
    */
+  /** Tickets RTM del período: los comparten el "por canal" y sus placas (resolvePlacasPorCanal). */
+  private baseFacturacionRtmPorCanal(fechaInicio: string, fechaFin: string) {
+    return joinCanalReporte(
+      Database.from('facturacion_tickets as ft')
+        .where('ft.estado', 'CONFIRMADA')
+        .where('ft.servicio_codigo', 'RTM')
+        .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+    )
+  }
+
   private async buildPorCanalFacturacionRtm(fechaInicio: string, fechaFin: string) {
-    const rows = (await Database.from('facturacion_tickets as ft')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
+    // Canal = "¿Cómo se enteró de nosotros?" del turno (canal_reporte_service).
+    const rows = (await this.baseFacturacionRtmPorCanal(fechaInicio, fechaFin)
+      .select(Database.raw(`${grupoCanalSql()} as grupo`))
       .count('* as cantidad')
       .sum('ft.total as monto')
-      .groupByRaw("COALESCE(ft.captacion_canal, 'FACHADA')")
-      .orderBy('monto', 'desc')) as any[]
+      .groupByRaw(grupoCanalSql())) as any[]
 
     const totalMonto = rows.reduce((acc, r) => acc + (Number(r.monto) || 0), 0)
 
-    const porCanal = rows.map((r) => {
-      const monto = Number(r.monto) || 0
-      return {
-        canal: r.canal,
-        cantidad: Number(r.cantidad),
-        monto,
-        porcentaje: totalMonto > 0 ? Number(((monto / totalMonto) * 100).toFixed(2)) : 0,
-      }
-    })
+    type ML = { cantidad: number; monto: number; porcentaje: number }
+    const porCanal = armarFilasCanal<ML>(
+      new Map(
+        rows.map((r) => [
+          r.grupo,
+          { cantidad: Number(r.cantidad), monto: Number(r.monto) || 0, porcentaje: 0 },
+        ])
+      ),
+      () => ({ cantidad: 0, monto: 0, porcentaje: 0 }),
+      sumarMetricas,
+      (m) => ({
+        ...m,
+        porcentaje: totalMonto > 0 ? Number(((m.monto / totalMonto) * 100).toFixed(2)) : 0,
+      })
+    )
 
-    return { porCanal, totalMonto }
+    return { porCanal, totalMonto, avisoCanal: avisoCanal(fechaInicio) }
   }
 
   /** Cálculo compartido por liquidacionRtm() (JSON) y liquidacionRtmExcel() (.xlsx). */
@@ -3341,7 +3354,10 @@ export default class ReportesAdministrativosController {
     const totalMonto = Number(resumenRows?.monto) || 0
 
     // ===== Por canal de captación (facturación real, incluye FACHADA/TELE/REDES) =====
-    const { porCanal } = await this.buildPorCanalFacturacionRtm(fechaInicio, fechaFin)
+    const { porCanal, avisoCanal: avisoPorCanal } = await this.buildPorCanalFacturacionRtm(
+      fechaInicio,
+      fechaFin
+    )
 
     // ===== Descuentos aplicados (reusa la agregación ya existente para
     // ReporteDescuentos.vue — mismo alcance RTM+período, no se duplica) =====
@@ -3360,6 +3376,7 @@ export default class ReportesAdministrativosController {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       resumen: { total_comisiones: totalComisiones, total_monto: totalMonto },
+      aviso_canal: avisoPorCanal,
       por_canal: porCanal,
       descuentos,
       comerciales,
@@ -3476,16 +3493,8 @@ export default class ReportesAdministrativosController {
    * buildPorCanalFacturacionRtm(), incluyendo el bucket de NULL -> FACHADA.
    */
   private async resolvePlacasPorCanal(canal: string, fechaInicio: string, fechaFin: string) {
-    const query = Database.from('facturacion_tickets as ft')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
-
-    if (canal === 'FACHADA') {
-      query.where((q) => q.whereNull('ft.captacion_canal').orWhere('ft.captacion_canal', 'FACHADA'))
-    } else {
-      query.where('ft.captacion_canal', canal)
-    }
+    // Misma base y canal que buildPorCanalFacturacionRtm: suma lo mismo que su fila.
+    const query = whereCanalReporte(this.baseFacturacionRtmPorCanal(fechaInicio, fechaFin), canal)
 
     const rows = (await query
       .select(
@@ -3688,12 +3697,10 @@ export default class ReportesAdministrativosController {
       }
     }
 
-    const filasCanal = (await Database.from('facturacion_tickets as ft')
-      .where('ft.estado', 'CONFIRMADA')
-      .where('ft.servicio_codigo', 'RTM')
-      .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
+    // Fila del "por canal" donde está la placa (subcanal en el caso de Asesor).
+    const filasCanal = (await this.baseFacturacionRtmPorCanal(fechaInicio, fechaFin)
       .whereRaw("REPLACE(REPLACE(UPPER(ft.placa), '-', ''), ' ', '') = ?", [placaNorm])
-      .select(Database.raw("COALESCE(ft.captacion_canal, 'FACHADA') as canal"))
+      .select(Database.raw(`${grupoCanalSql()} as canal`))
       .distinct()) as any[]
     for (const r of filasCanal) {
       matches.push({ seccion: 'canal', canal: r.canal })
@@ -4339,7 +4346,10 @@ export default class ReportesAdministrativosController {
     // SIN filtrar por estado de comisión — a diferencia de las 3 secciones de
     // arriba, que sí filtran solo lo PAGADA. Por eso el frontend lo etiqueta
     // como "generado" en vez de "pagado".
-    const { porCanal } = await this.buildPorCanalFacturacionRtm(fechaInicio, fechaFin)
+    const { porCanal, avisoCanal: avisoPorCanal } = await this.buildPorCanalFacturacionRtm(
+      fechaInicio,
+      fechaFin
+    )
 
     return {
       fecha_inicio: fechaInicio,
@@ -4348,6 +4358,7 @@ export default class ReportesAdministrativosController {
         total_comisiones: Number(resumenRow?.cantidad) || 0,
         total_monto: Number(resumenRow?.monto) || 0,
       },
+      aviso_canal: avisoPorCanal,
       por_canal: porCanal,
       comerciales,
       asesores_convenio: asesoresConvenio,
@@ -4391,7 +4402,15 @@ export default class ReportesAdministrativosController {
       fecha_inicio: string
       fecha_fin: string
       resumen: { total_comisiones: number; total_monto: number }
-      por_canal: { canal: string; cantidad: number; monto: number; porcentaje: number }[]
+      aviso_canal: { aplica: boolean; mensaje: string | null }
+      por_canal: {
+        canal: string
+        nombre: string
+        es_subcanal: boolean
+        cantidad: number
+        monto: number
+        porcentaje: number
+      }[]
       comerciales: { asesor_nombre: string; cantidad_vehiculos: number; total_asesor: number; estados: string }[]
       asesores_convenio: {
         asesor_nombre: string
@@ -4411,15 +4430,6 @@ export default class ReportesAdministrativosController {
     },
     tituloTotal: string
   ) {
-    const CANAL_LABELS: Record<string, string> = {
-      FACHADA: 'Fachada',
-      ASESOR_COMERCIAL: 'Asesor Comercial',
-      ASESOR_CONVENIO: 'Asesor Convenio',
-      TELE: 'Telemercadeo',
-      TELEMERCADEO: 'Telemercadeo',
-      REDES: 'Redes / Marketing Digital',
-    }
-
     const workbook = new ExcelJS.Workbook()
     const ws = workbook.addWorksheet('Liquidación RTM')
     ws.columns = [{ width: 34 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 26 }]
@@ -4441,7 +4451,12 @@ export default class ReportesAdministrativosController {
 
     seccion('Por canal de captación')
     encabezadoFila(['Canal', 'Turnos', 'Monto', '%'])
-    data.por_canal.forEach((c) => ws.addRow([CANAL_LABELS[c.canal] ?? c.canal, c.cantidad, c.monto, c.porcentaje]))
+    if (data.aviso_canal.aplica && data.aviso_canal.mensaje) {
+      ws.addRow([`Aviso: ${data.aviso_canal.mensaje}`]).font = { italic: true, color: { argb: 'FFB45309' } }
+    }
+    data.por_canal.forEach((c) =>
+      ws.addRow([c.es_subcanal ? `    · ${c.nombre}` : c.nombre, c.cantidad, c.monto, c.porcentaje])
+    )
     ws.addRow([])
 
     seccion('Asesores Comerciales')
