@@ -43,9 +43,9 @@ export default class AddGoogleAdsToTurnosRtmsEnums extends BaseSchema {
   public async up() {
     await this.db.rawQuery('SET SESSION lock_wait_timeout = 5')
 
-    const medioOk = (await this.columnType('medio_entero')).includes("'Google ADS'")
-    const canalOk = (await this.columnType('canal_atribucion')).includes("'GOOGLE_ADS'")
-    if (medioOk && canalOk) return
+    const medioType = await this.columnType('medio_entero')
+    const canalType = await this.columnType('canal_atribucion')
+    if (medioType.includes("'Google ADS'") && canalType.includes("'GOOGLE_ADS'")) return
 
     await this.db.rawQuery(
       `ALTER TABLE ${this.tableName}
