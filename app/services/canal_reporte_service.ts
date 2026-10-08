@@ -55,25 +55,35 @@ export const NOMBRE_CANAL_REPORTE: Record<string, string> = {
 export const nombreCanalReporte = (canal: string) => NOMBRE_CANAL_REPORTE[canal] ?? canal
 
 /**
+ * Collation explícita del grupo. En producción turnos_rtms.canal_atribucion es
+ * utf8mb4_unicode_ci y captacion_canal / ag.tipo son utf8mb4_0900_ai_ci: el
+ * CASE que las mezcla queda en (utf8mb4_bin, NONE) y compararlo con un literal
+ * da ER_CANT_AGGREGATE_2COLLATIONS (1267). COLLATE explícito gana a las
+ * collations implícitas de las columnas, así que sirve con cualquier esquema.
+ */
+const COLLATION_CANAL = 'utf8mb4_0900_ai_ci'
+
+/**
  * Grupo del ticket (nivel subcanal): FACHADA, REDES, TELE, GOOGLE_ADS,
  * ASESOR_COMERCIAL, ASESOR_CONVENIO o ASESOR_SIN_DETALLE.
  * Requiere los alias `ft` (facturacion_tickets), `t` (turnos_rtms, LEFT JOIN)
  * y `ag` (agentes_captacions del turno, LEFT JOIN) — ver joinCanalReporte().
  */
 export function grupoCanalSql(ft = 'ft', t = 't', ag = 'ag'): string {
+  const canal = `${t}.canal_atribucion COLLATE ${COLLATION_CANAL}`
   return `(CASE
-    WHEN ${t}.canal_atribucion = 'ASESOR'
+    WHEN ${canal} = 'ASESOR'
       OR (${t}.canal_atribucion IS NULL AND ${ft}.captacion_canal IN ('ASESOR_COMERCIAL', 'ASESOR_CONVENIO'))
     THEN CASE
       WHEN ${ft}.captacion_canal IN ('ASESOR_COMERCIAL', 'ASESOR_CONVENIO') THEN ${ft}.captacion_canal
       WHEN ${ag}.tipo IN ('ASESOR_COMERCIAL', 'ASESOR_CONVENIO') THEN ${ag}.tipo
       ELSE 'ASESOR_SIN_DETALLE'
     END
-    WHEN ${t}.canal_atribucion IS NOT NULL THEN ${t}.canal_atribucion
+    WHEN ${t}.canal_atribucion IS NOT NULL THEN ${canal}
     WHEN ${ft}.captacion_canal IN ('TELE', 'TELEMERCADEO') THEN 'TELE'
     WHEN ${ft}.captacion_canal = 'REDES' THEN 'REDES'
     ELSE 'FACHADA'
-  END)`
+  END) COLLATE ${COLLATION_CANAL}`
 }
 
 /**
