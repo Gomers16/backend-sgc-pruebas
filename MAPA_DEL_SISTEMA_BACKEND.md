@@ -81,6 +81,13 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - `turno_codigo` (`SERVICIO-yyyyMMddHHmmss`, único) lleva sufijo `-2`, `-3`… si ya hay otro del mismo servicio en ese segundo.
 - Test: `tests/functional/turno_numero_cancelado_positivo.spec.ts`.
 
+### Turno con fecha retroactiva (2026-10-09)
+
+- `crearTurno()` valida la `fecha` del body contra **hoy del servidor (Bogotá)** con `validarFechaTurno()` (`app/services/fecha_turno_service.ts`, funciones puras). Hoy: sin cambios (no consulta el rol). **Futura: 422 `FECHA_FUTURA`** para todos los roles. **Anterior: solo `ROLES_FECHA_RETROACTIVA = ['SUPER_ADMIN','GERENCIA']`** (constante para cambiarla), con el rol del **usuario autenticado** (`auth.user`, no el `usuarioId` del body); el resto recibe **403 `FECHA_RETROACTIVA_NO_AUTORIZADA`**.
+- Con fecha anterior todo lo que depende de la fecha usa la fecha elegida: numeración (`turno_numero`/`turno_numero_servicio` y sus índices únicos por sede+día), `DUPLICATE_DAY`/`dedupe_key`, `WINDOW_BLOCK`, última visita para recurrencia. `turno_codigo` lleva el instante real de creación (igual que `created_at`): es el rastro de que el turno se creó después. Sin migración ni columnas nuevas; sin motivo obligatorio ni límite de días hacia atrás.
+- Alcance mínimo, riesgos abiertos (ver Pendientes): vigencia de dateos evaluada a hoy, auto-dateo por teléfono, ventana del ticket de excepción (compara solo la hora), `update()` sigue permitiendo cambiar la fecha sin esta regla.
+- Tests: `tests/unit/fecha_turno_service.spec.ts`, `tests/functional/turno_fecha_retroactiva.spec.ts` (GERENCIA y SUPER_ADMIN ayer 201 numerado en ese día; OPERATIVO_TURNOS ayer 403 sin crear nada; OPERATIVO_TURNOS hoy 201; mañana 422 para todos; placas `TST905`–`TST909`, roles buscados por nombre).
+
 ### Google ADS (canal y medio) — 2026-10
 
 - Migración `1794000000000`: `turnos_rtms.medio_entero` + 'Google ADS' y `canal_atribucion` + 'GOOGLE_ADS' (al final de cada ENUM, ALGORITHM=INSTANT). `facturacion_tickets` guarda canal/medio como VARCHAR (sin cambio).
@@ -670,7 +677,7 @@ El bug de "dateos huérfanos" (un dateo viejo quedaba abandonado en `RE_DATEAR` 
 
 ### Tests agregados en 2026-10
 
-Unit: `segunda_vez_service.spec.ts`, `canal_reporte_service.spec.ts`. Functional: `segunda_vez_certificacion`, `segunda_vez_vigencia`, `segunda_vez_flujo`, `segunda_vez_mismo_dia`, `segunda_vez_reportes`, `segunda_vez_correccion`, `segunda_vez_reporte`, `certificacion_dateo_no_rtm`, `google_ads_canal`, `reportes_por_canal`, `turno_numero_cancelado_positivo`. Suite completa al 2026-10-06: 144 tests.
+Unit: `segunda_vez_service.spec.ts`, `canal_reporte_service.spec.ts`. Functional: `segunda_vez_certificacion`, `segunda_vez_vigencia`, `segunda_vez_flujo`, `segunda_vez_mismo_dia`, `segunda_vez_reportes`, `segunda_vez_correccion`, `segunda_vez_reporte`, `certificacion_dateo_no_rtm`, `google_ads_canal`, `reportes_por_canal`, `turno_numero_cancelado_positivo`. Suite completa al 2026-10-06: 144 tests. 2026-10-09: unit `fecha_turno_service.spec.ts`, functional `turno_fecha_retroactiva` (correr con `PORT` libre si el servidor de desarrollo ocupa el 3333, ej. `PORT=3334 node ace test functional --files tests/functional/turno_fecha_retroactiva.spec.ts`).
 
 ## Archivos sin Uso / Deuda Técnica Conocida
 
@@ -730,3 +737,4 @@ Referencia rápida de cosas que YA SABEMOS que no hay que confiar en ellas, para
 - **Dateos de Preventiva atascados en producción**: los dateos PREV/PERI certificados antes del fix `5d4ea86` pudieron quedar sin marcar EXITOSO; revisar en la base de producción.
 - **Segunda vez automática sin casilla**: no implementada; hoy Crear turno exige confirmar la segunda vez (casilla) y el backend responde 409 `SEGUNDA_VEZ_DISPONIBLE` hasta recibir `segundaVezOrigenId`.
 - **PUT a 'cancelado'**: `PUT /turnos-rtm/:id` con `estado: 'cancelado'` no niega `turno_numero` (`PATCH /turnos-rtm/:id/cancelar` sí); por eso el MAX de numeración cuenta todos los estados.
+- **Fecha retroactiva (2026-10-09), riesgos no cubiertos por el alcance mínimo**: (1) `buildReserva()` evalúa la vigencia del dateo a hoy, así que un turno retroactivo puede vincular un dateo creado después de su fecha (o perder uno que estaba vigente ese día); (2) el auto-dateo por teléfono también corre en turnos retroactivos; (3) `dentroVentanaDateoTurno()` compara solo `hora_ingreso` contra la hora actual, ignora la fecha; (4) `PUT /turnos-rtm/:id` acepta cambiar `fecha` con cualquier rol y sin esta regla; (5) los reportes por `turnos_rtms.fecha` cambian para días ya revisados; (6) la recurrencia de turnos posteriores del mismo cliente no se recalcula.

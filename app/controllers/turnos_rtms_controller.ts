@@ -40,6 +40,7 @@ import {
   serializarVentana,
   whereTurnoDaVigencia,
 } from '#services/segunda_vez_service'
+import { hoyServidorISO, validarFechaTurno } from '#services/fecha_turno_service'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 
 // ===== Helpers =====
@@ -600,6 +601,25 @@ export default class TurnosRtmController {
       }
 
       const hoyISO = fechaGuardar.toISODate()!
+
+      // ── Fecha distinta de hoy (ver fecha_turno_service.ts): futura nunca;
+      // anterior solo SUPER_ADMIN/GERENCIA (rol del usuario autenticado). Un
+      // turno de hoy no entra aquí y sigue exactamente igual.
+      const hoyServidor = hoyServidorISO()
+      if (hoyISO !== hoyServidor) {
+        let rol: string | null = null
+        if (hoyISO < hoyServidor && auth.user) {
+          await (auth.user as any).load('rol')
+          rol = (auth.user as any).rol?.nombre ?? null
+        }
+        const errorFecha = validarFechaTurno({ fechaISO: hoyISO, hoyISO: hoyServidor, rol })
+        if (errorFecha) {
+          await trx.rollback()
+          return response
+            .status(errorFecha.status)
+            .send({ code: errorFecha.code, message: errorFecha.message })
+        }
+      }
 
       // ── Segunda vez (RTM/PREV) ─────────────────────────────────────────
       // Detección automática con confirmación del operador: si placa+servicio
