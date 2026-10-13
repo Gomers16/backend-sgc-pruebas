@@ -383,6 +383,7 @@ export default class ClientesController {
         'se.nombre as sedeNombre',
         'ac.nombre as asesorNombre',
         'cv.nombre as convenioNombre',
+        'cv.establecimiento as convenioEstablecimiento',
         't.es_recurrente as esRecurrente',
         't.es_recuperacion as esRecuperacion',
       ])
@@ -482,6 +483,7 @@ export default class ClientesController {
         'se.nombre as sedeNombre',
         'ac.nombre as asesorNombre',
         'cv.nombre as convenioNombre',
+        'cv.establecimiento as convenioEstablecimiento',
         't.es_recurrente as esRecurrente',
         't.es_recuperacion as esRecuperacion',
       ])

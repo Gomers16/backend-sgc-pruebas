@@ -731,7 +731,7 @@ export default class AgentesCaptacionController {
         if (convenioId !== null) qb.orWhere('convenio_id', convenioId)
       })
       .preload('agente')
-      .preload('convenio', (cq) => cq.select(['id', 'nombre']))
+      .preload('convenio', (cq) => cq.select(['id', 'nombre', 'establecimiento']))
       .preload('descuento')
       .orderBy('id', 'desc')
 
@@ -891,7 +891,13 @@ export default class AgentesCaptacionController {
           : null,
 
         convenio_id: d.convenioId,
-        convenio: convenioRaw ? { id: convenioRaw.id, nombre: convenioRaw.nombre } : null,
+        convenio: convenioRaw
+          ? {
+              id: convenioRaw.id,
+              nombre: convenioRaw.nombre,
+              establecimiento: convenioRaw.establecimiento ?? null,
+            }
+          : null,
 
         descuento_id: d.descuentoId,
         descuento: descuentoRaw

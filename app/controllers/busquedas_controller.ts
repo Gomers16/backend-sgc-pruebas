@@ -207,6 +207,7 @@ export default class BusquedasController {
           ? {
               id: (dateo as any).convenio.id,
               nombre: (dateo as any).convenio.nombre,
+              establecimiento: (dateo as any).convenio.establecimiento ?? null,
               codigo:
                 (dateo as any).convenio.codigo ?? (dateo as any).convenio.codigo_convenio ?? null,
             }
@@ -305,6 +306,7 @@ export default class BusquedasController {
             ? {
                 id: convenio.id,
                 nombre: (convenio as any).nombre,
+                establecimiento: (convenio as any).establecimiento ?? null,
                 codigo: (convenio as any).codigo ?? (convenio as any).codigo_convenio ?? null,
               }
             : null,
@@ -351,6 +353,7 @@ export default class BusquedasController {
         ? {
             id: (dateo as any).convenio.id,
             nombre: (dateo as any).convenio.nombre,
+            establecimiento: (dateo as any).convenio.establecimiento ?? null,
             codigo:
               (dateo as any).convenio.codigo ?? (dateo as any).convenio.codigo_convenio ?? null,
           }
@@ -406,7 +409,12 @@ export default class BusquedasController {
       nombre: string
       tipo: string
       telefono: string
-      convenio?: { id: number; nombre: string; codigo: string | null } | null
+      convenio?: {
+        id: number
+        nombre: string
+        establecimiento: string | null
+        codigo: string | null
+      } | null
     } | null = null
 
     if (telefono && /^\d{10}$/.test(telefono)) {
@@ -439,6 +447,7 @@ export default class BusquedasController {
                 asesorDetectado.convenio = {
                   id: convenioAsociado.id,
                   nombre: (convenioAsociado as any).nombre,
+                  establecimiento: (convenioAsociado as any).establecimiento ?? null,
                   codigo:
                     (convenioAsociado as any).codigo ??
                     (convenioAsociado as any).codigo_convenio ??

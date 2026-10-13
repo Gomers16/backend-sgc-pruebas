@@ -202,6 +202,7 @@ function mapComisionToDto(c: Comision) {
       ? {
           id: anyC.$preloaded.convenio.id,
           nombre: anyC.$preloaded.convenio.nombre,
+          establecimiento: anyC.$preloaded.convenio.establecimiento ?? null,
           metodo_pago: anyC.$preloaded.convenio.metodoPago ?? null,
           numero_metodo_pago: anyC.$preloaded.convenio.numeroMetodoPago ?? null,
         }

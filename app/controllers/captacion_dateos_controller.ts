@@ -669,7 +669,7 @@ export default class CaptacionDateosController {
 
     const q = CaptacionDateo.query()
       .preload('agente')
-      .preload('convenio', (qb) => qb.select(['id', 'nombre']))
+      .preload('convenio', (qb) => qb.select(['id', 'nombre', 'establecimiento']))
       .preload('descuento') // 🆕
       .preload('descuentoCaja') // 🆕 descuento real aplicado en caja
       .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕
@@ -790,7 +790,7 @@ export default class CaptacionDateosController {
     const item = await CaptacionDateo.query()
       .where('id', params.id)
       .preload('agente')
-      .preload('convenio', (qb) => qb.select(['id', 'nombre']))
+      .preload('convenio', (qb) => qb.select(['id', 'nombre', 'establecimiento']))
       .preload('descuento') // 🆕
       .preload('servicio') // 🆕 para mostrar/editar el servicio del dateo
       .preload('aprobadoExcepcionUsuario', (qb) => qb.select(['id', 'nombres', 'apellidos'])) // 🆕

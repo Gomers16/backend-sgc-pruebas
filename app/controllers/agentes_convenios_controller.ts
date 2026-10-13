@@ -44,11 +44,12 @@ export default class AgentesConveniosController {
         .where('asesor_id', asesorId)
         .preload('convenio', (c) => {
           if (light) {
-            c.select(['id', 'nombre'])
+            c.select(['id', 'nombre', 'establecimiento'])
           } else {
             c.select([
               'id',
               'nombre',
+              'establecimiento',
               'tipo',
               'doc_tipo',
               'doc_numero',
@@ -75,12 +76,14 @@ export default class AgentesConveniosController {
         return asignacionesValidas.map((r) => ({
           id: r.convenio!.id,
           nombre: r.convenio!.nombre,
+          establecimiento: r.convenio!.establecimiento ?? null,
         }))
       }
 
       return asignacionesValidas.map((r) => ({
         id: r.convenio!.id,
         nombre: r.convenio!.nombre,
+        establecimiento: r.convenio!.establecimiento ?? null,
         tipo: r.convenio!.tipo,
         doc_tipo: r.convenio!.docTipo,
         doc_numero: r.convenio!.docNumero,

@@ -494,7 +494,9 @@ export default class ConveniosController {
       .where('asesor_id', asesorId)
       .where('activo', true)
       .whereNull('fecha_fin')
-      .preload('convenio', (q) => q.select(['id', 'nombre']).where('activo', true))
+      .preload('convenio', (q) =>
+        q.select(['id', 'nombre', 'establecimiento']).where('activo', true)
+      )
 
     const convenios = asignaciones
       .map((a) => a.convenio)
@@ -504,33 +506,37 @@ export default class ConveniosController {
       convenios.map((c) => ({
         id: c.id,
         nombre: c.nombre,
+        establecimiento: c.establecimiento ?? null,
       }))
     )
   }
 
   /**
-   * GET /convenios/light?activo=1&select=id,nombre&perPage=100
-   * Respuesta: { data: [{ id, nombre, ...}] }
+   * GET /convenios/light?select=id,nombre,establecimiento,codigo
+   * Catálogo completo para los desplegables de convenio (sin paginar).
+   * Solo convenios activos: `activo = true` y `estado` NULL, ACTIVO o ACTIVA
+   * (variante mal escrita que existe en los datos importados).
+   * `select` solo acepta columnas de LIGHT_COLUMNS; `id` y `nombre` van siempre.
+   * Respuesta: { data: [{ id, nombre, ...}] } ordenada por nombre.
    */
   public async light({ request, response }: HttpContext) {
-    const activoParam = request.input('activo')
-    const onlyActive =
-      activoParam === undefined
-        ? true
-        : activoParam === true || String(activoParam) === '1' || String(activoParam) === 'true'
+    const LIGHT_COLUMNS = new Set(['id', 'nombre', 'establecimiento', 'codigo'])
 
-    const selectRaw = String(request.input('select', 'id,nombre'))
+    const pedidas = String(request.input('select', 'id,nombre,establecimiento'))
       .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => LIGHT_COLUMNS.has(s))
+    const cols = Array.from(new Set(['id', 'nombre', ...pedidas]))
 
-    const cols = selectRaw.length ? selectRaw : ['id', 'nombre']
-    const perPage = Math.max(1, Math.min(Number(request.input('perPage', 100)) || 100, 500))
+    const rows = await Database.from('convenios')
+      .select(cols)
+      .where('activo', true)
+      .where((qb) => {
+        qb.whereNull('estado').orWhereRaw("UPPER(TRIM(estado)) IN ('ACTIVO', 'ACTIVA')")
+      })
+      .orderBy('nombre', 'asc')
+      .orderBy('id', 'asc')
 
-    const qb = Database.from('convenios').select(cols).limit(perPage)
-    if (onlyActive) qb.where('activo', true)
-
-    const rows = await qb
     return response.ok({ data: rows })
   }
 }
