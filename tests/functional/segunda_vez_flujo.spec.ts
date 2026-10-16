@@ -545,6 +545,8 @@ test.group('Segunda vez · flujo B1', (group) => {
     })
     excepcion.assertStatus(409)
     excepcion.assertBodyContains({ code: 'TURNO_SEGUNDA_VEZ' })
+    const ticketsDelTurno = await Database.from('tickets_detalle_excepcion_dateo').where('turno_id', sv.id)
+    assert.lengthOf(ticketsDelTurno, 0)
 
     const turnoDb = await TurnoRtm.findOrFail(sv.id)
     assert.equal(turnoDb.estado, 'activo')
