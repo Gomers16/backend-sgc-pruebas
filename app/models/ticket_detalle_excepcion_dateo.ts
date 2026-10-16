@@ -98,6 +98,19 @@ export default class TicketDetalleExcepcionDateo extends BaseModel {
   @column({ columnName: 'con_comision' })
   declare conComision: boolean | null
 
+  /**
+   * Decisión de comisión fuera de ventana, separada (migración 1797000000000).
+   * null = dentro de ventana o pendiente; convenio también null si el ticket
+   * no tiene convenio. TINYINT(1): mysql2 los entrega como 0/1/null — leer con
+   * Boolean() después de descartar null. Mientras exista con_comision se
+   * escribe también (= flag del asesor) porque producción local la lee.
+   */
+  @column({ columnName: 'con_comision_asesor' })
+  declare conComisionAsesor: boolean | null
+
+  @column({ columnName: 'con_comision_convenio' })
+  declare conComisionConvenio: boolean | null
+
   @column({ columnName: 'aprobado_por_id' })
   declare aprobadoPorId: number | null
 

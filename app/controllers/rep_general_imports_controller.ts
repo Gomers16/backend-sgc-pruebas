@@ -1250,11 +1250,12 @@ export default class RepGeneralImportController {
 
     const tieneConvenio = !!comision.convenioId
     const esComercialConConvenio = tieneConvenio && !!comision.asesorSecundarioId
-    // 🆕 Si este dateo viene de un ticket de Excepción de Dateo APROBADO con
-    // "Aprobar sin comisión", el Rep General no debe revertir esa decisión
-    // de gerencia al reclasificar recurrencia/recuperación — mismo criterio
-    // que forzarSinComisionPorTicket en facturacion_tickets_controller.ts.
-    const respetarSinComision = await debeRespetarSinComision(turnoParaActualizar?.id ?? null)
+    // 🆕 Si este dateo viene de un ticket de Excepción de Dateo APROBADO "sin
+    // comisión" (asesor y/o convenio), el Rep General no debe revertir esa
+    // decisión de gerencia al reclasificar recurrencia/recuperación — mismo
+    // criterio que applyCommissionHook() en facturacion_tickets_controller.ts.
+    const sinComisionTicket = await debeRespetarSinComision(turnoParaActualizar?.id ?? null)
+    const respetarSinComision = sinComisionTicket.asesor
 
     if (rec.esRecurrente || rec.esRecuperacion) {
       // Recuperación es solo una categoría informativa/de reporte — nunca
@@ -1278,7 +1279,10 @@ export default class RepGeneralImportController {
         // CASO 3: Comercial + convenio
         // montoAsesor = valorDateoNuevo (mismo para nuevo/recurrente/recuperacion)
         // montoConvenio = valorIncentivoPorTipo (mismo para todos los casos)
-        // No se modifica nada — los montos ya son correctos
+        // No se recalcula nada — los montos ya son correctos. Solo se
+        // asegura la decisión "sin comisión" del ticket, si la hay.
+        if (sinComisionTicket.asesor) comision.montoAsesor = '0'
+        if (sinComisionTicket.convenio) comision.montoConvenio = '0'
         console.log(
           `   ${etiqueta} Comisión #${comision.id} | Comercial+convenio → sin cambios (dateo $${comision.montoAsesor ?? 0} + incentivo $${comision.montoConvenio ?? 0})`
         )

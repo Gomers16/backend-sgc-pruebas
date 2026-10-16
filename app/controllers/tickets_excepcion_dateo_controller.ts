@@ -21,6 +21,7 @@ import {
 } from '#services/reserva_dateo_service'
 import { esEvidenciaValida } from '#services/ticket_acceso_service'
 import { resolverIntentoDateo } from '#services/intento_dateo_service'
+import { resolverDecisionComision } from '#services/decision_comision_ticket_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -430,9 +431,12 @@ export default class TicketsExcepcionDateoController {
   /**
    * PATCH /tickets-excepcion-dateo/:id/aprobar
    * Body: {
-   *   con_comision: boolean  — solo requerido/relevante fuera de ventana
-   *                            (dentroVentana=false); dentro de ventana se
-   *                            ignora, la comisión siempre es completa.
+   *   con_comision_asesor: boolean, con_comision_convenio?: boolean
+   *       — solo fuera de ventana (dentro de ventana se ignoran: comisión
+   *       completa). Combinaciones válidas por caso en
+   *       decision_comision_ticket_service.ts (Caso 1 sin flag de convenio,
+   *       Caso 2 flags iguales, Caso 3 las 4). `con_comision` sola se sigue
+   *       aceptando como flag del asesor (frontend anterior).
    *   convenio_id?: number | null — opcional: gerencia corrige el convenio
    *                            del intento (null = sin convenio). El original
    *                            queda en convenio_id_original.
@@ -480,19 +484,25 @@ export default class TicketsExcepcionDateoController {
       // TINYINT(1) como 0/1 (no boolean real) — Boolean() en vez de === true.
       const dentroVentana = Boolean(detalle.dentroVentana)
 
-      // con_comision solo es relevante fuera de ventana — dentro de ventana la
-      // comisión siempre es completa, así que se ignora aunque venga.
-      let conComision: boolean | null = null
-      if (!dentroVentana) {
-        const raw = request.input('con_comision')
-        if (typeof raw !== 'boolean') {
-          await trx.rollback()
-          return response.badRequest({
-            message:
-              'con_comision es requerido (true/false) cuando el ticket está fuera de ventana',
-          })
-        }
-        conComision = raw
+      // La decisión de comisión solo cuenta fuera de ventana. Se valida del
+      // todo cuando se conoce el caso (más abajo); acá solo se corta temprano
+      // si falta el flag del asesor.
+      const flagsComision = {
+        conComisionAsesor: request.input('con_comision_asesor'),
+        conComisionConvenio: request.input('con_comision_convenio'),
+        conComision: request.input('con_comision'),
+      }
+      if (
+        !dentroVentana &&
+        typeof flagsComision.conComisionAsesor !== 'boolean' &&
+        typeof flagsComision.conComision !== 'boolean'
+      ) {
+        await trx.rollback()
+        return response.badRequest({
+          code: 'COMBINACION_COMISION_INVALIDA',
+          message:
+            'con_comision_asesor es requerido (true/false) cuando el ticket está fuera de ventana',
+        })
       }
 
       // 1. Carga el turno del ticket.
@@ -600,6 +610,17 @@ export default class TicketsExcepcionDateoController {
         canal: dateo.canal,
         asesorConvenioIdDelConvenio: asesorConvenioIdReal,
       })
+
+      const resDecision = resolverDecisionComision({ dentroVentana, caso, ...flagsComision })
+      if (!resDecision.ok) {
+        await trx.rollback()
+        return response.badRequest({
+          code: 'COMBINACION_COMISION_INVALIDA',
+          message: resDecision.message,
+          caso,
+        })
+      }
+      const decision = resDecision.decision
 
       // Escenario — turno.esRecurrente/esRecuperacion ya vienen calculados
       // desde la creación del turno (historial del cliente).
@@ -713,10 +734,12 @@ export default class TicketsExcepcionDateoController {
         if (resultadoComision.descuentoMontoAplicado !== null) {
           c.descuentoMontoAplicado = resultadoComision.descuentoMontoAplicado
         }
-        // Fuera de ventana + "Aprobar sin comisión": se calcula la comisión
-        // normal con el motor de siempre y se fuerza a 0 recién acá, justo
-        // antes de guardar — montoConvenio queda intacto.
-        if (!dentroVentana && conComision === false) c.montoAsesor = '0'
+        // Fuera de ventana + "sin comisión": se calcula la comisión normal con
+        // el motor de siempre y se fuerza a 0 recién acá, justo antes de
+        // guardar, solo la parte que gerencia decidió (asesor y/o convenio).
+        // `monto` queda con el valor del motor: es lo que se dejó de pagar.
+        if (decision.asesor === false) c.montoAsesor = '0'
+        if (decision.convenio === false) c.montoConvenio = '0'
         await c.save()
         comisionCreada = c
       }
@@ -726,7 +749,10 @@ export default class TicketsExcepcionDateoController {
 
       // 6. Cierra el ticket.
       detalle.useTransaction(trx)
-      detalle.conComision = dentroVentana ? null : conComision
+      detalle.conComisionAsesor = decision.asesor
+      detalle.conComisionConvenio = decision.convenio
+      // Transición: producción local (misma BD) todavía lee con_comision.
+      detalle.conComision = decision.asesor
       if (!detalle.canal) {
         // Ticket anterior a la Fase 3: el convenio con el que llegó.
         detalle.convenioIdOriginal = detalle.convenioId
@@ -751,7 +777,9 @@ export default class TicketsExcepcionDateoController {
         comisionId: comisionCreada?.id ?? null,
         caso,
         dentroVentana,
-        conComision: dentroVentana ? null : conComision,
+        conComision: decision.asesor,
+        conComisionAsesor: decision.asesor,
+        conComisionConvenio: decision.convenio,
         convenioCorregido:
           corrigeConvenio && (detalle.convenioIdOriginal ?? null) !== (convenioId ?? null),
       })
