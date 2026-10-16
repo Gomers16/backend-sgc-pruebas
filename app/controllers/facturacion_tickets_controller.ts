@@ -24,10 +24,12 @@ import {
   calcularComision,
   isRTM,
   inferTipoVehiculoComision,
+  decidirCasoComision,
   type EscenarioCliente,
   type OrigenDescuento,
 } from '#services/comision_calculo_service'
 import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
+import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
 
 /** Carpeta para subir tickets (local). */
 const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
@@ -1185,6 +1187,19 @@ export default class FacturacionTicketsController {
 
     if (!dateo) return
 
+    // Dateo de asesor convenio sin convenio (solo pudo nacer de un ticket de
+    // Excepción de Dateo anterior a la Fase 3 de Tickets): se resuelve su
+    // convenio con la misma regla de store(), si no pagaría como Caso 1.
+    if (!dateo.convenioId && dateo.canal === 'ASESOR_CONVENIO' && dateo.agente) {
+      const convenioDelAsesor = await buscarConvenioDelAsesorConvenio(dateo.agente)
+      if (convenioDelAsesor) {
+        dateo.convenioId = convenioDelAsesor.id
+        dateo.asesorConvenioId = dateo.agenteId
+        await dateo.save()
+        await dateo.load('convenio', (q) => q.preload('asesorConvenio'))
+      }
+    }
+
     // 🔍 LOG DIAGNÓSTICO AVANCE — leer flag esAvance del dateo
     console.log(
       'dateo.esAvance:',
@@ -1334,6 +1349,13 @@ export default class FacturacionTicketsController {
     }
 
     // ── Verificar duplicado ──
+    const caso = decidirCasoComision({
+      convenioId: dateo.convenioId,
+      agenteId: dateo.agenteId,
+      canal: dateo.canal,
+      asesorConvenioIdDelConvenio: asesorConvenioIdReal,
+    })
+
     const startDay = now.startOf('day').toSQL()
     const endDay = now.endOf('day').toSQL()
 
@@ -1378,7 +1400,7 @@ export default class FacturacionTicketsController {
       // ════════════════════════════════════════════════════
       //  CASO 1: SIN CONVENIO — Comercial datea directo
       // ════════════════════════════════════════════════════
-      if (!dateo.convenioId) {
+      if (caso === 'SIN_CONVENIO') {
         if (!dateo.agenteId) {
           console.warn('⚠️ Sin convenio y sin asesor')
           await trx.rollback()
@@ -1422,11 +1444,7 @@ export default class FacturacionTicketsController {
         if (forzarSinComisionPorTicket) c.montoAsesor = '0'
 
         await c.useTransaction(trx).save()
-      } else if (
-        !dateo.agenteId ||
-        dateo.agenteId === asesorConvenioIdReal ||
-        dateo.canal === 'ASESOR_CONVENIO'
-      ) {
+      } else if (caso === 'CONVENIO_SELF') {
         // ═══════════════════════════════════════════════════════════
         // CASO 2: Asesor convenio se datea a sí mismo
         // El dinero va SIEMPRE a montoAsesor (él es asesor Y convenio)

@@ -226,6 +226,35 @@ export async function resolveConfigRecurrencia(
 
 export type CasoComision = 'SIN_CONVENIO' | 'CONVENIO_SELF' | 'CONVENIO_COMERCIAL'
 export type EscenarioCliente = 'NUEVO' | 'RECURRENTE' | 'RECUPERACION'
+
+/**
+ * Caso de comisión de un dateo. Única fuente de verdad para
+ * tickets_excepcion_dateo_controller.ts::aprobar() y
+ * facturacion_tickets_controller.ts::applyCommissionHook().
+ *  - SIN_CONVENIO:       el dateo no tiene convenio (comercial "nuevo directo").
+ *  - CONVENIO_SELF:      con convenio y quien datea es el propio asesor del
+ *                        convenio (sin agente, agente = asesor del convenio o
+ *                        canal ASESOR_CONVENIO).
+ *  - CONVENIO_COMERCIAL: con convenio, datea un comercial.
+ * Un dateo ASESOR_CONVENIO siempre debe llegar acá con su convenio resuelto
+ * (buscarConvenioDelAsesorConvenio): sin él no hay a quién pagar el Caso 2.
+ */
+export function decidirCasoComision(d: {
+  convenioId: number | null
+  agenteId: number | null
+  canal: string | null
+  asesorConvenioIdDelConvenio: number | null
+}): CasoComision {
+  if (!d.convenioId) return 'SIN_CONVENIO'
+  if (
+    !d.agenteId ||
+    d.agenteId === d.asesorConvenioIdDelConvenio ||
+    d.canal === 'ASESOR_CONVENIO'
+  ) {
+    return 'CONVENIO_SELF'
+  }
+  return 'CONVENIO_COMERCIAL'
+}
 export type OrigenDescuento = 'DATEO' | 'CAJA'
 
 /** Códigos de descuento que activan la rama especial "aplicado en caja" en Caso 2/3 */

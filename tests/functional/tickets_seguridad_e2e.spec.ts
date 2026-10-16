@@ -91,7 +91,10 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
   }
 
   async function subirEvidencia(client: any): Promise<string> {
-    const res = await client.post('/api/media/upload').headers(bearer('ADMIN')).file('file', imagenPath)
+    const res = await client
+      .post('/api/media/upload')
+      .headers(bearer('ADMIN'))
+      .file('file', imagenPath)
     res.assertStatus(201)
     subidas.push(res.body().url)
     return res.body().url
@@ -229,8 +232,14 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
     const body = res.body().detalle.dentroVentana ? {} : { con_comision: true }
 
     const [r1, r2] = await Promise.all([
-      client.patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`).headers(bearer('ADMIN')).json(body),
-      client.patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`).headers(bearer('GERENCIA')).json(body),
+      client
+        .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
+        .headers(bearer('ADMIN'))
+        .json(body),
+      client
+        .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
+        .headers(bearer('GERENCIA'))
+        .json(body),
     ])
     const estados = [r1.status(), r2.status()].sort()
     assert.deepEqual(estados, [200, 409])
@@ -249,7 +258,10 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
     const body = res.body().detalle.dentroVentana ? {} : { con_comision: true }
 
     const [ra, rr] = await Promise.all([
-      client.patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`).headers(bearer('ADMIN')).json(body),
+      client
+        .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
+        .headers(bearer('ADMIN'))
+        .json(body),
       client
         .patch(`/api/tickets-excepcion-dateo/${ticketId}/rechazar`)
         .headers(bearer('GERENCIA'))
@@ -319,7 +331,9 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
 
     const sinConvenio = await crearTicket(client, turno.id, agenteA.id, { convenio_id: 999999999 })
     sinConvenio.assertStatus(400)
-    const inactivo = await crearTicket(client, turno.id, agenteA.id, { convenio_id: convenioInactivo.id })
+    const inactivo = await crearTicket(client, turno.id, agenteA.id, {
+      convenio_id: convenioInactivo.id,
+    })
     inactivo.assertStatus(400)
 
     const urlInventada = await crearTicket(client, turno.id, agenteA.id, {

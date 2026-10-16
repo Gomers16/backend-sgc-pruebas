@@ -1,6 +1,7 @@
 import { test } from '@japa/runner'
 import {
   calcularComision,
+  decidirCasoComision,
   type ConfigComisionResuelta,
   type ConfigRecurrenciaResuelta,
 } from '#services/comision_calculo_service'
@@ -218,5 +219,24 @@ test.group('comision_calculo_service · calcularComision · Caso 3 (CONVENIO_COM
     })
     assert.equal(r.montoAsesor, 8640)
     assert.equal(r.montoConvenio, 20000)
+  })
+})
+
+test.group('decidirCasoComision', () => {
+  const base = { convenioId: 10, agenteId: 5, canal: 'ASESOR_COMERCIAL', asesorConvenioIdDelConvenio: 7 }
+
+  test('sin convenio → SIN_CONVENIO (aunque el canal sea ASESOR_CONVENIO)', ({ assert }) => {
+    assert.equal(decidirCasoComision({ ...base, convenioId: null }), 'SIN_CONVENIO')
+    assert.equal(decidirCasoComision({ ...base, convenioId: null, canal: 'ASESOR_CONVENIO' }), 'SIN_CONVENIO')
+  })
+
+  test('con convenio y datea el asesor del convenio → CONVENIO_SELF', ({ assert }) => {
+    assert.equal(decidirCasoComision({ ...base, agenteId: 7 }), 'CONVENIO_SELF')
+    assert.equal(decidirCasoComision({ ...base, canal: 'ASESOR_CONVENIO' }), 'CONVENIO_SELF')
+    assert.equal(decidirCasoComision({ ...base, agenteId: null }), 'CONVENIO_SELF')
+  })
+
+  test('con convenio y datea un comercial → CONVENIO_COMERCIAL', ({ assert }) => {
+    assert.equal(decidirCasoComision(base), 'CONVENIO_COMERCIAL')
   })
 })
