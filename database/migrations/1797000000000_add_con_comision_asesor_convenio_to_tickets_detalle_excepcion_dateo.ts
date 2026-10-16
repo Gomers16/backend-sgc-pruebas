@@ -11,6 +11,22 @@ import { BaseSchema } from '@adonisjs/lucid/schema'
  * significaba "aprobar sin comisión": el convenio cobraba su parte); NULL →
  * ambos NULL.
  */
+/**
+ * UPDATE de la copia. `soloTicketIds` lo limita a esos tickets (lo usa el
+ * test; la migración copia todo).
+ */
+export function sqlCopiaConComision(soloTicketIds?: number[]): string {
+  const filtro = soloTicketIds?.length
+    ? ` WHERE ticket_id IN (${soloTicketIds.map((id) => Math.trunc(Number(id))).join(',')})`
+    : ''
+  return (
+    'UPDATE tickets_detalle_excepcion_dateo' +
+    ' SET con_comision_asesor = con_comision,' +
+    ' con_comision_convenio = CASE WHEN con_comision IS NULL THEN NULL ELSE 1 END' +
+    filtro
+  )
+}
+
 export default class extends BaseSchema {
   protected tableName = 'tickets_detalle_excepcion_dateo'
 
@@ -21,11 +37,7 @@ export default class extends BaseSchema {
     })
 
     this.defer(async (db) => {
-      await db.rawQuery(
-        `UPDATE ${this.tableName}
-            SET con_comision_asesor = con_comision,
-                con_comision_convenio = CASE WHEN con_comision IS NULL THEN NULL ELSE 1 END`
-      )
+      await db.rawQuery(sqlCopiaConComision())
     })
   }
 

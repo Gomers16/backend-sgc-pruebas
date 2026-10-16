@@ -14,6 +14,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
 import RepGeneralImportController from '#controllers/rep_general_imports_controller'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
+import { sqlCopiaConComision } from '#database/migrations/1797000000000_add_con_comision_asesor_convenio_to_tickets_detalle_excepcion_dateo'
 
 /**
  * Fase 4 de Tickets — decisión de comisión separada (asesor / convenio):
@@ -55,6 +56,9 @@ const P = {
   CAJA_DESCUENTO: 'TKD416',
   AVANCE: 'TKD417',
   PROD_LOCAL: 'TKD418',
+  COPIA_1: 'TKD419',
+  COPIA_0: 'TKD420',
+  COPIA_NULL: 'TKD421',
 } as const
 
 type Flags = { asesor: boolean; convenio: boolean }
@@ -497,5 +501,38 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
       .where('ticket_id', ticketId)
       .update({ con_comision: 0, con_comision_asesor: null, con_comision_convenio: null })
     assert.deepEqual(await debeRespetarSinComision(turno.id), { asesor: true, convenio: false })
+  })
+
+  // ───────────── Migración 1797: copia de con_comision ─────────────
+  test('migración 1797: con_comision 1 → ambos 1; 0 → asesor 0 y convenio 1; NULL → ambos NULL', async ({
+    client,
+    assert,
+  }) => {
+    const casos = [
+      { placa: P.COPIA_1, valor: 1, asesor: 1, convenio: 1 },
+      { placa: P.COPIA_0, valor: 0, asesor: 0, convenio: 1 },
+      { placa: P.COPIA_NULL, valor: null, asesor: null, convenio: null },
+    ]
+    const ids: number[] = []
+    for (const c of casos) {
+      const turno = await turnoDirecto(c.placa)
+      const ticketId = await crearTicket(client, turno.id, comercial.id, conConvenio())
+      ids.push(ticketId)
+      // Como quedaría un ticket de antes de la migración (o de producción local).
+      await Database.from('tickets_detalle_excepcion_dateo')
+        .where('ticket_id', ticketId)
+        .update({ con_comision: c.valor, con_comision_asesor: null, con_comision_convenio: null })
+    }
+
+    await Database.rawQuery(sqlCopiaConComision(ids))
+
+    for (const [i, c] of casos.entries()) {
+      const fila = await Database.from('tickets_detalle_excepcion_dateo')
+        .where('ticket_id', ids[i])
+        .first()
+      assert.strictEqual(fila.con_comision, c.valor, 'con_comision queda intacta')
+      assert.strictEqual(fila.con_comision_asesor, c.asesor)
+      assert.strictEqual(fila.con_comision_convenio, c.convenio)
+    }
   })
 })
