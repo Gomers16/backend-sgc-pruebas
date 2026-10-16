@@ -13,7 +13,12 @@ import Convenio from '#models/convenio'
 import Comision from '#models/comision'
 import FacturacionTicket from '#models/facturacion_ticket'
 
-import { dentroVentanaDateoTurno, getMinutosVentanaTicket } from '#services/reserva_dateo_service'
+import {
+  dentroVentanaDateoTurno,
+  getMinutosVentanaGlobal,
+  getMinutosVentanaTicket,
+} from '#services/reserva_dateo_service'
+import { esEvidenciaValida } from '#services/ticket_acceso_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -38,19 +43,11 @@ export default class TicketsExcepcionDateoController {
    * GET /tickets/config/ventana
    * Límite global de minutos de ventana sin penalización (fallback cuando no
    * hay override por asesor). Mismo patrón que
-   * captacion_dateos_controller.ts::maxRedateosConfigGet().
+   * captacion_dateos_controller.ts::maxRedateosConfigGet(). Solo lectura:
+   * sin fila devuelve el default (60), no la crea.
    */
   public async ventanaConfigGet({ response }: HttpContext) {
-    const { default: ConfiguracionVentanaTicketGlobal } = await import(
-      '#models/configuracion_ventana_ticket_global'
-    )
-
-    let config = await ConfiguracionVentanaTicketGlobal.query().first()
-    if (!config) {
-      config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana: 60 } as any)
-    }
-
-    return response.ok({ minutos_ventana: config.minutosVentana })
+    return response.ok({ minutos_ventana: await getMinutosVentanaGlobal() })
   }
 
   /**
@@ -122,6 +119,8 @@ export default class TicketsExcepcionDateoController {
 
     const asesorId = Number(payload.asesor_id)
     if (!asesorId) return response.badRequest({ message: 'asesor_id es requerido' })
+    const asesor = await AgenteCaptacion.find(asesorId)
+    if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
 
     let minutosVentana: number | null = null
     if (
@@ -132,7 +131,8 @@ export default class TicketsExcepcionDateoController {
       minutosVentana = Math.trunc(Number(payload.minutos_ventana))
       if (!Number.isFinite(minutosVentana) || minutosVentana <= 0) {
         return response.badRequest({
-          message: 'minutos_ventana debe ser un número entero mayor a 0, o null para usar el global',
+          message:
+            'minutos_ventana debe ser un número entero mayor a 0, o null para usar el global',
         })
       }
     }
@@ -198,7 +198,8 @@ export default class TicketsExcepcionDateoController {
     if (!observacion) return response.badRequest({ message: 'observacion es requerida' })
 
     const evidenciaChatUrl = (payload.evidencia_chat_url as string | undefined) || null
-    const evidenciaGrupoWhatsappUrl = (payload.evidencia_grupo_whatsapp_url as string | undefined) || null
+    const evidenciaGrupoWhatsappUrl =
+      (payload.evidencia_grupo_whatsapp_url as string | undefined) || null
     const evidenciaBloqueoUrl = (payload.evidencia_bloqueo_url as string | undefined) || null
     const evidenciaCalamidadUrl = (payload.evidencia_calamidad_url as string | undefined) || null
 
@@ -238,16 +239,6 @@ export default class TicketsExcepcionDateoController {
       }
     }
 
-    const turno = await TurnoRtm.find(turnoId)
-    if (!turno) return response.notFound({ message: 'Turno no encontrado' })
-    // Segunda vez: sin dateo ni ticket de excepción de dateo.
-    if (esTurnoSegundaVez(turno)) {
-      return response.conflict(conflictoTurnoSegundaVez('dateo ni ticket de excepción de dateo'))
-    }
-    if (turno.captacionDateoId) {
-      return response.badRequest({ message: 'Este turno ya tiene un dateo vinculado' })
-    }
-
     const tipoTicket = await TipoTicket.findBy('codigo', 'EXCEPCION_DATEO')
     if (!tipoTicket) {
       return response.internalServerError({
@@ -255,28 +246,90 @@ export default class TicketsExcepcionDateoController {
       })
     }
 
-    const yaExistePendiente = await TicketDetalleExcepcionDateo.query()
-      .where('turno_id', turnoId)
-      .whereHas('ticket', (q) => q.where('estado', 'PENDIENTE'))
-      .first()
-    if (yaExistePendiente) {
-      return response.conflict({
-        message: 'Ya existe un ticket pendiente para este turno',
-        ticketId: yaExistePendiente.ticketId,
-      })
+    const convenioId = readOptionalNumber(payload.convenio_id)
+    if (convenioId !== null) {
+      const convenio = await Convenio.find(convenioId)
+      if (!convenio || !Boolean(convenio.activo)) {
+        return response.badRequest({ message: 'convenio_id no existe o está inactivo' })
+      }
     }
 
-    const convenioId = readOptionalNumber(payload.convenio_id)
+    const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
 
-    // 🆕 dentro_ventana se calcula y persiste AQUÍ, con la ventana vigente en
-    // este momento (posible override del comercial que crea el ticket) — no
-    // se recalcula después, así un cambio de configuración posterior no
-    // afecta tickets ya creados (ver dentro_ventana en el modelo/migración).
-    const minutosVentana = await getMinutosVentanaTicket(comercial.id)
-    const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(turno, minutosVentana)
-
+    // Todo lo que depende del turno corre con el turno bloqueado (FOR
+    // UPDATE): dos crear() simultáneos sobre el mismo turno se serializan y
+    // el segundo ya ve el PENDIENTE del primero.
     const trx = await Database.transaction()
     try {
+      const turno = await TurnoRtm.query({ client: trx }).where('id', turnoId).forUpdate().first()
+      if (!turno) {
+        await trx.rollback()
+        return response.notFound({ message: 'Turno no encontrado' })
+      }
+      // Segunda vez: sin dateo ni ticket de excepción de dateo.
+      if (esTurnoSegundaVez(turno)) {
+        await trx.rollback()
+        return response.conflict(conflictoTurnoSegundaVez('dateo ni ticket de excepción de dateo'))
+      }
+      if (turno.fecha.setZone('America/Bogota').toISODate() !== hoyISO) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_TURNO_OTRO_DIA',
+          message: 'Solo se puede crear el ticket para un turno de hoy.',
+        })
+      }
+      if (!['activo', 'finalizado'].includes(turno.estado)) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_TURNO_ESTADO_INVALIDO',
+          message: `El turno está ${turno.estado}: solo se acepta un turno activo o finalizado.`,
+        })
+      }
+      if (turno.captacionDateoId) {
+        await trx.rollback()
+        return response.badRequest({ message: 'Este turno ya tiene un dateo vinculado' })
+      }
+
+      const yaExistePendiente = await TicketDetalleExcepcionDateo.query({ client: trx })
+        .where('turno_id', turnoId)
+        .whereHas('ticket', (q) => q.where('estado', 'PENDIENTE'))
+        .first()
+      if (yaExistePendiente) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_PENDIENTE_EXISTENTE',
+          message: 'Ya existe un ticket pendiente para este turno',
+          ticketId: yaExistePendiente.ticketId,
+        })
+      }
+
+      // Solo imágenes subidas por POST /api/media/upload que existan en disco.
+      const evidenciaInvalida = (
+        [
+          ['evidencia_chat_url', evidenciaChatUrl],
+          ['evidencia_grupo_whatsapp_url', evidenciaGrupoWhatsappUrl],
+          ['evidencia_bloqueo_url', evidenciaBloqueoUrl],
+          ['evidencia_calamidad_url', evidenciaCalamidadUrl],
+        ] as const
+      ).find(([, url]) => url !== null && !esEvidenciaValida(url))
+      if (evidenciaInvalida) {
+        await trx.rollback()
+        return response.badRequest({
+          code: 'EVIDENCIA_INVALIDA',
+          message: `${evidenciaInvalida[0]} no es una imagen subida al sistema`,
+        })
+      }
+
+      // dentro_ventana se calcula y persiste AQUÍ, con la ventana vigente en
+      // este momento (posible override del comercial que crea el ticket) — no
+      // se recalcula después, así un cambio de configuración posterior no
+      // afecta tickets ya creados (ver dentro_ventana en el modelo/migración).
+      const minutosVentana = await getMinutosVentanaTicket(comercial.id)
+      const { dentro, minutosTotales, minutosExceso } = dentroVentanaDateoTurno(
+        turno,
+        minutosVentana
+      )
+
       const ticket = await Ticket.create(
         {
           tipoTicketId: tipoTicket.id,
@@ -333,37 +386,54 @@ export default class TicketsExcepcionDateoController {
    * forzarSinComisionPorTicket ahí) — el cálculo en sí sigue duplicado.
    */
   public async aprobar({ params, request, response, auth }: HttpContext) {
-    const ticket = await Ticket.find(params.id)
-    if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
-    if (ticket.estado !== 'PENDIENTE') {
-      return response.badRequest({ message: 'Solo se pueden aprobar tickets PENDIENTES' })
-    }
-
-    const detalle = await TicketDetalleExcepcionDateo.findBy('ticketId', ticket.id)
-    if (!detalle) return response.notFound({ message: 'Detalle del ticket no encontrado' })
-
-    // dentro_ventana quedó fijado AL CREAR el ticket (snapshot de la ventana
-    // configurada en ese momento) — no se recalcula acá. mysql2 devuelve
-    // TINYINT(1) como 0/1 (no boolean real) — Boolean() en vez de === true,
-    // si no la comparación estricta siempre da false.
-    const dentroVentana = Boolean(detalle.dentroVentana)
-
-    // con_comision solo es relevante fuera de ventana — dentro de ventana la
-    // comisión siempre es completa, sin que gerencia decida nada, así que se
-    // ignora aunque venga en el body.
-    let conComision: boolean | null = null
-    if (!dentroVentana) {
-      const raw = request.input('con_comision')
-      if (typeof raw !== 'boolean') {
-        return response.badRequest({
-          message: 'con_comision es requerido (true/false) cuando el ticket está fuera de ventana',
-        })
-      }
-      conComision = raw
-    }
-
+    // El ticket se bloquea (FOR UPDATE) antes de mirar su estado: dos
+    // aprobaciones simultáneas se serializan y la segunda ve APROBADO → 409.
     const trx = await Database.transaction()
     try {
+      const ticket = await Ticket.query({ client: trx }).where('id', params.id).forUpdate().first()
+      if (!ticket) {
+        await trx.rollback()
+        return response.notFound({ message: 'Ticket no encontrado' })
+      }
+      if (ticket.estado !== 'PENDIENTE') {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_YA_RESUELTO',
+          message: 'Solo se pueden aprobar tickets PENDIENTES',
+          estado: ticket.estado,
+        })
+      }
+
+      const detalle = await TicketDetalleExcepcionDateo.query({ client: trx })
+        .where('ticket_id', ticket.id)
+        .first()
+      if (!detalle) {
+        await trx.rollback()
+        return response.notFound({ message: 'Detalle del ticket no encontrado' })
+      }
+
+      // dentro_ventana quedó fijado AL CREAR el ticket (snapshot de la ventana
+      // configurada en ese momento) — no se recalcula acá. mysql2 devuelve
+      // TINYINT(1) como 0/1 (no boolean real) — Boolean() en vez de === true,
+      // si no la comparación estricta siempre da false.
+      const dentroVentana = Boolean(detalle.dentroVentana)
+
+      // con_comision solo es relevante fuera de ventana — dentro de ventana la
+      // comisión siempre es completa, sin que gerencia decida nada, así que se
+      // ignora aunque venga en el body.
+      let conComision: boolean | null = null
+      if (!dentroVentana) {
+        const raw = request.input('con_comision')
+        if (typeof raw !== 'boolean') {
+          await trx.rollback()
+          return response.badRequest({
+            message:
+              'con_comision es requerido (true/false) cuando el ticket está fuera de ventana',
+          })
+        }
+        conComision = raw
+      }
+
       // 1. Carga el turno del ticket.
       const turno = await TurnoRtm.query({ client: trx }).where('id', detalle.turnoId).first()
       if (!turno) {
@@ -394,7 +464,9 @@ export default class TicketsExcepcionDateoController {
       // 2. Crea el captacion_dateo (servicioId = turno.servicioId, obligatorio
       // para que dateoAplicaAServicio() lo valide correctamente en cualquier
       // lectura futura — mismo criterio que comisiones_controller.ts::store()).
-      const canal = String(comercial.tipo ?? '').toUpperCase().includes('CONVENIO')
+      const canal = String(comercial.tipo ?? '')
+        .toUpperCase()
+        .includes('CONVENIO')
         ? 'ASESOR_CONVENIO'
         : 'ASESOR_COMERCIAL'
 
@@ -428,7 +500,9 @@ export default class TicketsExcepcionDateoController {
       const asesorConvenioIdReal = convenio?.asesorConvenioId ?? null
       const caso: CasoComision = !detalle.convenioId
         ? 'SIN_CONVENIO'
-        : !dateo.agenteId || dateo.agenteId === asesorConvenioIdReal || dateo.canal === 'ASESOR_CONVENIO'
+        : !dateo.agenteId ||
+            dateo.agenteId === asesorConvenioIdReal ||
+            dateo.canal === 'ASESOR_CONVENIO'
           ? 'CONVENIO_SELF'
           : 'CONVENIO_COMERCIAL'
 
@@ -565,17 +639,32 @@ export default class TicketsExcepcionDateoController {
     const motivo = (request.input('motivo') as string | undefined)?.trim()
     if (!motivo) return response.badRequest({ message: 'motivo es requerido' })
 
-    const ticket = await Ticket.find(params.id)
-    if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
-    if (ticket.estado !== 'PENDIENTE') {
-      return response.badRequest({ message: 'Solo se pueden rechazar tickets PENDIENTES' })
-    }
-
-    const detalle = await TicketDetalleExcepcionDateo.findBy('ticketId', ticket.id)
-    if (!detalle) return response.notFound({ message: 'Detalle del ticket no encontrado' })
-
+    // Mismo bloqueo que aprobar(): un rechazo y una aprobación simultáneos
+    // no pueden resolver el mismo ticket dos veces.
     const trx = await Database.transaction()
     try {
+      const ticket = await Ticket.query({ client: trx }).where('id', params.id).forUpdate().first()
+      if (!ticket) {
+        await trx.rollback()
+        return response.notFound({ message: 'Ticket no encontrado' })
+      }
+      if (ticket.estado !== 'PENDIENTE') {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_YA_RESUELTO',
+          message: 'Solo se pueden rechazar tickets PENDIENTES',
+          estado: ticket.estado,
+        })
+      }
+
+      const detalle = await TicketDetalleExcepcionDateo.query({ client: trx })
+        .where('ticket_id', ticket.id)
+        .first()
+      if (!detalle) {
+        await trx.rollback()
+        return response.notFound({ message: 'Detalle del ticket no encontrado' })
+      }
+
       detalle.useTransaction(trx)
       detalle.motivoRechazo = motivo
       detalle.rechazadoPorId = auth.user!.id
@@ -594,5 +683,4 @@ export default class TicketsExcepcionDateoController {
       throw error
     }
   }
-
 }

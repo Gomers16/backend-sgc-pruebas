@@ -4,6 +4,9 @@ import Ticket from '#models/ticket'
 import TipoTicket from '#models/tipo_ticket'
 import TicketComentario from '#models/ticket_comentario'
 import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
+import { puedeVerTicket } from '#services/ticket_acceso_service'
+
+const ESTADOS_TICKET = ['PENDIENTE', 'APROBADO', 'RECHAZADO', 'RESUELTO', 'CERRADO'] as const
 
 function readOptionalNumber(input: unknown): number | null {
   if (input === undefined || input === null) return null
@@ -44,13 +47,22 @@ export default class TicketsController {
    * GET /tickets?tipo_ticket_id=&estado=&creado_por_id=
    * Bandeja general. Si el rol del usuario actual NO está en
    * tipo_ticket.roles_resuelve del tipo del ticket, solo ve los tickets que
-   * él mismo creó (creado_por_id = usuario actual) — chequeo por fila via
+   * él mismo creó (creado_por_id = usuario actual) o donde es el comercial
+   * del ticket (creado por gerencia a su nombre) — chequeo por fila via
    * JSON_CONTAINS, porque la lista puede mezclar varios tipos de ticket con
-   * roles_resuelve distintos.
+   * roles_resuelve distintos. Mismo criterio que puedeVerTicket() en show().
    */
   public async index({ request, response, auth }: HttpContext) {
     const tipoTicketId = readOptionalNumber(request.input('tipo_ticket_id'))
-    const estado = (request.input('estado') as string | undefined) || undefined
+    const estadoRaw = String(request.input('estado') ?? '')
+      .trim()
+      .toUpperCase()
+    const estado = estadoRaw || undefined
+    if (estado && !(ESTADOS_TICKET as readonly string[]).includes(estado)) {
+      return response.badRequest({
+        message: `estado inválido (${ESTADOS_TICKET.join(' | ')})`,
+      })
+    }
     const creadoPorIdFiltro = readOptionalNumber(request.input('creado_por_id'))
 
     await auth.user!.load('rol')
@@ -60,10 +72,15 @@ export default class TicketsController {
     const query = Ticket.query()
       .join('tipos_ticket', 'tipos_ticket.id', 'tickets.tipo_ticket_id')
       .where((qb) => {
-        qb.where('tickets.creado_por_id', usuarioId).orWhereRaw(
-          'JSON_CONTAINS(tipos_ticket.roles_resuelve, ?)',
-          [JSON.stringify(rolNombre)]
-        )
+        qb.where('tickets.creado_por_id', usuarioId)
+          .orWhereRaw('JSON_CONTAINS(tipos_ticket.roles_resuelve, ?)', [JSON.stringify(rolNombre)])
+          .orWhereExists((sub) => {
+            sub
+              .from('tickets_detalle_excepcion_dateo as d')
+              .join('agentes_captacions as a', 'a.id', 'd.comercial_id')
+              .whereColumn('d.ticket_id', 'tickets.id')
+              .where('a.usuario_id', usuarioId)
+          })
       })
       .select('tickets.*')
       .preload('tipoTicket')
@@ -84,8 +101,10 @@ export default class TicketsController {
    * Detalle + comentarios + detalle específico del tipo (join dinámico —
    * hoy solo EXCEPCION_DATEO, se extiende con más `if` por tipoTicket.codigo
    * cuando existan más tipos).
+   * Solo creador, comercial del ticket y roles resolutores (puedeVerTicket);
+   * los demás reciben 403.
    */
-  public async show({ params, response }: HttpContext) {
+  public async show({ params, response, auth }: HttpContext) {
     const ticket = await Ticket.query()
       .where('id', params.id)
       .preload('tipoTicket')
@@ -97,6 +116,9 @@ export default class TicketsController {
       .first()
 
     if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
+    if (!(await puedeVerTicket(ticket, auth.user!))) {
+      return response.forbidden({ message: 'No tienes acceso a este ticket' })
+    }
 
     const out = ticket.serialize() as Record<string, unknown>
 
@@ -118,6 +140,7 @@ export default class TicketsController {
   /**
    * POST /tickets/comentarios
    * Body: { ticket_id, mensaje }
+   * Mismo acceso que show(): creador, comercial del ticket o rol resolutor.
    */
   public async agregarComentario({ request, response, auth }: HttpContext) {
     const ticketId = readOptionalNumber(request.input('ticket_id'))
@@ -128,6 +151,9 @@ export default class TicketsController {
 
     const ticket = await Ticket.find(ticketId)
     if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
+    if (!(await puedeVerTicket(ticket, auth.user!))) {
+      return response.forbidden({ message: 'No tienes acceso a este ticket' })
+    }
 
     const comentario = await TicketComentario.create({
       ticketId,

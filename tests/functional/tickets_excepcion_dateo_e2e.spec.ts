@@ -266,7 +266,8 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
       .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
       .header('Authorization', `Bearer ${token}`)
       .json({ con_comision: true })
-    resAprobarOtraVez.assertStatus(400)
+    resAprobarOtraVez.assertStatus(409)
+    assert.equal(resAprobarOtraVez.body().code, 'TICKET_YA_RESUELTO')
   }).timeout(60000)
 
   // 🆕 Caso "dentro de ventana": el turno entró hace pocos minutos (dentro
