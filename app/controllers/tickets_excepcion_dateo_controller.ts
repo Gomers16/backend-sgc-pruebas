@@ -22,6 +22,7 @@ import {
 import { esEvidenciaValida } from '#services/ticket_acceso_service'
 import { resolverIntentoDateo } from '#services/intento_dateo_service'
 import { resolverDecisionComision } from '#services/decision_comision_ticket_service'
+import { registrarEventoTicket } from '#services/ticket_eventos_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -420,6 +421,19 @@ export default class TicketsExcepcionDateoController {
         { client: trx }
       )
 
+      await registrarEventoTicket(trx, {
+        ticketId: ticket.id,
+        tipo: 'CREADO',
+        usuarioId: auth.user!.id,
+        datos: {
+          dentro_ventana: dentro,
+          minutos_exceso: minutosExceso,
+          comercial_id: comercial.id,
+          convenio_id: intento.convenioId,
+          canal: intento.canal,
+        },
+      })
+
       await trx.commit()
       return response.created({ ticket: ticket.serialize(), detalle: detalle.serialize() })
     } catch (error) {
@@ -768,6 +782,33 @@ export default class TicketsExcepcionDateoController {
       ticket.resueltoAt = DateTime.now()
       await ticket.save()
 
+      const convenioCorregido =
+        corrigeConvenio && (detalle.convenioIdOriginal ?? null) !== (convenioId ?? null)
+      if (convenioCorregido) {
+        await registrarEventoTicket(trx, {
+          ticketId: ticket.id,
+          tipo: 'CONVENIO_CORREGIDO',
+          usuarioId: auth.user!.id,
+          datos: {
+            convenio_anterior_id: detalle.convenioIdOriginal,
+            convenio_nuevo_id: convenioId,
+          },
+        })
+      }
+      await registrarEventoTicket(trx, {
+        ticketId: ticket.id,
+        tipo: 'APROBADO',
+        usuarioId: auth.user!.id,
+        datos: {
+          caso,
+          dentro_ventana: dentroVentana,
+          con_comision_asesor: decision.asesor,
+          con_comision_convenio: decision.convenio,
+          comision_id: comisionCreada?.id ?? null,
+          dateo_id: dateo.id,
+        },
+      })
+
       await trx.commit()
 
       return response.ok({
@@ -780,8 +821,7 @@ export default class TicketsExcepcionDateoController {
         conComision: decision.asesor,
         conComisionAsesor: decision.asesor,
         conComisionConvenio: decision.convenio,
-        convenioCorregido:
-          corrigeConvenio && (detalle.convenioIdOriginal ?? null) !== (convenioId ?? null),
+        convenioCorregido,
       })
     } catch (error) {
       await trx.rollback()
@@ -834,6 +874,13 @@ export default class TicketsExcepcionDateoController {
       ticket.estado = 'RECHAZADO'
       ticket.resueltoAt = DateTime.now()
       await ticket.save()
+
+      await registrarEventoTicket(trx, {
+        ticketId: ticket.id,
+        tipo: 'RECHAZADO',
+        usuarioId: auth.user!.id,
+        datos: { motivo },
+      })
 
       await trx.commit()
       return response.ok({ ticket: ticket.serialize(), detalle: detalle.serialize() })

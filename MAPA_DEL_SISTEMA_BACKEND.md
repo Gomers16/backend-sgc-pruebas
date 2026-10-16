@@ -11,6 +11,7 @@
 > Actualizado: 2026-10-16 (**Consecutivo del descuento en todas las lecturas**, solo pruebas, sin commit): nuevo `app/services/consecutivo_descuento_service.ts`; `consecutivo_descuento` agregado (leído del ticket, sin columnas ni migraciones) a comisiones (lista/detalle), dateos (lista/detalle y documentos informativos), ficha del asesor, historial de descuentos, Liquidación RTM (placas por comisión y por descuento, y su Excel de placas) y Meta Comercial → ingreso real por dateo. Ver *Facturación → Consecutivo del descuento*.
 > Actualizado: 2026-10-16 (**Tickets de Excepción de Dateo — Fases 1 a 3**, solo pruebas): visibilidad por rol (`app/services/ticket_acceso_service.ts`), `FOR UPDATE` en `crear()`/`aprobar()`/`rechazar()` (409 `TICKET_YA_RESUELTO`/`TICKET_PENDIENTE_EXISTENTE`), turno de hoy activo/finalizado (409 `TICKET_TURNO_OTRO_DIA`/`TICKET_TURNO_ESTADO_INVALIDO`), evidencias solo de `/media/upload` y existentes en disco (400 `EVIDENCIA_INVALIDA`), ventana leída sin escribir (`getMinutosVentanaGlobal()`), `dentroVentanaDateoTurno()` con la fecha del turno; el ticket guarda el intento de dateo (migración `1796000000000`, `app/services/intento_dateo_service.ts::resolverIntentoDateo()` compartido con `captacion_dateos_controller.ts::store()`, cuyo 409 `REQUIERE_TICKET_DATEO` ahora trae `intento`); `aprobar()` crea el dateo con ese intento y gerencia puede corregir el convenio (`convenio_id_original`); caso de comisión único `comision_calculo_service.ts::decidirCasoComision()` en `aprobar()` y `applyCommissionHook()` (asesor convenio sin convenio ya no cae en Caso 1). Sección propia de Tickets pendiente para la Fase 7.
 > Actualizado: 2026-10-16 (**Tickets — Fase 4: decisión de comisión separada**, solo pruebas): migración aditiva `1797000000000` (`con_comision_asesor`/`con_comision_convenio`, `con_comision` intacta); `aprobar()` recibe ambos flags (`decision_comision_ticket_service.ts::resolverDecisionComision()`, 400 `COMBINACION_COMISION_INVALIDA`); `debeRespetarSinComision()` devuelve `{ asesor, convenio }` y la usan `applyCommissionHook()` y `recalcularComisionSiExiste()`. Detalle en el bullet de `debeRespetarSinComision` (Captación Comercial).
+> Actualizado: 2026-10-16 (**Tickets — Fase 5: historial y estadísticas**, solo pruebas): tabla `ticket_eventos` (migración `1798000000000`, con backfill), `GET /tickets` con filtros y paginación, `GET /tickets/estadisticas`, `GET /tickets/exportar`, `GET /tickets/pendientes/contador`. Nueva sección propia **Tickets internos (Excepción de Dateo)**.
 
 ---
 ## RTM / Turnos del Día
@@ -325,6 +326,57 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - **🆕 (2026-09-04)** Dateos legacy con `servicio_id IS NULL` quedan fuera de la cobertura de `buscarTurnoSinDateoHoy()` (fix de fuga de re-dateo, caso GAY96H, ver el bullet de `redatear()` arriba) — la función filtra por servicio explícito, un dateo sin servicio no tiene con qué comparar. **No es un bug activo:** verificado dos veces, en momentos distintos, contra la BD de `-pruebas`: 0 de esos dateos legacy está en `RE_DATEAR` dentro de una ventana reciente — el hueco es sobre data histórica inactiva, no sobre uso actual del sistema. No se estableció una cifra exacta confiable de cuántos dateos legacy existen, porque desde aquí solo hay acceso a la BD local de `-pruebas`/producción local (compartida), no a la BD remota de producción real.
 
 ---
+
+## Tickets internos (Excepción de Dateo)
+
+> Sección propia desde 2026-10-16 (Fases 1–5 del plan de Tickets, solo pruebas). Antes la información estaba repartida en Captación Comercial.
+
+**Propósito:** un turno de hoy sin dateo no admite dateo directo: `captacion_dateos_controller.ts::store()` responde 409 `REQUIERE_TICKET_DATEO` (con el `intento` validado) y el asesor crea un ticket de Excepción de Dateo. Gerencia lo aprueba (crea el dateo y, si Facturación ya está confirmada, la comisión) o lo rechaza.
+
+**Controladores:**
+- `app/controllers/tickets_controller.ts` — genérico: `tiposIndex`, `index` (bandeja), `show` (detalle + `eventos`), `agregarComentario`, `estadisticas`, `exportar`, `contadorPendientes`.
+- `app/controllers/tickets_excepcion_dateo_controller.ts` — `crear`, `aprobar`, `rechazar` y la configuración de la ventana (global + override por asesor).
+
+**Servicios:**
+- `ticket_acceso_service.ts` — `puedeVerTicket()` (creador, comercial del ticket, SUPER_ADMIN/GERENCIA o `roles_resuelve` del tipo) y `esEvidenciaValida()` (ruta de `/media/upload` + archivo en disco).
+- `intento_dateo_service.ts` — `resolverIntentoDateo()`: canal, agente, convenio, servicio, descuento y avance; la misma regla en `store()` y `crear()`.
+- `decision_comision_ticket_service.ts` — `resolverDecisionComision()`: combinaciones válidas de la decisión de comisión.
+- `reserva_dateo_service.ts` — `dentroVentanaDateoTurno()`, `getMinutosVentanaTicket()`/`getMinutosVentanaGlobal()` (solo lectura, default 60) y `debeRespetarSinComision()`.
+- `comision_calculo_service.ts` — `decidirCasoComision()` (caso único para `aprobar()` y `applyCommissionHook()`).
+- `ticket_eventos_service.ts` — `registrarEventoTicket()` y `lineaDeTiempoTicket()`.
+- `tickets_consulta_service.ts` — `parseFiltrosTickets()`, `aplicarFiltrosTickets()` y las expresiones SQL de la decisión (`sqlFlagAsesor`, `sqlFlagConvenio`, `sqlDecisionComision`).
+- `tickets_estadisticas_service.ts` — `estadisticasTickets()`.
+
+**Endpoints:**
+- `GET /tipos-ticket` (auth) — tipos que el rol puede crear (`roles_creador`).
+- `GET /tickets` (auth) — bandeja con filtros y paginación (ver abajo); respuesta `{ data, meta: { total, current_page, per_page, last_page } }`, cada fila con `resumen` (placa, turno, comercial, convenio, ventana, `decisionComision`). `per_page` por defecto 50, máximo 100.
+- `GET /tickets/:id` (auth, `puedeVerTicket` o 403) — detalle + comentarios + `eventos`.
+- `POST /tickets/comentarios` (auth, `puedeVerTicket` o 403) — escribe el comentario y su evento en una transacción.
+- `GET /tickets/estadisticas`, `GET /tickets/exportar`, `GET /tickets/pendientes/contador` (SUPER_ADMIN, GERENCIA).
+- `POST /tickets-excepcion-dateo` (COMERCIAL, SUPER_ADMIN, GERENCIA), `PATCH /tickets-excepcion-dateo/:id/aprobar|rechazar` (SUPER_ADMIN, GERENCIA).
+- `GET|POST /tickets/config/ventana`, `GET|POST /tickets/config/ventana/asesores`, `DELETE /tickets/config/ventana/asesores/:id`.
+
+**Reglas:**
+- `crear()`: turno de hoy (Bogotá) activo o finalizado, sin dateo, sin otro ticket PENDIENTE (turno con FOR UPDATE), no segunda vez (409 `TURNO_SEGUNDA_VEZ`). Errores: 409 `TICKET_TURNO_OTRO_DIA`, `TICKET_TURNO_ESTADO_INVALIDO`, `TICKET_PENDIENTE_EXISTENTE`; 400 `EVIDENCIA_INVALIDA`; `INTENTO_DATEO_INVALIDO` (400/403/422 según la regla de `store()`). Guarda el intento (canal, convenio, servicio, descuento, avance, teléfono; `convenio_id_original`) y fija `dentro_ventana`.
+- `aprobar()`/`rechazar()`: ticket con FOR UPDATE; si ya no está PENDIENTE → 409 `TICKET_YA_RESUELTO`. `aprobar()` crea el dateo con el intento; gerencia puede corregir `convenio_id` (evento `CONVENIO_CORREGIDO`). Decisión fuera de ventana: `con_comision_asesor`/`con_comision_convenio` — Caso 1 solo asesor; **Caso 2: el asesor convenio es el convenio, solo con o sin comisión (flags iguales)**; Caso 3 las 4 combinaciones; lo demás → 400 `COMBINACION_COMISION_INVALIDA`. Se calcula con `calcularComision()` (con descuento de caja o del intento y avance) y solo después se fuerza a $0 la parte decidida.
+
+**Filtros** (GET /tickets, estadísticas y exportar): `fecha_desde`, `fecha_hasta` (YYYY-MM-DD, día completo en Bogotá, sobre `tickets.created_at`), `comercial_id`, `convenio_id`, `estado`, `ventana` (`dentro`|`fuera`), `placa` (contiene), `turno_id`, `decision` (`con` | `sin_asesor` | `sin_convenio` | `sin_ninguno` | `regimen_anterior`), `tipo_ticket_id`, `creado_por_id`. Valor inválido → 400.
+
+**Decisión de comisión** (solo APROBADO): `con` = dentro de ventana, o asesor y convenio (si aplica) cobran; `regimen_anterior` = fuera de ventana sin decisión guardada (aprobados antes de que existiera la decisión de gerencia). Flag del asesor = `COALESCE(con_comision_asesor, con_comision)`; flag del convenio = `con_comision_convenio`, o 1 si las dos columnas nuevas están en NULL y `con_comision` no (y el ticket tiene convenio).
+
+**Dinero** (`GET /tickets/estadisticas`, por asesor del ticket y total; asesor y convenio por separado):
+- `comision_real`: la comisión ya existe (última comisión real del dateo vinculado al turno). Montos reales y desglose `por_estado` (PENDIENTE/APROBADA/PAGADA/ANULADA); los totales excluyen ANULADA.
+- `en_proceso`: ticket aprobado cuyo dateo aún no tiene comisión (Facturación sin confirmar). Valor calculado con `calcularComision()` y la configuración vigente, ya con la decisión aplicada. Es estimado.
+- `dejado_de_pagar`: asesor = `monto − monto_asesor` de la comisión real (en los 3 casos `monto` es el valor completo del asesor; el Rep General lo mantiene así: en Caso 3 no lo toca y en Casos 1/2 lo pasa al valor reclasificado) o el calculado si está en proceso; convenio = estimado con la configuración vigente (la comisión no guarda el valor del convenio que se forzó a $0). **`monto − (monto_asesor + monto_convenio)` no sirve**: en Caso 3 `monto` no incluye al convenio.
+- El cálculo por ticket (en proceso + convenio dejado) tiene tope `LIMITE_CALCULO_POR_TICKET` (500) y cachea la configuración; `meta.calculo_truncado` avisa si se cortó. Conteos y dinero real salen de consultas con `GROUP BY`.
+
+**Historial (`ticket_eventos`, migración `1798000000000`):** `CREADO`, `APROBADO` (caso, flags, comisión, dateo), `RECHAZADO` (motivo), `COMENTARIO` (comentario_id), `CONVENIO_CORREGIDO` (anterior/nuevo). Se escribe en la misma transacción de cada acción. Backfill de los tickets existentes en la migración (`SQL_BACKFILL_TICKET_EVENTOS`, idempotente). `lineaDeTiempoTicket()` completa con eventos `sintetico: true` lo que falte (tickets creados o resueltos por código que no escribe eventos). **Nunca es fuente de las estadísticas.**
+
+**Compatibilidad con producción local** (`C:\dev\backend-sgc`, misma BD): no conoce `con_comision_asesor`/`con_comision_convenio` ni `ticket_eventos`, y lee/escribe `con_comision`. Por eso: `aprobar()` escribe las tres columnas (`con_comision` = flag del asesor); `debeRespetarSinComision()`, los filtros y las estadísticas caen a `con_comision` cuando las columnas nuevas están en NULL; y la línea de tiempo sintetiza los eventos que falten. `con_comision` se borra en la Fase 7 o al sincronizar a producción local, lo que ocurra después.
+
+**Tablas:** `tipos_ticket`, `tickets`, `tickets_comentarios`, `tickets_detalle_excepcion_dateo` (+ migraciones `1796` intento de dateo, `1797` decisión separada), `ticket_eventos`, `configuracion_ventana_ticket_global`, `configuracion_ventana_ticket_asesores`.
+
+**Tests:** `tests/functional/tickets_excepcion_dateo_e2e.spec.ts`, `tickets_seguridad_e2e.spec.ts`, `tickets_intento_dateo_e2e.spec.ts`, `tickets_decision_comision_e2e.spec.ts`, `tickets_historial_estadisticas_e2e.spec.ts`, `rep_general_sin_comision_guard_e2e.spec.ts`; unitarios `decision_comision_ticket_service.spec.ts` y `comision_calculo_service.spec.ts` (`decidirCasoComision`).
 
 ## Facturación
 

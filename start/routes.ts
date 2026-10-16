@@ -2843,6 +2843,28 @@ router
       })
       .use([middleware.auth()])
 
+    // Estadísticas, exportación y contador de pendientes: solo gerencia.
+    router
+      .get('/tickets/estadisticas', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().estadisticas(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .get('/tickets/exportar', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().exportar(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    router
+      .get('/tickets/pendientes/contador', async (ctx) => {
+        const { default: TicketsController } = await import('#controllers/tickets_controller')
+        return new TicketsController().contadorPendientes(ctx)
+      })
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
     router
       .get('/tickets/:id', async (ctx) => {
         const { default: TicketsController } = await import('#controllers/tickets_controller')
