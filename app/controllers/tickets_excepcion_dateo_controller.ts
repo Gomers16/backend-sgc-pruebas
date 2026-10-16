@@ -752,6 +752,11 @@ export default class TicketsExcepcionDateoController {
         // el motor de siempre y se fuerza a 0 recién acá, justo antes de
         // guardar, solo la parte que gerencia decidió (asesor y/o convenio).
         // `monto` queda con el valor del motor: es lo que se dejó de pagar.
+        if (decision.asesor === false || decision.convenio === false) {
+          // Foto del valor calculado para el "dejado de pagar" exacto.
+          detalle.montoAsesorCalculado = c.montoAsesor
+          detalle.montoConvenioCalculado = c.montoConvenio
+        }
         if (decision.asesor === false) c.montoAsesor = '0'
         if (decision.convenio === false) c.montoConvenio = '0'
         await c.save()

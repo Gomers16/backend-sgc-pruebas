@@ -111,6 +111,17 @@ export default class TicketDetalleExcepcionDateo extends BaseModel {
   @column({ columnName: 'con_comision_convenio' })
   declare conComisionConvenio: boolean | null
 
+  /**
+   * Foto de calcularComision() antes de forzar a $0, solo si hubo alguna
+   * decisión de "sin comisión" (migración 1799000000000). DECIMAL: mysql2 lo
+   * entrega como string.
+   */
+  @column({ columnName: 'monto_asesor_calculado' })
+  declare montoAsesorCalculado: string | null
+
+  @column({ columnName: 'monto_convenio_calculado' })
+  declare montoConvenioCalculado: string | null
+
   @column({ columnName: 'aprobado_por_id' })
   declare aprobadoPorId: number | null
 

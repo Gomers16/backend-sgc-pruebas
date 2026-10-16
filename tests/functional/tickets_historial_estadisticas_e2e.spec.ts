@@ -335,7 +335,14 @@ test.group('Tickets · Fase 5 historial y estadísticas', (group) => {
     assert.isAbove(full.caso1, 0)
     await Database.from('tickets_detalle_excepcion_dateo')
       .where('ticket_id', ticket[P.B_PROD_LOCAL])
-      .update({ con_comision: 0, con_comision_asesor: null, con_comision_convenio: null })
+      // Producción local tampoco escribe la foto del valor calculado.
+      .update({
+        con_comision: 0,
+        con_comision_asesor: null,
+        con_comision_convenio: null,
+        monto_asesor_calculado: null,
+        monto_convenio_calculado: null,
+      })
   })
 
   test('estadísticas: conteos, decisiones y dinero (real, en proceso y dejado de pagar)', async ({
@@ -374,6 +381,18 @@ test.group('Tickets · Fase 5 historial y estadísticas', (group) => {
     assert.equal(a.dinero.dejado_de_pagar.asesor, full.asesor)
     assert.equal(a.dinero.dejado_de_pagar.convenio, full.convenio)
     assert.equal(a.dinero.dejado_de_pagar.tickets, 2)
+    // "Sin asesor" tiene foto (exacto); el diferido en proceso se estima.
+    assert.deepEqual(a.dinero.dejado_de_pagar.exacto, {
+      asesor: full.asesor,
+      convenio: 0,
+      tickets: 1,
+    })
+    assert.deepEqual(a.dinero.dejado_de_pagar.estimado, {
+      asesor: 0,
+      convenio: full.convenio,
+      tickets: 1,
+    })
+    assert.isFalse(r.body().meta.tope_aplicado)
     assert.lengthOf(r.body().por_asesor, 1)
     assert.equal(r.body().por_asesor[0].comercial_id, agenteA.id)
 
@@ -383,6 +402,9 @@ test.group('Tickets · Fase 5 historial y estadísticas', (group) => {
     assert.equal(b.aprobados.sin_asesor, 1)
     assert.equal(b.dinero.comision_real.asesor, 0)
     assert.equal(b.dinero.dejado_de_pagar.asesor, full.caso1)
+    // Sin foto (producción local): todo es estimado.
+    assert.equal(b.dinero.dejado_de_pagar.estimado.asesor, full.caso1)
+    assert.equal(b.dinero.dejado_de_pagar.exacto.tickets, 0)
   })
 
   test('filtros de GET /tickets (cada uno) y validación', async ({ client, assert }) => {

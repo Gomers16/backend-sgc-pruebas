@@ -284,6 +284,31 @@ export async function getMinutosVentanaTicket(agenteId?: number | null): Promise
   return getMinutosVentanaGlobal()
 }
 
+/**
+ * Guarda la foto del valor calculado (antes de forzar a $0) en el ticket de
+ * Excepción de Dateo APROBADO del turno. Lo usa applyCommissionHook() (camino
+ * diferido) cuando debeRespetarSinComision() dice que hay algo sin comisión;
+ * aprobar() la escribe directo en el detalle. Ver migración 1799000000000.
+ */
+export async function guardarFotoComisionTicket(
+  turnoId: number,
+  montoAsesor: string | number,
+  montoConvenio: string | number,
+  trx?: TransactionClientContract
+): Promise<void> {
+  const { default: Database } = await import('@adonisjs/lucid/services/db')
+  const q = (trx ?? Database).from('tickets_detalle_excepcion_dateo')
+  await q
+    .where('turno_id', turnoId)
+    .whereIn('ticket_id', (sub: any) =>
+      sub.from('tickets').where('estado', 'APROBADO').select('id')
+    )
+    .update({
+      monto_asesor_calculado: Number(montoAsesor) || 0,
+      monto_convenio_calculado: Number(montoConvenio) || 0,
+    })
+}
+
 /** Qué parte de la comisión se paga en $0 por decisión de gerencia (true = sin comisión). */
 export interface SinComisionTicket {
   asesor: boolean
@@ -323,7 +348,7 @@ export async function debeRespetarSinComision(
   if (!detalle) return ninguno
 
   const sinComision = (flag: boolean | number | null | undefined) =>
-    flag !== null && flag !== undefined && !Boolean(flag)
+    flag !== null && flag !== undefined && Boolean(flag) === false
 
   if (detalle.conComisionAsesor === null && detalle.conComisionConvenio === null) {
     return { asesor: sinComision(detalle.conComision), convenio: false }

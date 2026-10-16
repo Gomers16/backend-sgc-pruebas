@@ -13,7 +13,10 @@
 //  - en_proceso: ticket aprobado cuyo dateo todavía no tiene comisión → valor
 //    calculado con calcularComision() y la configuración vigente, ya con la
 //    decisión de gerencia aplicada.
-//  - dejado_de_pagar: lo que la decisión "sin comisión" dejó en $0.
+//  - dejado_de_pagar: lo que la decisión "sin comisión" dejó en $0, separado
+//    en `exacto` (foto monto_*_calculado que guardaron aprobar() o
+//    applyCommissionHook(), migración 1799000000000) y `estimado` (tickets sin
+//    foto: viejos o aprobados por producción local). Sin foto:
 //      asesor   = monto − monto_asesor de la comisión real (monto es siempre el
 //                 valor completo del asesor en los 3 casos; el Rep General lo
 //                 mantiene así), o el calculado si está en proceso.
@@ -73,7 +76,8 @@ export interface BloqueEstadisticas {
   dinero: {
     comision_real: Montos & { por_estado: Record<string, Montos> }
     en_proceso: Montos
-    dejado_de_pagar: Montos
+    /** asesor/convenio/tickets = exacto + estimado. */
+    dejado_de_pagar: Montos & { exacto: Montos; estimado: Montos }
   }
 }
 
@@ -105,7 +109,7 @@ function bloqueVacio(): Acumulado {
         por_estado: Object.fromEntries(ESTADOS_COMISION.map((e) => [e, montos()])),
       },
       en_proceso: montos(),
-      dejado_de_pagar: montos(),
+      dejado_de_pagar: { ...montos(), exacto: montos(), estimado: montos() },
     },
     _segResolucion: 0,
     _resueltos: 0,
@@ -199,11 +203,21 @@ export async function estadisticasTickets(f: FiltrosTickets) {
       Database.raw('COUNT(*) as tickets'),
       Database.raw('SUM(c.monto_asesor) as asesor'),
       Database.raw('SUM(c.monto_convenio) as convenio'),
+      // Con foto (exacto) / sin foto (estimado). La foto lleva las dos columnas juntas.
       Database.raw(
-        `SUM(CASE WHEN c.estado <> 'ANULADA' AND ${sqlFlagAsesor('d')} = 0 THEN GREATEST(c.monto - c.monto_asesor, 0) ELSE 0 END) as dejado_asesor`
+        `SUM(CASE WHEN c.estado <> 'ANULADA' AND ${sqlFlagAsesor('d')} = 0 AND d.monto_asesor_calculado IS NOT NULL THEN d.monto_asesor_calculado ELSE 0 END) as dejado_asesor_exacto`
       ),
       Database.raw(
-        `SUM(c.estado <> 'ANULADA' AND (${sqlFlagAsesor('d')} = 0 OR ${sqlFlagConvenio('d')} = 0)) as dejado_tickets`
+        `SUM(CASE WHEN c.estado <> 'ANULADA' AND ${sqlFlagAsesor('d')} = 0 AND d.monto_asesor_calculado IS NULL THEN GREATEST(c.monto - c.monto_asesor, 0) ELSE 0 END) as dejado_asesor_estimado`
+      ),
+      Database.raw(
+        `SUM(CASE WHEN c.estado <> 'ANULADA' AND ${sqlFlagConvenio('d')} = 0 AND d.monto_convenio_calculado IS NOT NULL THEN d.monto_convenio_calculado ELSE 0 END) as dejado_convenio_exacto`
+      ),
+      Database.raw(
+        `SUM(c.estado <> 'ANULADA' AND (${sqlFlagAsesor('d')} = 0 OR ${sqlFlagConvenio('d')} = 0) AND d.monto_asesor_calculado IS NOT NULL) as dejado_tickets_exacto`
+      ),
+      Database.raw(
+        `SUM(c.estado <> 'ANULADA' AND (${sqlFlagAsesor('d')} = 0 OR ${sqlFlagConvenio('d')} = 0) AND d.monto_asesor_calculado IS NULL) as dejado_tickets_estimado`
       )
     )
   for (const r of reales as any[]) {
@@ -218,12 +232,17 @@ export async function estadisticasTickets(f: FiltrosTickets) {
       real.convenio += n(r.convenio)
       real.tickets += n(r.tickets)
     }
-    g.dinero.dejado_de_pagar.asesor += n(r.dejado_asesor)
-    g.dinero.dejado_de_pagar.tickets += n(r.dejado_tickets)
+    const dj = g.dinero.dejado_de_pagar
+    dj.exacto.asesor += n(r.dejado_asesor_exacto)
+    dj.exacto.convenio += n(r.dejado_convenio_exacto)
+    dj.exacto.tickets += n(r.dejado_tickets_exacto)
+    dj.estimado.asesor += n(r.dejado_asesor_estimado)
+    dj.estimado.tickets += n(r.dejado_tickets_estimado)
   }
 
   // 3) Cálculo por ticket: aprobados sin comisión todavía (en proceso) y
-  //    comisiones reales con el convenio en $0 (para estimar lo no pagado).
+  //    comisiones reales con el convenio en $0 y sin foto (para estimar lo
+  //    no pagado).
   const filas = (await base(f)
     .where('t.estado', 'APROBADO')
     .join('turnos_rtms as tr', 'tr.id', 'd.turno_id')
@@ -233,7 +252,9 @@ export async function estadisticasTickets(f: FiltrosTickets) {
     .joinRaw(`LEFT JOIN comisiones c ON c.id = ${SQL_ULTIMA_COMISION}`)
     .where((q: any) => {
       q.whereNull('c.id').orWhere((q2: any) => {
-        q2.whereRaw(`${sqlFlagConvenio('d')} = 0`).whereNot('c.estado', 'ANULADA')
+        q2.whereRaw(`${sqlFlagConvenio('d')} = 0`)
+          .whereNot('c.estado', 'ANULADA')
+          .whereNull('d.monto_convenio_calculado')
       })
     })
     .select(
@@ -332,7 +353,7 @@ export async function estadisticasTickets(f: FiltrosTickets) {
     const sinConvenio =
       r.flag_convenio !== null && r.flag_convenio !== undefined && !r.flag_convenio
     const g = grupo(Number(r.comercial_id))
-    const dejado = g.dinero.dejado_de_pagar
+    const dejado = g.dinero.dejado_de_pagar.estimado
 
     if (enProceso) {
       const ep = g.dinero.en_proceso
@@ -379,6 +400,8 @@ export async function estadisticasTickets(f: FiltrosTickets) {
     meta: {
       calculados_por_ticket: Math.min(filas.length, LIMITE_CALCULO_POR_TICKET),
       calculo_truncado: truncado,
+      /** Para el aviso en pantalla: se aplicó el tope del cálculo por ticket. */
+      tope_aplicado: truncado,
       limite_calculo_por_ticket: LIMITE_CALCULO_POR_TICKET,
       en_proceso_y_convenio_dejado_son_estimados: true,
     },
@@ -400,7 +423,8 @@ function sumarDinero(dst: Acumulado, src: Acumulado) {
     )
   }
   sum(dst.dinero.en_proceso, src.dinero.en_proceso)
-  sum(dst.dinero.dejado_de_pagar, src.dinero.dejado_de_pagar)
+  sum(dst.dinero.dejado_de_pagar.exacto, src.dinero.dejado_de_pagar.exacto)
+  sum(dst.dinero.dejado_de_pagar.estimado, src.dinero.dejado_de_pagar.estimado)
 }
 
 function cerrar(g: Acumulado): BloqueEstadisticas {
@@ -429,7 +453,18 @@ function cerrar(g: Acumulado): BloqueEstadisticas {
         ),
       },
       en_proceso: r(g.dinero.en_proceso),
-      dejado_de_pagar: r(g.dinero.dejado_de_pagar),
+      dejado_de_pagar: (() => {
+        const { exacto, estimado } = g.dinero.dejado_de_pagar
+        return {
+          ...r({
+            asesor: exacto.asesor + estimado.asesor,
+            convenio: exacto.convenio + estimado.convenio,
+            tickets: exacto.tickets + estimado.tickets,
+          }),
+          exacto: r(exacto),
+          estimado: r(estimado),
+        }
+      })(),
     },
   }
 }

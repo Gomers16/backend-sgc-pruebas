@@ -17,7 +17,7 @@ import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
 import FacturacionConsecutivoDescuentoCambio from '#models/facturacion_consecutivo_descuento_cambio'
 import { evaluarContinuidad } from '#services/continuidad_service'
-import { debeRespetarSinComision } from '#services/reserva_dateo_service'
+import { debeRespetarSinComision, guardarFotoComisionTicket } from '#services/reserva_dateo_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -1437,6 +1437,9 @@ export default class FacturacionTicketsController {
         c.reglaAplicada = resultadoCaso1.reglaAplicada
         console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
 
+        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
+          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
+        }
         if (sinComisionTicket.asesor) c.montoAsesor = '0'
         if (sinComisionTicket.convenio) c.montoConvenio = '0'
 
@@ -1486,6 +1489,9 @@ export default class FacturacionTicketsController {
           `✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`
         )
 
+        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
+          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
+        }
         if (sinComisionTicket.asesor) c.montoAsesor = '0'
         if (sinComisionTicket.convenio) c.montoConvenio = '0'
 
@@ -1539,6 +1545,9 @@ export default class FacturacionTicketsController {
         console.log(
           `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
         )
+        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
+          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
+        }
         if (sinComisionTicket.asesor) c.montoAsesor = '0'
         if (sinComisionTicket.convenio) c.montoConvenio = '0'
         await c.useTransaction(trx).save()

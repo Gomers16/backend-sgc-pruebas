@@ -178,6 +178,18 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     assert.equal(Number(c.montoConvenio), f.convenio ? completo.convenio : 0)
   }
 
+  /** Foto del valor calculado (antes de forzar a $0): solo si hubo algún "sin comisión". */
+  async function assertFoto(assert: any, ticketId: number, esperada: boolean) {
+    const d = await TicketDetalleExcepcionDateo.findByOrFail('ticketId', ticketId)
+    if (!esperada) {
+      assert.isNull(d.montoAsesorCalculado)
+      assert.isNull(d.montoConvenioCalculado)
+      return
+    }
+    assert.equal(Number(d.montoAsesorCalculado), completo.asesor)
+    assert.equal(Number(d.montoConvenioCalculado), completo.convenio)
+  }
+
   async function assertFlagsGuardados(assert: any, ticketId: number, f: Flags) {
     const d = await TicketDetalleExcepcionDateo.findByOrFail('ticketId', ticketId)
     assert.equal(Boolean(d.conComisionAsesor), f.asesor)
@@ -284,6 +296,7 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     assert.isAbove(completo.asesor, 0)
     assert.isAbove(completo.convenio, 0)
     await assertFlagsGuardados(assert, ticketId, f)
+    await assertFoto(assert, ticketId, false)
   })
 
   for (const [nombre, placa, f] of [
@@ -297,6 +310,7 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
       assert.equal(body.conComisionConvenio, f.convenio)
       await assertMontos(assert, comision, f)
       await assertFlagsGuardados(assert, ticketId, f)
+      await assertFoto(assert, ticketId, true)
       assert.deepEqual(await debeRespetarSinComision(turno.id), {
         asesor: !f.asesor,
         convenio: !f.convenio,
@@ -327,6 +341,8 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
       const c = await Comision.query().where('captacion_dateo_id', r.body().dateoId).firstOrFail()
       assert.match(String(c.reglaAplicada), /^Caso 3/)
       await assertMontos(assert, c, f)
+      // Camino diferido: la foto la escribe applyCommissionHook() al confirmar.
+      await assertFoto(assert, ticketId, true)
     })
   }
 
@@ -497,9 +513,13 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     const ticketId = await crearTicket(client, turno.id, comercial.id, conConvenio())
     const r = await aprobar(client, ticketId, flagsBody({ asesor: false, convenio: true }))
     r.assertStatus(200)
-    await Database.from('tickets_detalle_excepcion_dateo')
-      .where('ticket_id', ticketId)
-      .update({ con_comision: 0, con_comision_asesor: null, con_comision_convenio: null })
+    await Database.from('tickets_detalle_excepcion_dateo').where('ticket_id', ticketId).update({
+      con_comision: 0,
+      con_comision_asesor: null,
+      con_comision_convenio: null,
+      monto_asesor_calculado: null,
+      monto_convenio_calculado: null,
+    })
     assert.deepEqual(await debeRespetarSinComision(turno.id), { asesor: true, convenio: false })
   })
 
