@@ -1,5 +1,6 @@
 // app/controllers/facturacion_tickets_controller.ts — FRAGMENTO 1/3
 import type { HttpContext } from '@adonisjs/core/http'
+import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import { cuid } from '@adonisjs/core/helpers'
 import app from '@adonisjs/core/services/app'
 import { DateTime } from 'luxon'
@@ -14,6 +15,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import Descuento from '#models/descuento' // 🆕
+import FacturacionConsecutivoDescuentoCambio from '#models/facturacion_consecutivo_descuento_cambio'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
 import {
@@ -32,6 +34,11 @@ const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
 
 /** Ventana para considerar duplicado por contenido. */
 const DUP_WINDOW_MINUTES = 60
+
+/** Consecutivo del descuento: mayúsculas, solo [A-Z0-9-], máx. 30 (sin normalizar ceros). */
+const CONSECUTIVO_DESCUENTO_RE = /^[A-Z0-9-]{1,30}$/
+/** Índice único sobre la columna generada consecutivo_descuento_confirmado. */
+const UQ_CONSECUTIVO_DESCUENTO = 'uq_fact_consecutivo_descuento_confirmado'
 
 /* ============================== Tipos DTO / Snapshots ============================== */
 
@@ -140,6 +147,7 @@ interface DescuentoAplicadoDTO {
   nombre: string
   montoAplicado: number
   autorizadoPor: { id: number; nombre: string } | null
+  consecutivoDescuento: string | null
 }
 
 interface TicketDTO {
@@ -163,6 +171,7 @@ interface TicketDTO {
   vendedorText: string | null
   prefijo: string | null
   consecutivo: string | null
+  consecutivoDescuento: string | null
 
   nit?: string | null
   pin?: string | null
@@ -275,6 +284,7 @@ export default class FacturacionTicketsController {
       // 🆕
       descuento_id: t.descuentoId ?? null,
       descuento_monto_aplicado: t.descuentoMontoAplicado ?? null,
+      consecutivo_descuento: t.consecutivoDescuento ?? null,
     }))
 
     return { meta, data: rows }
@@ -335,6 +345,139 @@ export default class FacturacionTicketsController {
 
     const n = Number(countRow?.$extras.total || 0)
     return { possible: n > 0, count: n }
+  }
+
+  /**
+   * GET /facturacion/tickets/consecutivo-descuento/verificar?valor=X&excluir_id=Y
+   * Verificación en vivo mientras caja digita. Busca el consecutivo en
+   * tickets de CUALQUIER estado (excepto `excluir_id`, el ticket en curso) y
+   * dice en cuáles está. Solo es `bloqueante` si alguno está CONFIRMADA (la
+   * unicidad dura del índice solo cuenta tickets CONFIRMADA).
+   */
+  public async verificarConsecutivoDescuento({ request }: HttpContext) {
+    const parsed = parseConsecutivoDescuento(request.input('valor'))
+    if (!parsed.ok || !parsed.valor) {
+      return {
+        valor: parsed.ok ? null : parsed.normalizado,
+        valido: false,
+        exists: false,
+        bloqueante: false,
+        tickets: [],
+      }
+    }
+    const excluirId = toIntOrNull(request.input('excluir_id'))
+    const q = FacturacionTicket.query()
+      .where('consecutivo_descuento', parsed.valor)
+      .orderBy('id', 'desc')
+      .limit(10)
+    if (excluirId) q.whereNot('id', excluirId)
+    const rows = await q
+
+    return {
+      valor: parsed.valor,
+      valido: true,
+      exists: rows.length > 0,
+      bloqueante: rows.some((r) => r.estado === 'CONFIRMADA'),
+      tickets: rows.map(resumenTicketConsecutivo),
+    }
+  }
+
+  /**
+   * PATCH /facturacion/tickets/:id/consecutivo-descuento
+   * body: { consecutivo_descuento: string, motivo?: string (≤255) }
+   * Solo SUPER_ADMIN / GERENCIA (middleware de la ruta). Corrige el
+   * consecutivo del descuento de un ticket YA CONFIRMADA y deja registro de
+   * quién y cuándo en facturacion_consecutivo_descuento_cambios. El PATCH
+   * genérico rechaza cualquier cambio de este campo en tickets CONFIRMADA.
+   */
+  public async corregirConsecutivoDescuento({ params, request, auth, response }: HttpContext) {
+    const parsed = parseConsecutivoDescuento(request.input('consecutivo_descuento'))
+    if (!parsed.ok) return response.unprocessableEntity(errorConsecutivoDescuentoInvalido())
+    if (!parsed.valor) {
+      return response.unprocessableEntity({
+        code: 'CONSECUTIVO_DESCUENTO_REQUERIDO',
+        message: 'Digita el consecutivo del descuento.',
+      })
+    }
+    const valorNuevo = parsed.valor
+    const motivo = nullIfEmpty(request.input('motivo'))
+    if (motivo && motivo.length > 255) {
+      return response.unprocessableEntity({
+        code: 'MOTIVO_MUY_LARGO',
+        message: 'El motivo admite máximo 255 caracteres.',
+      })
+    }
+
+    const trx = await Database.transaction()
+    try {
+      const ticket = await FacturacionTicket.query({ client: trx })
+        .where('id', Number(params.id))
+        .forUpdate()
+        .first()
+      if (!ticket) {
+        await trx.rollback()
+        return response.notFound({ message: 'Ticket no encontrado' })
+      }
+      if (ticket.estado !== 'CONFIRMADA') {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_NO_CONFIRMADO',
+          message:
+            'Solo se corrige el consecutivo de un ticket CONFIRMADA; antes de confirmar se edita en el ticket.',
+          estado: ticket.estado,
+        })
+      }
+      if (!ticket.descuentoId) {
+        await trx.rollback()
+        return response.unprocessableEntity({
+          code: 'TICKET_SIN_DESCUENTO',
+          message: 'El ticket no tiene descuento: no lleva consecutivo de descuento.',
+        })
+      }
+      const valorAnterior = ticket.consecutivoDescuento ?? null
+      if (valorAnterior === valorNuevo) {
+        await trx.rollback()
+        return response.unprocessableEntity({
+          code: 'SIN_CAMBIO',
+          message: `El ticket ya tiene el consecutivo de descuento ${valorNuevo}.`,
+        })
+      }
+
+      const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, ticket.id, trx)
+      if (otro) {
+        await trx.rollback()
+        return response.conflict(conflictoConsecutivoDescuento(valorNuevo, otro))
+      }
+
+      ticket.useTransaction(trx)
+      ticket.consecutivoDescuento = valorNuevo
+      await ticket.save()
+
+      const cambio = await FacturacionConsecutivoDescuentoCambio.create(
+        {
+          facturacionTicketId: ticket.id,
+          valorAnterior,
+          valorNuevo,
+          motivo,
+          usuarioId: auth.user?.id ?? null,
+        },
+        { client: trx }
+      )
+
+      await trx.commit()
+      return response.ok({
+        message: `Consecutivo del descuento corregido: ${valorAnterior ?? 'sin consecutivo'} → ${valorNuevo}`,
+        ticket: { id: ticket.id, consecutivoDescuento: ticket.consecutivoDescuento },
+        cambio,
+      })
+    } catch (error) {
+      if (!trx.isCompleted) await trx.rollback()
+      if (esErrorUnicoConsecutivoDescuento(error)) {
+        const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, Number(params.id))
+        return response.conflict(conflictoConsecutivoDescuento(valorNuevo, otro))
+      }
+      throw error
+    }
   }
 
   /**
@@ -526,6 +669,7 @@ export default class FacturacionTicketsController {
       'descuento_monto_aplicado',
       'total_sin_descuento',
       'descuento_observacion',
+      'consecutivo_descuento',
     ]) as Record<string, unknown>
 
     const esSOAT = isSOAT(ticket.servicioCodigo, ticket.servicioNombre)
@@ -617,6 +761,31 @@ export default class FacturacionTicketsController {
     // 🆕 Nota de la cajera sobre por qué aplicó este descuento (opcional)
     if ('descuento_observacion' in up)
       ticket.descuentoObservacion = nullIfEmpty(up.descuento_observacion)
+
+    // 🆕 Consecutivo del descuento (lo digita caja). En un ticket CONFIRMADA
+    // no se cambia por aquí: solo SUPER_ADMIN/GERENCIA con
+    // PATCH /:id/consecutivo-descuento, que deja registro del cambio.
+    if ('consecutivo_descuento' in up) {
+      const parsed = parseConsecutivoDescuento(up.consecutivo_descuento)
+      if (!parsed.ok) return response.unprocessableEntity(errorConsecutivoDescuentoInvalido())
+      if (parsed.valor !== (ticket.consecutivoDescuento ?? null)) {
+        if (ticket.estado === 'CONFIRMADA') {
+          return response.forbidden({
+            code: 'CONSECUTIVO_DESCUENTO_CONFIRMADO',
+            message:
+              'El ticket ya está confirmado: el consecutivo del descuento solo lo corrige SUPER_ADMIN o GERENCIA.',
+          })
+        }
+        if (parsed.valor) {
+          const otro = await buscarConsecutivoDescuentoConfirmado(parsed.valor, ticket.id)
+          if (otro) return response.conflict(conflictoConsecutivoDescuento(parsed.valor, otro))
+        }
+        ticket.consecutivoDescuento = parsed.valor
+      }
+    }
+    // Sin descuento no hay consecutivo (no aplica a tickets ya CONFIRMADA:
+    // la edición post-confirmación de los demás campos queda pendiente).
+    if (!ticket.descuentoId && ticket.estado !== 'CONFIRMADA') ticket.consecutivoDescuento = null
 
     // Recalcular total con descuento aplicado
     // Guardar total original y calcular total con descuento
@@ -807,6 +976,27 @@ export default class FacturacionTicketsController {
         message: 'Servicio simplificado requiere al menos la imagen de la factura',
       })
 
+    // 🆕 Consecutivo del descuento: obligatorio con descuento en uso (incluye
+    // el pre-marcado del dateo) y único entre tickets CONFIRMADA. No se exige
+    // al re-confirmar un ticket que ya estaba CONFIRMADA (los anteriores al
+    // campo quedan con NULL).
+    if (ticket.descuentoId && ticket.estado !== 'CONFIRMADA') {
+      if (!ticket.consecutivoDescuento) {
+        return response.unprocessableEntity({
+          code: 'CONSECUTIVO_DESCUENTO_REQUERIDO',
+          message:
+            'El ticket tiene descuento: digita el consecutivo del descuento antes de confirmar.',
+        })
+      }
+      const otro = await buscarConsecutivoDescuentoConfirmado(
+        ticket.consecutivoDescuento,
+        ticket.id
+      )
+      if (otro) {
+        return response.conflict(conflictoConsecutivoDescuento(ticket.consecutivoDescuento, otro))
+      }
+    }
+
     if (!esSOAT) {
       const dup = await isContentDuplicate(ticket)
       ticket.duplicadoPorContenido = dup
@@ -857,7 +1047,21 @@ export default class FacturacionTicketsController {
       }
     }
 
-    await ticket.save()
+    // Este save pasa el ticket a CONFIRMADA: si otro ticket confirmó el mismo
+    // consecutivo de descuento entre la validación y aquí, el índice único
+    // responde 1062 y se traduce a un 409 claro.
+    try {
+      await ticket.save()
+    } catch (err) {
+      if (esErrorUnicoConsecutivoDescuento(err) && ticket.consecutivoDescuento) {
+        const otro = await buscarConsecutivoDescuentoConfirmado(
+          ticket.consecutivoDescuento,
+          ticket.id
+        )
+        return response.conflict(conflictoConsecutivoDescuento(ticket.consecutivoDescuento, otro))
+      }
+      throw err
+    }
 
     if (ticket.turnoId) {
       const turnoToUpdate = await TurnoRtm.query()
@@ -1464,6 +1668,7 @@ export default class FacturacionTicketsController {
               nombre: [autorizadoPor.nombres, autorizadoPor.apellidos].filter(Boolean).join(' '),
             }
           : null,
+        consecutivoDescuento: (t as any).consecutivoDescuento ?? null,
       }
     } else {
       dto.descuentoAplicado = null
@@ -1622,6 +1827,68 @@ function placaValida(placa?: string | null): boolean {
   if (!placa) return false
   const rex = /^(?:[A-Z]{3}\d{3}|[A-Z]{3}\d{2}[A-Z]?|\d{3}[A-Z]{3})$/
   return rex.test(placa.toUpperCase())
+}
+
+/* ============== Consecutivo del descuento ============== */
+
+type ConsecutivoDescuentoParsed =
+  | { ok: true; valor: string | null }
+  | { ok: false; normalizado: string }
+
+/** Vacío → null. Si no, trim + mayúsculas; debe cumplir [A-Z0-9-]{1,30} (sin espacios internos). */
+function parseConsecutivoDescuento(v: unknown): ConsecutivoDescuentoParsed {
+  if (v === null || v === undefined) return { ok: true, valor: null }
+  const s = String(v).trim().toUpperCase()
+  if (!s) return { ok: true, valor: null }
+  return CONSECUTIVO_DESCUENTO_RE.test(s) ? { ok: true, valor: s } : { ok: false, normalizado: s }
+}
+
+function errorConsecutivoDescuentoInvalido() {
+  return {
+    code: 'CONSECUTIVO_DESCUENTO_INVALIDO',
+    message:
+      'Consecutivo del descuento inválido: solo letras, números y guion (-), sin espacios, máximo 30.',
+  }
+}
+
+async function buscarConsecutivoDescuentoConfirmado(
+  valor: string,
+  excluirId: number,
+  client?: TransactionClientContract
+): Promise<FacturacionTicket | null> {
+  return FacturacionTicket.query(client ? { client } : {})
+    .where('consecutivo_descuento', valor)
+    .where('estado', 'CONFIRMADA')
+    .whereNot('id', excluirId)
+    .first()
+}
+
+function resumenTicketConsecutivo(t: FacturacionTicket) {
+  return {
+    id: t.id,
+    estado: t.estado,
+    placa: t.placa ?? null,
+    confirmado_at: t.confirmadoAt?.toISO() ?? null,
+    created_at: t.createdAt?.toISO() ?? null,
+  }
+}
+
+function conflictoConsecutivoDescuento(valor: string, otro: FacturacionTicket | null) {
+  const donde = otro
+    ? ` en el ticket #${otro.id}${otro.placa ? ` (placa ${otro.placa})` : ''}`
+    : ' en otro ticket confirmado'
+  return {
+    code: 'CONSECUTIVO_DESCUENTO_DUPLICADO',
+    message: `El consecutivo de descuento ${valor} ya está registrado${donde}.`,
+    id: otro?.id ?? null,
+    ticket: otro ? resumenTicketConsecutivo(otro) : null,
+  }
+}
+
+function esErrorUnicoConsecutivoDescuento(err: unknown): boolean {
+  const e = err as { errno?: number; code?: string; sqlMessage?: string; message?: string }
+  const esDup = e?.errno === 1062 || e?.code === 'ER_DUP_ENTRY'
+  return esDup && String(e.sqlMessage ?? e.message ?? '').includes(UQ_CONSECUTIVO_DESCUENTO)
 }
 
 function canConfirm(t: FacturacionTicket, _hard: boolean): boolean {
@@ -1806,6 +2073,7 @@ function buildTicketDTO(ticket: FacturacionTicket): TicketDTO {
     vendedorText: pick('vendedorText', 'vendedor_text'),
     prefijo: s.prefijo ?? null,
     consecutivo: s.consecutivo ?? null,
+    consecutivoDescuento: pick('consecutivoDescuento', 'consecutivo_descuento'),
     nit: s.nit ?? null,
     pin: s.pin ?? null,
     marca: s.marca ?? null,

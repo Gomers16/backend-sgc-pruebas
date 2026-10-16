@@ -7,6 +7,7 @@
 > Actualizado: 2026-10-06 (sincronización a producción local): **Segunda vez** (entregas A, B1, B2, C1, C2), **dateo de Preventiva** marcado EXITOSO en Certificación, **Google ADS** como canal/medio, **reportes por canal** por "¿Cómo se enteró de nosotros?" con la línea informativa "de los cuales, por convenio", y **fix de numeración de turnos** (MAX sobre todos los estados, reintentos y sufijo en `turno_codigo`). Ver las secciones "Segunda vez", "Numeración de turnos", "Google ADS", "Reportes por canal" y la deuda técnica al final.
 >
 > Actualizado: 2026-10-13 (**negocio del convenio en desplegables y pantallas — Entrega 1**, solo pruebas): `GET /convenios/light` reescrito como catálogo completo para desplegables (sin tope, solo activos, `select` con whitelist, orden por nombre); `establecimiento` agregado a `/convenios/asignados`, `/agentes-captacion/:id/convenios` (completa y `light`), lista y detalle de dateos, dateos de la ficha del asesor y lista/detalle de comisiones. Ver *Convenios* en Captación Comercial. Reportes/Excel/PDF quedan para la Entrega 2.
+> Actualizado: 2026-10-16 (**Consecutivo del descuento en Facturación**, solo pruebas, sin commit): columna `facturacion_tickets.consecutivo_descuento` que caja digita a mano, obligatoria cuando hay descuento en uso y única entre tickets CONFIRMADA (columna generada + índice único); endpoints de verificación en vivo y de corrección (solo SUPER_ADMIN/GERENCIA, con registro en `facturacion_consecutivo_descuento_cambios`); detalle y Excel del reporte de descuentos. Migración `1795000000000` ya aplicada en la MySQL local compartida. Ver *Facturación*.
 
 ---
 ## RTM / Turnos del Día
@@ -333,6 +334,16 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - `facturacion_tickets` (modelo `FacturacionTicket`) — `turno_id`, `estado` (ej. CONFIRMADA), montos/valores del ticket, tipo de vehículo del ticket (usado por `inferTipoVehiculoComision` con prioridad sobre el tipo del turno), `descuento_id` (FK a `descuentos`, el código aplicado/confirmado en caja). **🆕 (2026-08-21)** `descuento_observacion` (text, nullable) — nota libre de la cajera sobre por qué aplicó ese descuento, capturada al confirmar el ticket; es un campo **dedicado**, distinto del `observaciones` genérico del ticket. Migración `1786000000008_create_add_descuento_observacion_to_facturacion_tickets_table`.
 - `comprobantes_pago` (modelo `ComprobantePago`) — soporte/evidencia de pago vinculado a un ticket.
 - `descuentos` (modelo `Descuento`) — `codigo`, `activo`; el código se usa en `calcularComision` (módulo Comisiones) para decidir si el monto queda en $0 (descuentos informativos como AVANCE).
+- **🆕 (2026-10-16)** `facturacion_consecutivo_descuento_cambios` (modelo `FacturacionConsecutivoDescuentoCambio`) — registro de cada corrección del consecutivo del descuento en un ticket ya CONFIRMADA: `facturacion_ticket_id`, `valor_anterior`, `valor_nuevo`, `motivo` (≤255, opcional), `usuario_id`, `created_at`.
+
+### Consecutivo del descuento (2026-10-16)
+
+- **Columnas** en `facturacion_tickets` (migración `1795000000000_add_consecutivo_descuento_to_facturacion_tickets`): `consecutivo_descuento` VARCHAR(30) NULL (índice `idx_fact_consecutivo_descuento`) y `consecutivo_descuento_confirmado`, columna generada STORED = `consecutivo_descuento` solo si `estado='CONFIRMADA'`, con índice único `uq_fact_consecutivo_descuento_confirmado`. Así la unicidad dura cuenta **solo** tickets CONFIRMADA: si uno pasa a REVERTIDA, el valor queda libre.
+- **Formato** (`CONSECUTIVO_DESCUENTO_RE`): mayúsculas, solo `[A-Z0-9-]`, 1–30 caracteres; no se normalizan ceros a la izquierda.
+- **Obligatorio** en `update()` y `confirmar()` cuando el ticket tiene descuento en uso (incluido el pre-marcado heredado del dateo). Errores: 422 `CONSECUTIVO_DESCUENTO_REQUERIDO` / `CONSECUTIVO_DESCUENTO_INVALIDO`; 409 `CONSECUTIVO_DESCUENTO_DUPLICADO` si ya está en otro ticket CONFIRMADA (el 1062 del índice único también se convierte en este 409).
+- **Tras confirmar**, el `PATCH` genérico rechaza cambiar el consecutivo con 403 `CONSECUTIVO_DESCUENTO_CONFIRMADO`; solo se corrige por `PATCH /api/facturacion/tickets/:id/consecutivo-descuento` (`corregirConsecutivoDescuento`, roles SUPER_ADMIN/GERENCIA, body `consecutivo_descuento` + `motivo` opcional). Valida que el ticket esté CONFIRMADA (`TICKET_NO_CONFIRMADO`), tenga descuento (`TICKET_SIN_DESCUENTO`) y que el valor cambie (`SIN_CAMBIO`); deja una fila en `facturacion_consecutivo_descuento_cambios`.
+- **Verificación en vivo**: `GET /api/facturacion/tickets/consecutivo-descuento/verificar?valor=&excluir_id=` (`verificarConsecutivoDescuento`, roles SUPER_ADMIN/GERENCIA/CONTABILIDAD/OPERATIVO_TURNOS) devuelve `{ valor, valido, exists, bloqueante, tickets[] }`: avisa si el valor existe en **cualquier** ticket y su estado; `bloqueante=true` solo si está en uno CONFIRMADA.
+- **Sin copias**: comisiones y dateos no guardan el consecutivo; siempre se lee del ticket. `reportes_administrativos_controller.ts` lo expone como `consecutivo_descuento` en el detalle de descuentos (y su Excel).
 
 **Relaciones con otros módulos:** Consume `turnos_rtms` (módulo RTM) para saber si el turno es RTM (`isRTM`) y su tipo de vehículo. Genera filas en `comisiones` (módulo Comisiones) — ver arriba el paralelismo con `captacion_dateos_controller.ts` (módulo Captación Comercial). Usa `Convenio.asesorConvenioId` (módulo Captación Comercial) para resolver el asesor convenio real. Es uno de los tres puntos de generación de comisiones del sistema, junto con `captacion_dateos_controller.ts` y `turnos_cierre_controller.ts` (ver PUNTOS DE INTEGRACIÓN CLAVE al final del documento).
 
@@ -679,6 +690,8 @@ El bug de "dateos huérfanos" (un dateo viejo quedaba abandonado en `RE_DATEAR` 
 
 Unit: `segunda_vez_service.spec.ts`, `canal_reporte_service.spec.ts`. Functional: `segunda_vez_certificacion`, `segunda_vez_vigencia`, `segunda_vez_flujo`, `segunda_vez_mismo_dia`, `segunda_vez_reportes`, `segunda_vez_correccion`, `segunda_vez_reporte`, `certificacion_dateo_no_rtm`, `google_ads_canal`, `reportes_por_canal`, `turno_numero_cancelado_positivo`. Suite completa al 2026-10-06: 144 tests.
 
+**🆕 (2026-10-16)** `tests/functional/consecutivo_descuento.spec.ts` — 7 tests del consecutivo del descuento (placas `TCD901`–`TCD911`, usuarios `TEST` SUPER_ADMIN y operativo; limpia en `group.teardown`). Corrida 2026-10-16: **7/7** (la primera corrida dio 6/7 por un defecto del test: simulaba la reversión con `DateTime.now().toSQL()`, que incluye `-05:00` y MySQL lo rechaza en `revertida_at`; corregido con `toSQL({ includeOffset: false })`). `descuento_caja_sync.spec.ts` ahora envía `consecutivoDescuento` al confirmar (5/5).
+
 ## Archivos sin Uso / Deuda Técnica Conocida
 
 Referencia rápida de cosas que YA SABEMOS que no hay que confiar en ellas, para no perder tiempo redescubriéndolas.
@@ -737,3 +750,11 @@ Referencia rápida de cosas que YA SABEMOS que no hay que confiar en ellas, para
 - **Dateos de Preventiva atascados en producción**: los dateos PREV/PERI certificados antes del fix `5d4ea86` pudieron quedar sin marcar EXITOSO; revisar en la base de producción.
 - **Segunda vez automática sin casilla**: no implementada; hoy Crear turno exige confirmar la segunda vez (casilla) y el backend responde 409 `SEGUNDA_VEZ_DISPONIBLE` hasta recibir `segundaVezOrigenId`.
 - **PUT a 'cancelado'**: `PUT /turnos-rtm/:id` con `estado: 'cancelado'` no niega `turno_numero` (`PATCH /turnos-rtm/:id/cancelar` sí); por eso el MAX de numeración cuenta todos los estados.
+
+### Pendientes conocidos — Facturación / consecutivo del descuento (2026-10-16)
+
+- **Edición de tickets confirmados**: CONTABILIDAD y OPERATIVO_TURNOS pueden editar tickets CONFIRMADA por el `PATCH` genérico (incluido el descuento); solo el consecutivo quedó restringido.
+- **`confirmar()` dos veces**: permite confirmar un ticket que ya está CONFIRMADA.
+- **"Autorizado por"**: el servidor no lo exige cuando hay descuento; solo lo exige la pantalla.
+- **`POST /api/comisiones`** aplica descuento sin ticket, así que ahí no hay consecutivo.
+- **OBSEQUIO y SOAT_RTM ($0)**: hoy también exigen consecutivo; ajustar si caja confirma que no lo llevan.

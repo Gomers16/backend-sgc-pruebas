@@ -150,6 +150,8 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
       servicioNombre: 'RTM',
       descuentoId: DESCUENTO_INFORMATIVO_ID,
       descuentoObservacion: OBS,
+      // Consecutivo del descuento: obligatorio al confirmar con descuento en uso.
+      consecutivoDescuento: `TST-${PLACAS.caso1}-${Date.now()}`,
     } as any)
 
     const res = await client
@@ -213,6 +215,8 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
       servicioNombre: 'RTM',
       descuentoId: DESCUENTO_AVANCE_ID,
       descuentoObservacion: OBS,
+      // Consecutivo del descuento: obligatorio al confirmar con descuento en uso.
+      consecutivoDescuento: `TST-${PLACAS.caso2}-${Date.now()}`,
     } as any)
 
     const res = await client
@@ -277,6 +281,8 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
       servicioNombre: 'RTM',
       descuentoId: DESCUENTO_INFORMATIVO_EMPLEADO_ID,
       descuentoObservacion: OBS,
+      // Consecutivo del descuento: obligatorio al confirmar con descuento en uso.
+      consecutivoDescuento: `TST-${PLACAS.caso3}-${Date.now()}`,
     } as any)
 
     const res = await client
@@ -383,6 +389,8 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
       servicioNombre: 'RTM',
       descuentoId: DESCUENTO_AVANCE_ID,
       descuentoObservacion: OBS,
+      // Consecutivo del descuento: obligatorio al confirmar con descuento en uso.
+      consecutivoDescuento: `TST-${PLACAS.listados}-${Date.now()}`,
     } as any)
 
     const confirmRes = await client

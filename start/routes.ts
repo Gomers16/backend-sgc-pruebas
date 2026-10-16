@@ -1871,6 +1871,31 @@ router
           roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'OPERATIVO_TURNOS'],
         }),
       ])
+    // 🆕 Consecutivo del descuento: verificación en vivo mientras caja digita
+    router
+      .get('/facturacion/tickets/consecutivo-descuento/verificar', async (ctx) => {
+        const { default: Facturacion } = await import('#controllers/facturacion_tickets_controller')
+        return new Facturacion().verificarConsecutivoDescuento(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'OPERATIVO_TURNOS'],
+        }),
+      ])
+    // 🆕 Corrección del consecutivo del descuento en un ticket CONFIRMADA (con registro)
+    router
+      .patch('/facturacion/tickets/:id/consecutivo-descuento', async (ctx) => {
+        const { default: Facturacion } = await import('#controllers/facturacion_tickets_controller')
+        return new Facturacion().corregirConsecutivoDescuento(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA'],
+        }),
+      ])
 
     router
       .post('/facturacion/tickets', async (ctx) => {

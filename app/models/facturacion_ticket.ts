@@ -177,6 +177,17 @@ export default class FacturacionTicket extends BaseModel {
   @column({ columnName: 'descuento_observacion' })
   declare descuentoObservacion: string | null
 
+  /**
+   * 🆕 Consecutivo del descuento, digitado a mano por caja. Obligatorio al
+   * confirmar cuando hay descuento en uso; mayúsculas, solo [A-Z0-9-], máx. 30.
+   * Único entre tickets CONFIRMADA vía la columna generada
+   * `consecutivo_descuento_confirmado` + uq_fact_consecutivo_descuento_confirmado
+   * (no se declara aquí: es GENERATED, MySQL rechaza escribir en ella).
+   * No confundir con `consecutivo` (el de la factura).
+   */
+  @column({ columnName: 'consecutivo_descuento' })
+  declare consecutivoDescuento: string | null
+
   /* ============== 🆕 Documentos verificación INFORMATIVO_POLICIA ============== */
   // Las 3 fotos son obligatorias para poder aplicar el descuento policial/militar.
   // Se valida en el controller que existan antes de confirmar el descuento.
