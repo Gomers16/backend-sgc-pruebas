@@ -260,6 +260,8 @@ export default class DescuentosController {
             ? { id: descuento.id, codigo: descuento.codigo, nombre: descuento.nombre }
             : null,
           descuento_monto_aplicado: t.descuentoMontoAplicado ?? null,
+          // 🆕 Consecutivo del descuento (lo digita caja; null en tickets anteriores)
+          consecutivo_descuento: t.consecutivoDescuento ?? null,
           origen: origenRow,
 
           // Comercial que hizo el dateo

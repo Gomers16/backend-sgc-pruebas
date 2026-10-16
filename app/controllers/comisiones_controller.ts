@@ -13,6 +13,7 @@ import Liquidacion, {
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
+import { consecutivoDescuentoDeTickets } from '#services/consecutivo_descuento_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -259,6 +260,8 @@ function mapComisionToDto(c: Comision) {
     // o por POST /comisiones manual).
     descuento_codigo_aplicado: c.descuentoCodigoAplicado ?? null,
     descuento_observacion_caja: c.descuentoObservacionCaja ?? null,
+    // 🆕 Consecutivo del descuento: se lee del ticket CONFIRMADA del turno (no se copia a comisiones)
+    consecutivo_descuento: consecutivoDescuentoDeTickets(tickets),
     dateo_observacion: dateo?.observacion ?? null,
   }
 }

@@ -37,6 +37,10 @@ import {
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
 import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
+import {
+  consecutivoDescuentoDeTickets,
+  consecutivosDescuentoPorTurno,
+} from '#services/consecutivo_descuento_service'
 
 /* ======================= Constantes / Tipos ======================= */
 const CANALES_DB = ['FACHADA', 'ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELE', 'REDES'] as const
@@ -769,10 +773,18 @@ export default class CaptacionDateosController {
       )
     }
 
+    // 🆕 Consecutivo del descuento: se lee del ticket CONFIRMADA del turno consumido
+    const consecutivoPorTurno = await consecutivosDescuentoPorTurno(
+      data.map((r: any) => r.consumido_turno_id)
+    )
+
     const dataConDescuentoCaja = data.map((row: any) => ({
       ...row,
       descuento_caja_monto: row.descuento_caja_id
         ? (montoDescuentoCajaByDateoId[row.id] ?? null)
+        : null,
+      consecutivo_descuento: row.consumido_turno_id
+        ? (consecutivoPorTurno.get(Number(row.consumido_turno_id)) ?? null)
         : null,
     }))
 
@@ -847,13 +859,28 @@ export default class CaptacionDateosController {
       .map((t) => ({
         ticketId: t.id,
         descuentoCodigo: (t as any).descuento?.codigo ?? null,
+        // 🆕 Consecutivo del descuento del ticket (solo si quedó CONFIRMADA)
+        consecutivoDescuento: t.estado === 'CONFIRMADA' ? (t.consecutivoDescuento ?? null) : null,
         docCarnetPath: t.docCarnetPath ?? null,
         docTarjetaPropiedadPath: t.docTarjetaPropiedadPath ?? null,
         docCedulaPath: t.docCedulaPath ?? null,
       }))
 
+    // 🆕 Consecutivo del descuento del dateo: ticket CONFIRMADA de su turno consumido
+    const consecutivoDescuento = item.consumidoTurnoId
+      ? consecutivoDescuentoDeTickets(
+          ticketsInformativos.filter((t) => t.turnoId === item.consumidoTurnoId)
+        )
+      : null
+
     const reserva = await buildReserva(item)
-    return { ...toSnake(out), reserva, turnoInfo, documentosInformativos }
+    return {
+      ...toSnake(out),
+      consecutivo_descuento: consecutivoDescuento,
+      reserva,
+      turnoInfo,
+      documentosInformativos,
+    }
   }
   /**
    * POST /captacion-dateos

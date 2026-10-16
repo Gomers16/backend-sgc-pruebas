@@ -21,6 +21,7 @@ import {
   contarUnidadesRtmPorConvenio,
 } from '#services/meta_comercial_rtm_service'
 import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
+import { sqlConsecutivoDescuentoDelTurno } from '#services/consecutivo_descuento_service'
 import {
   COMERCIAL_POR_CONVENIO,
   armarFilasCanal,
@@ -3497,7 +3498,9 @@ export default class ReportesAdministrativosController {
         'conv.numero_metodo_pago',
         'c.es_avance',
         'c.descuento_codigo_aplicado',
-        'c.descuento_observacion_caja'
+        'c.descuento_observacion_caja',
+        // 🆕 Consecutivo del descuento: subconsulta escalar al ticket (no duplica filas)
+        Database.raw(`${sqlConsecutivoDescuentoDelTurno('t.id')} as consecutivo_descuento`)
       )
       .orderBy('t.placa', 'asc')) as any[]
 
@@ -3529,6 +3532,7 @@ export default class ReportesAdministrativosController {
         es_avance: Boolean(r.es_avance),
         descuento_codigo_aplicado: r.descuento_codigo_aplicado ?? null,
         descuento_observacion_caja: r.descuento_observacion_caja ?? null,
+        consecutivo_descuento: r.consecutivo_descuento ?? null,
       }
     })
   }
@@ -3609,6 +3613,7 @@ export default class ReportesAdministrativosController {
         'ft.tipo_vehiculo',
         'ft.fecha_pago',
         'ft.descuento_monto_aplicado as monto_descuento',
+        'ft.consecutivo_descuento',
         'c.id as comision_id',
         'c.estado as comision_estado',
         'c.monto_asesor',
@@ -3642,6 +3647,7 @@ export default class ReportesAdministrativosController {
         tipo_vehiculo: r.tipo_vehiculo,
         fecha_pago: r.fecha_pago,
         monto_descuento: Number(r.monto_descuento) || 0,
+        consecutivo_descuento: r.consecutivo_descuento ?? null,
         tiene_comision: tieneComision,
         hubo_comision_anulada: Boolean(Number(r.hubo_comision_anulada)),
         comision_estado: tieneComision ? r.comision_estado : null,
@@ -3857,7 +3863,12 @@ export default class ReportesAdministrativosController {
         'Valor a pagar (asesor)', 'Valor a pagar (convenio)',
       ],
       convenios: ['Placa', 'Vehículo', 'Estado', 'Fecha', 'Clasificación', 'Medio de pago', 'Descuento', 'Valor a pagar'],
-      descuentos: ['Placa', 'Vehículo', 'Convenio', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada'],
+      // "Consecutivo del descuento" va al final para no mover la columna de
+      // dinero del subtotal (ANCHO_MONTO.descuentos = 5).
+      descuentos: [
+        'Placa', 'Vehículo', 'Convenio', 'Fecha', 'Monto descuento', 'Comisión asesor', 'Comisión convenio', 'Regla aplicada',
+        'Consecutivo del descuento',
+      ],
     }
     // Posición (1-indexada) de la columna de dinero usada para el subtotal
     // de cada grupo (asesores_convenio tiene 2 — cada una con su propio
@@ -3895,12 +3906,19 @@ export default class ReportesAdministrativosController {
     // dateo/caja sigue siendo una inferencia (no existe un campo que lo
     // confirme — ver resolvePlacasPorComisionIds), por eso sigue entre
     // paréntesis junto al código en vez de ser su propia columna.
+    // 🆕 El consecutivo del descuento (del ticket) va en la misma celda, sin
+    // columna propia: así no se corren las columnas de dinero del subtotal.
+    const conConsecutivo = (texto: string, p: any): string =>
+      `${texto} · Consecutivo: ${p.consecutivo_descuento ?? '—'}`
     const descripcionDescuento = (p: any): string => {
-      if (p.es_avance) return 'Avance'
+      if (p.es_avance) return conConsecutivo('Avance', p)
       if (!p.descuento_codigo_aplicado) return 'No'
-      return p.descuento_observacion_caja
-        ? `Aplicado en caja (${p.descuento_codigo_aplicado})`
-        : `Informativo (${p.descuento_codigo_aplicado})`
+      return conConsecutivo(
+        p.descuento_observacion_caja
+          ? `Aplicado en caja (${p.descuento_codigo_aplicado})`
+          : `Informativo (${p.descuento_codigo_aplicado})`,
+        p
+      )
     }
 
     // Las fechas de la BD llegan en UTC (driver mysql2 las da como Date o
@@ -3942,6 +3960,7 @@ export default class ReportesAdministrativosController {
           p.tiene_comision ? p.monto_asesor : sinComision,
           p.tiene_comision ? p.monto_convenio : '',
           p.tiene_comision ? (p.regla_aplicada ?? 'Sin detalle disponible, comisión anterior a esta funcionalidad') : '',
+          p.consecutivo_descuento ?? '—',
         ]
       }
       // asesores_convenio
@@ -7086,6 +7105,7 @@ export default class ReportesAdministrativosController {
         'ft.descuento_id as descuento_id',
         'ft.descuento_monto_aplicado as descuento_monto_aplicado',
         'd.nombre as descuento_nombre',
+        'ft.consecutivo_descuento as consecutivo_descuento',
         'ft.placa as placa',
         'com.monto_asesor as monto_asesor',
         'com.estado as comision_estado'
@@ -7100,6 +7120,7 @@ export default class ReportesAdministrativosController {
       descuento_id: number | null
       descuento_monto_aplicado: string | null
       descuento_nombre: string | null
+      consecutivo_descuento: string | null
       placa: string | null
       monto_asesor: string | null
       comision_estado: string | null
@@ -7122,6 +7143,7 @@ export default class ReportesAdministrativosController {
         descuento_nombre: r.descuento_nombre,
         descuento_monto: r.descuento_monto_aplicado === null ? 0 : Number(r.descuento_monto_aplicado),
         descuento_verificado: Math.round((totalSinDescuento - ingresoReal) * 100) / 100,
+        consecutivo_descuento: r.consecutivo_descuento ?? null,
         placa: r.placa,
         // Valor crudo tal como está en comisiones — incluye comisiones ANULADAS
         // (se excluyen solo de los acumulados, no de esta columna individual).

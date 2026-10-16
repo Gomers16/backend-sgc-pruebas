@@ -13,6 +13,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import Comision from '#models/comision'
 import TurnoRtm from '#models/turno_rtm'
 import Convenio from '#models/convenio'
+import { consecutivosDescuentoPorTurno } from '#services/consecutivo_descuento_service'
 
 /* ========= Helpers ========= */
 function normalizePhone(value?: string) {
@@ -768,6 +769,9 @@ export default class AgentesCaptacionController {
       turnosById = Object.fromEntries(turnos.map((t) => [t.id, t]))
     }
 
+    // 🆕 Consecutivo del descuento por turno (ticket CONFIRMADA; 1 query por página)
+    const consecutivoPorTurno = await consecutivosDescuentoPorTurno(turnoIds)
+
     // Comisiones de ESTA página de dateos (1 query indexada, no N+1).
     // Mismo filtro que usaba el frontend al unir listComisiones({asesorId})
     // con listComisiones({convenioId}): comisión propia O del convenio del asesor.
@@ -902,6 +906,9 @@ export default class AgentesCaptacionController {
         descuento_id: d.descuentoId,
         descuento: descuentoRaw
           ? { id: descuentoRaw.id, codigo: descuentoRaw.codigo, nombre: descuentoRaw.nombre }
+          : null,
+        consecutivo_descuento: d.consumidoTurnoId
+          ? (consecutivoPorTurno.get(d.consumidoTurnoId) ?? null)
           : null,
 
         consumido_turno_id: d.consumidoTurnoId,
