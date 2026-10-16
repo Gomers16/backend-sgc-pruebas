@@ -379,4 +379,27 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
     const ok = await crearTicket(client, turno.id, agenteA.id)
     ok.assertStatus(201)
   })
+
+  test('GET /tipos-ticket: tipos que el rol puede crear o resolver, con banderas', async ({
+    client,
+    assert,
+  }) => {
+    const tipo = async (clave: string) => {
+      const r = await client.get('/api/tipos-ticket').headers(bearer(clave))
+      r.assertStatus(200)
+      return r.body().data.find((t: any) => t.codigo === 'EXCEPCION_DATEO')
+    }
+    const comercial = await tipo('COMERCIAL_A')
+    assert.include(comercial, { puedeCrear: true, puedeResolver: false })
+    assert.deepEqual(comercial.rolesCreador, ['COMERCIAL'])
+
+    const gerencia = await tipo('GERENCIA')
+    assert.exists(gerencia, 'gerencia ve el tipo aunque no esté en roles_creador')
+    assert.include(gerencia, { puedeCrear: false, puedeResolver: true })
+    // Campos de siempre siguen ahí (compatibilidad con el frontend anterior).
+    assert.containsSubset(Object.keys(gerencia), ['id', 'codigo', 'nombre', 'rolesCreador'])
+
+    const admin = await tipo('ADMIN')
+    assert.isTrue(admin.puedeResolver)
+  })
 })

@@ -43,6 +43,9 @@ const P = {
   NO_ASIGNADO: 'TKIN06',
   DIFERIDO: 'TKIN07',
   INFORMATIVO: 'TKIN08',
+  CASO_GET_1: 'TKIN09',
+  CASO_GET_2: 'TKIN10',
+  CASO_GET_3: 'TKIN11',
 } as const
 const PLACA_FACT_DIFERIDA = 'TKF307'
 
@@ -446,5 +449,36 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
     assert.match(String(c.reglaAplicada), /^Caso 2/)
     await dateo.refresh()
     assert.equal(dateo.convenioId, convenio.id)
+  })
+
+  test('GET /tickets/:id devuelve caso_comision con la misma regla que aprobar()', async ({
+    client,
+    assert,
+  }) => {
+    const caso = async (ticketId: number) => {
+      const r = await client.get(`/api/tickets/${ticketId}`).headers(auth())
+      r.assertStatus(200)
+      return r.body().caso_comision
+    }
+    const t3 = await turnoDirecto(P.CASO_GET_3)
+    const r3 = await crearTicket(client, t3.id, comercial.id, {
+      canal: 'ASESOR_COMERCIAL',
+      convenio_id: convenio.id,
+    })
+    assert.equal(await caso(r3.body().ticket.id), 'CONVENIO_COMERCIAL')
+
+    const t1 = await turnoDirecto(P.CASO_GET_1)
+    const r1 = await crearTicket(client, t1.id, comercial.id, { canal: 'ASESOR_COMERCIAL' })
+    assert.equal(await caso(r1.body().ticket.id), 'SIN_CONVENIO')
+
+    const t2 = await turnoDirecto(P.CASO_GET_2)
+    const r2 = await crearTicket(client, t2.id, asesorConvenio.id, null)
+    const id2 = r2.body().ticket.id
+    assert.equal(await caso(id2), 'CONVENIO_SELF')
+    // Ticket viejo (sin intento) de asesor convenio: se resuelve su convenio.
+    await Database.from('tickets_detalle_excepcion_dateo')
+      .where('ticket_id', id2)
+      .update({ canal: null, convenio_id: null, convenio_id_original: null })
+    assert.equal(await caso(id2), 'CONVENIO_SELF')
   })
 })

@@ -13,6 +13,8 @@ import {
   sqlDecisionComision,
 } from '#services/tickets_consulta_service'
 import { estadisticasTickets } from '#services/tickets_estadisticas_service'
+import { decidirCasoComision } from '#services/comision_calculo_service'
+import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
 
 /** Tope de filas del Excel de tickets. */
 const EXPORTAR_MAX_FILAS = 10000
@@ -37,10 +39,37 @@ function readOptionalNumber(input: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * Caso de comisión que aplicará (o aplicó) aprobar(): misma regla,
+ * decidirCasoComision(). Ticket anterior al intento de dateo (canal NULL) de
+ * un asesor convenio sin convenio → se resuelve su convenio como en aprobar().
+ */
+async function casoComisionDelTicket(detalle: TicketDetalleExcepcionDateo) {
+  const comercial = detalle.comercial ?? null
+  const esAsesorConvenio = comercial?.tipo === 'ASESOR_CONVENIO'
+  const canal = detalle.canal ?? (esAsesorConvenio ? 'ASESOR_CONVENIO' : 'ASESOR_COMERCIAL')
+  let convenioId = detalle.convenioId
+  let asesorConvenioIdDelConvenio = detalle.convenio?.asesorConvenioId ?? null
+  if (!convenioId && !detalle.canal && esAsesorConvenio && comercial) {
+    const propio = await buscarConvenioDelAsesorConvenio(comercial)
+    if (propio) {
+      convenioId = propio.id
+      asesorConvenioIdDelConvenio = propio.asesorConvenioId ?? null
+    }
+  }
+  return decidirCasoComision({
+    convenioId,
+    agenteId: detalle.comercialId,
+    canal,
+    asesorConvenioIdDelConvenio,
+  })
+}
+
 export default class TicketsController {
   /**
    * GET /tipos-ticket
-   * Catálogo de tipos de ticket que el usuario autenticado puede CREAR —
+   * Catálogo de tipos de ticket que el usuario autenticado puede CREAR o
+   * RESOLVER, con banderas puedeCrear/puedeResolver por tipo —
    * filtrado server-side por roles_creador (mismo criterio de "el usuario
    * ve solo lo que puede hacer" que otros catálogos de este backend, ej.
    * roles_controller.ts). Sin checkRole en la ruta: el filtrado es interno,
@@ -50,18 +79,28 @@ export default class TicketsController {
     await auth.user!.load('rol')
     const rolNombre = auth.user!.rol?.nombre ?? ''
 
-    const tipos = await TipoTicket.query()
-      .whereRaw('JSON_CONTAINS(roles_creador, ?)', [JSON.stringify(rolNombre)])
-      .orderBy('nombre', 'asc')
+    // Tipos que el rol puede CREAR (roles_creador) o RESOLVER (roles_resuelve,
+    // o SUPER_ADMIN/GERENCIA): sin esto gerencia no veía el tipo en la bandeja
+    // porque roles_creador de EXCEPCION_DATEO es solo COMERCIAL.
+    const rol = rolNombre.toUpperCase()
+    const esResolutor = (ROLES_RESOLUTORES_TICKET as readonly string[]).includes(rol)
+    const incluye = (roles: string[] | null | undefined) =>
+      (roles ?? []).some((r) => String(r).toUpperCase() === rol)
 
-    return response.ok({
-      data: tipos.map((t) => ({
+    const tipos = await TipoTicket.query().orderBy('nombre', 'asc')
+    const data = tipos
+      .map((t) => ({
         id: t.id,
         codigo: t.codigo,
         nombre: t.nombre,
         rolesCreador: t.rolesCreador,
-      })),
-    })
+        rolesResuelve: t.rolesResuelve,
+        puedeCrear: incluye(t.rolesCreador),
+        puedeResolver: esResolutor || incluye(t.rolesResuelve),
+      }))
+      .filter((t) => t.puedeCrear || t.puedeResolver)
+
+    return response.ok({ data })
   }
 
   /**
@@ -196,6 +235,7 @@ export default class TicketsController {
         .preload('rechazadoPor')
         .first()
       out.detalle = detalle ? detalle.serialize() : null
+      out.caso_comision = detalle ? await casoComisionDelTicket(detalle) : null
     }
 
     // Línea de tiempo (ticket_eventos + lo que falte, armado desde el ticket).

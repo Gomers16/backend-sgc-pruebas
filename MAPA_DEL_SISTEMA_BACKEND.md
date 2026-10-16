@@ -349,9 +349,9 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - `tickets_estadisticas_service.ts` — `estadisticasTickets()`.
 
 **Endpoints:**
-- `GET /tipos-ticket` (auth) — tipos que el rol puede crear (`roles_creador`).
+- `GET /tipos-ticket` (auth) — tipos que el rol puede crear (`roles_creador`) **o resolver** (`roles_resuelve`, o SUPER_ADMIN/GERENCIA), con `puedeCrear`/`puedeResolver` por tipo; los campos de antes (`id`, `codigo`, `nombre`, `rolesCreador`) siguen.
 - `GET /tickets` (auth) — bandeja con filtros y paginación (ver abajo); respuesta `{ data, meta: { total, current_page, per_page, last_page } }`, cada fila con `resumen` (placa, turno, comercial, convenio, ventana, `decisionComision`). `per_page` por defecto 50, máximo 100.
-- `GET /tickets/:id` (auth, `puedeVerTicket` o 403) — detalle + comentarios + `eventos`.
+- `GET /tickets/:id` (auth, `puedeVerTicket` o 403) — detalle + comentarios + `eventos` + `caso_comision` (`SIN_CONVENIO` | `CONVENIO_SELF` | `CONVENIO_COMERCIAL`, con `decidirCasoComision()` igual que `aprobar()`; ticket viejo de asesor convenio sin convenio → resuelve su convenio).
 - `POST /tickets/comentarios` (auth, `puedeVerTicket` o 403) — escribe el comentario y su evento en una transacción.
 - `GET /tickets/estadisticas`, `GET /tickets/exportar`, `GET /tickets/pendientes/contador` (SUPER_ADMIN, GERENCIA).
 - `POST /tickets-excepcion-dateo` (COMERCIAL, SUPER_ADMIN, GERENCIA), `PATCH /tickets-excepcion-dateo/:id/aprobar|rechazar` (SUPER_ADMIN, GERENCIA).
