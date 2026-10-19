@@ -13,6 +13,14 @@ import Liquidacion, {
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
+import {
+  conflictoSinComisionTicket,
+  dejadoDePagarComision,
+  registrarExcepcionSinComision,
+  resolverConflictoSinComision,
+  sqlComisionDeTicket,
+  ticketsOrigenPorDateo,
+} from '#services/ticket_comision_origen_service'
 import { consecutivoDescuentoDeTickets } from '#services/consecutivo_descuento_service'
 import {
   resolveConfigComision,
@@ -42,6 +50,21 @@ function parseNullable(v: any): number | null {
 /**
  * Mapea una comision REAL (es_config = false) a DTO de lista/detalle
  */
+/** Turno del dateo de la comisión (donde vive el ticket de Excepción de Dateo). */
+async function turnoDeComision(c: Comision): Promise<number | null> {
+  if (!c.captacionDateoId) return null
+  const d = await Database.from('captacion_dateos')
+    .where('id', c.captacionDateoId)
+    .select('consumido_turno_id')
+    .first()
+  return d?.consumido_turno_id ?? null
+}
+
+function nombreUsuario(ctx: HttpContext): string {
+  const u: any = ctx.auth.user
+  return [u?.nombres, u?.apellidos].filter(Boolean).join(' ') || u?.correo || `usuario #${u?.id}`
+}
+
 function mapComisionToDto(c: Comision) {
   const anyC: any = c
 
@@ -315,6 +338,9 @@ export default class ComisionesController {
     const placa = request.input('placa') as string | undefined // 🆕
     const tipoAsesor = request.input('tipoAsesor') as string | undefined // 🆕
     const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
+    // 🆕 Origen: con_ticket (viene de un ticket de Excepción de Dateo aprobado)
+    // | sin_comision_ticket (y ese ticket decidió algún "sin comisión").
+    const origen = request.input('origen') as string | undefined
     const sortBy = (request.input('sortBy') || 'id') as string
     const order = (request.input('order') || 'desc') as 'asc' | 'desc'
 
@@ -372,6 +398,10 @@ export default class ComisionesController {
     if (tipoCaptacion === 'NUEVO_DIRECTO') query.whereNull('convenio_id')
     else if (tipoCaptacion === 'CONVENIO') query.whereNotNull('convenio_id')
 
+    if (origen === 'con_ticket') query.whereRaw(sqlComisionDeTicket('comisiones', false))
+    else if (origen === 'sin_comision_ticket')
+      query.whereRaw(sqlComisionDeTicket('comisiones', true))
+
     const SORTABLE = new Set(['id', 'estado', 'fecha_calculo', 'monto', 'asesor_id', 'convenio_id'])
     let sortCol = sortBy === 'generado_at' ? 'fecha_calculo' : sortBy
     if (!SORTABLE.has(sortCol)) sortCol = 'id'
@@ -380,7 +410,12 @@ export default class ComisionesController {
     const paginated = await query.paginate(page, perPage)
     const meta = paginated.getMeta()
     const data = paginated.all()
-    const rows = data.map((c) => mapComisionToDto(c))
+    const origenes = await ticketsOrigenPorDateo(data.map((c) => c.captacionDateoId))
+    const rows = data.map((c) => ({
+      ...mapComisionToDto(c),
+      // 🆕 Ticket de Excepción de Dateo de origen (null si no viene de uno).
+      ticket_origen: (c.captacionDateoId && origenes.get(c.captacionDateoId)) || null,
+    }))
 
     return response.ok({
       data: rows,
@@ -406,6 +441,7 @@ export default class ComisionesController {
     const placa = request.input('placa') as string | undefined
     const tipoAsesor = request.input('tipoAsesor') as string | undefined
     const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
+    const origen = request.input('origen') as string | undefined
 
     const baseQuery = () => {
       const q = Database.from('comisiones')
@@ -443,6 +479,8 @@ export default class ComisionesController {
       // este filtro, mismo criterio que ya aplica a `estado`).
       if (tipoCaptacion === 'NUEVO_DIRECTO') q.whereNull('convenio_id')
       else if (tipoCaptacion === 'CONVENIO') q.whereNotNull('convenio_id')
+      if (origen === 'con_ticket') q.whereRaw(sqlComisionDeTicket('comisiones', false))
+      else if (origen === 'sin_comision_ticket') q.whereRaw(sqlComisionDeTicket('comisiones', true))
 
       return q
     }
@@ -736,8 +774,22 @@ export default class ComisionesController {
       }
     }
 
+    // 🆕 Ticket de origen con lo dejado de pagar (exacto o estimado).
+    const origenes = await ticketsOrigenPorDateo([comision.captacionDateoId])
+    const origen = (comision.captacionDateoId && origenes.get(comision.captacionDateoId)) || null
+    if (origen) {
+      const dateoPre = (comision as any).$preloaded?.dateo ?? null
+      origen.dejado_de_pagar = await dejadoDePagarComision(
+        origen,
+        comision,
+        dateoPre?.$preloaded?.turno ?? null,
+        dateoPre
+      )
+    }
+
     const result = {
       ...dto,
+      ticket_origen: origen,
       aprobado_at: comision.aprobadoAt?.toISO() ?? null,
       aprobado_por: comision.aprobadoPor ?? null,
       pagado_at: comision.pagadoAt?.toISO() ?? null,
@@ -754,7 +806,8 @@ export default class ComisionesController {
    * PATCH /api/comisiones/:id/valores
    */
 
-  public async editar({ params, request, response }: HttpContext) {
+  public async editar(ctx: HttpContext) {
+    const { params, request, response } = ctx
     const comision = await Comision.find(params.id)
     if (!comision || comision.esConfig)
       return response.notFound({ message: 'Comisión no encontrada' })
@@ -770,6 +823,23 @@ export default class ComisionesController {
       'descuento_id',
       'dateo_observacion',
     ])
+    // 🆕 No pisar el $0 que decidió un ticket "sin comisión" sin confirmación.
+    const montosNuevos = {
+      montoAsesor:
+        payload.monto_asesor !== undefined
+          ? Math.max(0, toNumber(payload.monto_asesor))
+          : undefined,
+      montoConvenio:
+        payload.monto_convenio !== undefined
+          ? Math.max(0, toNumber(payload.monto_convenio))
+          : undefined,
+    }
+    const conflicto = await conflictoSinComisionTicket(
+      await turnoDeComision(comision),
+      montosNuevos
+    )
+    const excepcion = await resolverConflictoSinComision(ctx, conflicto)
+    if (excepcion.bloqueado) return
 
     if ('asesor_id' in payload)
       comision.asesorId = payload.asesor_id ? Number(payload.asesor_id) : null
@@ -823,9 +893,20 @@ export default class ComisionesController {
     }
 
     await comision.save()
+    if (excepcion.confirmada && conflicto) {
+      await registrarExcepcionSinComision(null, {
+        conflicto,
+        comisionId: comision.id,
+        usuarioId: ctx.auth.user!.id,
+        usuarioNombre: nombreUsuario(ctx),
+        accion: 'edición manual',
+        montos: montosNuevos,
+      })
+    }
     return this.show({ params, response } as any)
   }
-  public async actualizarValores({ params, request, response }: HttpContext) {
+  public async actualizarValores(ctx: HttpContext) {
+    const { params, request, response } = ctx
     const comision = await Comision.find(params.id)
 
     if (!comision || comision.esConfig)
@@ -840,11 +921,24 @@ export default class ComisionesController {
     const cant = toNumber(cantidad || 1)
     const vu = toNumber(valorUnitario || 0)
     const nuevoMonto = String(cant * vu)
-
+    const conflicto = await conflictoSinComisionTicket(await turnoDeComision(comision), {
+      montoAsesor: cant * vu,
+    })
+    const excepcion = await resolverConflictoSinComision(ctx, conflicto)
+    if (excepcion.bloqueado) return
     comision.monto = nuevoMonto
     comision.montoAsesor = nuevoMonto
     await comision.save()
-
+    if (excepcion.confirmada && conflicto) {
+      await registrarExcepcionSinComision(null, {
+        conflicto,
+        comisionId: comision.id,
+        usuarioId: ctx.auth.user!.id,
+        usuarioNombre: nombreUsuario(ctx),
+        accion: 'actualización de valores',
+        montos: { montoAsesor: cant * vu },
+      })
+    }
     return this.show({ params, response } as any)
   }
 
@@ -1185,7 +1279,8 @@ export default class ComisionesController {
   /**
    * POST /api/comisiones
    */
-  public async store({ request, response }: HttpContext) {
+  public async store(ctx: HttpContext) {
+    const { request, response } = ctx
     const payload = request.only([
       'turno_id',
       'asesor_id',
@@ -1330,6 +1425,15 @@ export default class ComisionesController {
       const montoAsesor = Math.max(0, toNumber(payload.monto_asesor ?? 0))
       const montoConvenio = Math.max(0, toNumber(payload.monto_convenio ?? 0))
 
+      // 🆕 Comisión manual (p. ej. tras anular una) en un turno cuyo ticket
+      // decidió "sin comisión": misma regla que editar.
+      const conflicto = await conflictoSinComisionTicket(turno.id, { montoAsesor, montoConvenio })
+      const excepcion = await resolverConflictoSinComision(ctx, conflicto)
+      if (excepcion.bloqueado) {
+        await trx.rollback()
+        return
+      }
+
       const comision = new Comision()
       comision.useTransaction(trx)
       comision.esConfig = false
@@ -1380,6 +1484,16 @@ export default class ComisionesController {
       }
 
       await comision.save()
+      if (excepcion.confirmada && conflicto) {
+        await registrarExcepcionSinComision(trx, {
+          conflicto,
+          comisionId: comision.id,
+          usuarioId: ctx.auth.user!.id,
+          usuarioNombre: nombreUsuario(ctx),
+          accion: 'comisión creada a mano',
+          montos: { montoAsesor, montoConvenio },
+        })
+      }
       await trx.commit()
       return this.show({ params: { id: comision.id }, response } as any)
     } catch (error) {
