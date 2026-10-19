@@ -24,6 +24,7 @@
 //  - Un override manual (continuidad_overrides) tiene siempre la última
 //    palabra, sin recorrer nada.
 import Database from '@adonisjs/lucid/services/db'
+import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import { DateTime } from 'luxon'
 
 export type EstadoContinuidad = 'CONTINUA' | 'ROTA' | 'SIN_EVIDENCIA'
@@ -42,14 +43,22 @@ export interface EvaluarContinuidadParams {
   excluirTurnoId?: number | null
 }
 
+/**
+ * `trx` (opcional): si se pasa, las consultas corren en esa transacción y ven
+ * lo que ella ya escribió (p. ej. el dateo recién guardado en
+ * captacion_dateos_controller.ts::update()). Sin `trx`, igual que siempre.
+ */
 export async function evaluarContinuidad(
-  params: EvaluarContinuidadParams
+  params: EvaluarContinuidadParams,
+  trx?: TransactionClientContract
 ): Promise<EstadoContinuidad> {
+  const cliente = trx ?? Database
   const { placa, asesorConvenioId = null, convenioId = null, excluirTurnoId = null } = params
   if (!asesorConvenioId && !convenioId) return 'SIN_EVIDENCIA'
 
   // 1) Override manual — tiene la última palabra.
-  const override = await Database.from('continuidad_overrides')
+  const override = await cliente
+    .from('continuidad_overrides')
     .where('placa', placa)
     .where((qb) => {
       if (asesorConvenioId) qb.orWhere('asesor_convenio_id', asesorConvenioId)
@@ -64,7 +73,8 @@ export async function evaluarContinuidad(
   // 2) Recorrer TODO el historial de turnos finalizados de la placa.
   //    Una segunda vez (reinspección gratuita, nunca lleva dateo) no es una
   //    visita: no rompe la continuidad. El origen rechazado sí cuenta.
-  const query = Database.from('turnos_rtms')
+  const query = cliente
+    .from('turnos_rtms')
     .where('placa', placa)
     .where('estado', 'finalizado')
     .where('es_segunda_vez', 0)
@@ -82,7 +92,8 @@ export async function evaluarContinuidad(
     const dateoId = turno.captacion_dateo_id
     if (!dateoId) return 'ROTA' // Visita sin dateo (otro canal) → rompe
 
-    const dateo = await Database.from('captacion_dateos')
+    const dateo = await cliente
+      .from('captacion_dateos')
       .where('id', dateoId)
       .select('convenio_id', 'asesor_convenio_id', 'created_at')
       .first()

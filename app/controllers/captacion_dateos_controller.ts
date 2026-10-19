@@ -1588,11 +1588,15 @@ export default class CaptacionDateosController {
             // distinguía continuidad y siempre pagaba recurrencia si no era
             // "nuevo"; ahora un asesor convenio recurrente CON continuidad
             // paga completo, igual que por la ruta de factura ──
-            const estadoContinuidad = await evaluarContinuidad({
-              placa: item.placa ?? '',
-              asesorConvenioId: asesorConvenioIdReal,
-              convenioId: item.convenioId,
-            })
+            // Con trx: ve el dateo ya guardado arriba en esta misma transacción.
+            const estadoContinuidad = await evaluarContinuidad(
+              {
+                placa: item.placa ?? '',
+                asesorConvenioId: asesorConvenioIdReal,
+                convenioId: item.convenioId,
+              },
+              trx
+            )
             const tuvoContinuidad = estadoContinuidad !== 'ROTA'
 
             // ── Descuento informativo pre-marcado en el dateo. Esta ruta no
@@ -1696,7 +1700,10 @@ export default class CaptacionDateosController {
       }
       await trx.commit()
     } catch (error) {
-      if (!trx.isCompleted) await trx.rollback()
+      // Un fallo del rollback no debe tapar el error original.
+      try {
+        if (!trx.isCompleted) await trx.rollback()
+      } catch {}
       throw error
     }
 
