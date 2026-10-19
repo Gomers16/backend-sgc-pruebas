@@ -1,8 +1,10 @@
 // app/services/decision_comision_ticket_service.ts
 //
 // Decisión de gerencia sobre la comisión al aprobar un ticket de Excepción de
-// Dateo fuera de ventana, separada para el asesor y el convenio.
-//  - Dentro de ventana: no hay decisión (comisión completa), ambos null.
+// Dateo, separada para el asesor y el convenio. Se toma dentro y fuera de
+// ventana (la ventana solo informa).
+//  - Dentro de ventana sin ningún flag (frontend anterior): comisión completa,
+//    asesor y convenio (si aplica) en true.
 //  - Caso 1 (SIN_CONVENIO): solo el asesor; el flag de convenio no aplica.
 //  - Caso 2 (CONVENIO_SELF): el asesor ES el convenio; solo con/sin comisión,
 //    ambos flags iguales.
@@ -35,7 +37,14 @@ export function resolverDecisionComision(p: {
   /** `con_comision` del body (formato anterior). */
   conComision: unknown
 }): ResultadoDecisionComision {
-  if (p.dentroVentana) return { ok: true, decision: { asesor: null, convenio: null } }
+  const sinFlags =
+    vacio(p.conComisionAsesor) && vacio(p.conComisionConvenio) && vacio(p.conComision)
+  if (p.dentroVentana && sinFlags) {
+    return {
+      ok: true,
+      decision: { asesor: true, convenio: p.caso === 'SIN_CONVENIO' ? null : true },
+    }
+  }
 
   const usaFormatoAnterior = vacio(p.conComisionAsesor) && esFlag(p.conComision)
   const asesor = esFlag(p.conComisionAsesor)
@@ -46,8 +55,7 @@ export function resolverDecisionComision(p: {
   if (asesor === null) {
     return {
       ok: false,
-      message:
-        'con_comision_asesor es requerido (true/false) cuando el ticket está fuera de ventana',
+      message: 'con_comision_asesor es requerido (true/false)',
     }
   }
   if (!vacio(p.conComisionConvenio) && !esFlag(p.conComisionConvenio)) {

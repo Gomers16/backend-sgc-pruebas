@@ -132,19 +132,19 @@ export const sqlFlagConvenio = (d = 'd') =>
   ` ELSE ${d}.con_comision_convenio END)`
 
 /**
- * Decisión de comisión de un ticket APROBADO (NULL si no está aprobado):
- *  - con: dentro de ventana, o asesor y convenio (si aplica) cobran
+ * Decisión de comisión de un ticket APROBADO (NULL si no está aprobado). La
+ * decisión guardada manda, dentro o fuera de ventana:
+ *  - con: asesor y convenio (si aplica) cobran
  *  - sin_asesor / sin_convenio / sin_ninguno
- *  - regimen_anterior: fuera de ventana sin decisión guardada (antes de que
- *    existiera la decisión de gerencia)
+ *  - sin decisión guardada: dentro de ventana = con (comisión completa, como
+ *    se aprobaba antes); fuera = regimen_anterior
  */
 export const sqlDecisionComision = (t = 't', d = 'd') => {
   const a = sqlFlagAsesor(d)
   const c = sqlFlagConvenio(d)
   return (
     `(CASE WHEN ${t}.estado <> 'APROBADO' THEN NULL` +
-    ` WHEN ${d}.dentro_ventana = 1 THEN 'con'` +
-    ` WHEN ${a} IS NULL THEN 'regimen_anterior'` +
+    ` WHEN ${a} IS NULL THEN (CASE WHEN ${d}.dentro_ventana = 1 THEN 'con' ELSE 'regimen_anterior' END)` +
     ` WHEN ${a} = 0 AND ${c} = 0 THEN 'sin_ninguno'` +
     ` WHEN ${a} = 0 THEN 'sin_asesor'` +
     ` WHEN ${c} = 0 THEN 'sin_convenio'` +

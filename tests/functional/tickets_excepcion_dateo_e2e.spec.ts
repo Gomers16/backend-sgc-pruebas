@@ -319,8 +319,8 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
       'Snapshot al crear el ticket debe quedar dentroVentana=true'
     )
 
-    // Aprobar SIN con_comision en el body — el backend debe ignorarlo/no
-    // exigirlo porque detalle.dentroVentana === true.
+    // Aprobar SIN flags en el body (frontend anterior): dentro de ventana eso
+    // es comisión completa, y queda guardada como decisión (asesor = true).
     const resAprobar = await client
       .patch(`/api/tickets-excepcion-dateo/${ticketId}/aprobar`)
       .header('Authorization', `Bearer ${token}`)
@@ -332,8 +332,8 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     assert.isTrue(aprobarBody.dentroVentana)
     assert.exists(aprobarBody.dateoId)
     assert.exists(aprobarBody.comisionId, 'Debe generar comisión completa aunque no haya decisión de gerencia')
-    assert.isNull(aprobarBody.conComision, 'Dentro de ventana: conComision debe quedar null')
-    assert.isNull(aprobarBody.detalle.conComision, 'Dentro de ventana: detalle.conComision debe quedar null')
+    assert.isTrue(aprobarBody.conComision, 'Dentro de ventana, body vacío: comisión completa')
+    assert.isTrue(Boolean(aprobarBody.detalle.conComision), 'Queda guardada: con_comision = 1')
 
     const dateoCreado = await CaptacionDateo.findOrFail(aprobarBody.dateoId)
     const turnoTrasAprobar = await TurnoRtm.findOrFail(turnoId)

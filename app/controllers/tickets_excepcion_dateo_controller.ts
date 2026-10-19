@@ -446,11 +446,11 @@ export default class TicketsExcepcionDateoController {
    * PATCH /tickets-excepcion-dateo/:id/aprobar
    * Body: {
    *   con_comision_asesor: boolean, con_comision_convenio?: boolean
-   *       — solo fuera de ventana (dentro de ventana se ignoran: comisión
-   *       completa). Combinaciones válidas por caso en
+   *       — dentro y fuera de ventana. Combinaciones válidas por caso en
    *       decision_comision_ticket_service.ts (Caso 1 sin flag de convenio,
-   *       Caso 2 flags iguales, Caso 3 las 4). `con_comision` sola se sigue
-   *       aceptando como flag del asesor (frontend anterior).
+   *       Caso 2 flags iguales, Caso 3 las 4). Dentro de ventana un body sin
+   *       flags (frontend anterior) = comisión completa. `con_comision` sola
+   *       se sigue aceptando como flag del asesor (frontend anterior).
    *   convenio_id?: number | null — opcional: gerencia corrige el convenio
    *                            del intento (null = sin convenio). El original
    *                            queda en convenio_id_original.
@@ -498,9 +498,9 @@ export default class TicketsExcepcionDateoController {
       // TINYINT(1) como 0/1 (no boolean real) — Boolean() en vez de === true.
       const dentroVentana = Boolean(detalle.dentroVentana)
 
-      // La decisión de comisión solo cuenta fuera de ventana. Se valida del
-      // todo cuando se conoce el caso (más abajo); acá solo se corta temprano
-      // si falta el flag del asesor.
+      // La decisión se valida del todo cuando se conoce el caso (más abajo);
+      // acá solo se corta temprano si falta el flag del asesor fuera de
+      // ventana (dentro, sin flags = comisión completa).
       const flagsComision = {
         conComisionAsesor: request.input('con_comision_asesor'),
         conComisionConvenio: request.input('con_comision_convenio'),
@@ -748,9 +748,9 @@ export default class TicketsExcepcionDateoController {
         if (resultadoComision.descuentoMontoAplicado !== null) {
           c.descuentoMontoAplicado = resultadoComision.descuentoMontoAplicado
         }
-        // Fuera de ventana + "sin comisión": se calcula la comisión normal con
-        // el motor de siempre y se fuerza a 0 recién acá, justo antes de
-        // guardar, solo la parte que gerencia decidió (asesor y/o convenio).
+        // "Sin comisión" (dentro o fuera de ventana): se calcula la comisión
+        // normal con el motor de siempre y se fuerza a 0 recién acá, justo
+        // antes de guardar, solo la parte que gerencia decidió.
         // `monto` queda con el valor del motor: es lo que se dejó de pagar.
         if (decision.asesor === false || decision.convenio === false) {
           // Foto del valor calculado para el "dejado de pagar" exacto.

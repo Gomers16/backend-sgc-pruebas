@@ -9,15 +9,66 @@ const base = {
 }
 
 test.group('resolverDecisionComision', () => {
-  test('dentro de ventana: sin decisión, aunque lleguen flags', ({ assert }) => {
-    const r = resolverDecisionComision({
-      ...base,
-      dentroVentana: true,
-      caso: 'CONVENIO_COMERCIAL',
-      conComisionAsesor: false,
-      conComisionConvenio: false,
+  test('dentro de ventana sin flags (frontend anterior): comisión completa', ({ assert }) => {
+    const dentro = { ...base, dentroVentana: true }
+    assert.deepEqual(resolverDecisionComision({ ...dentro, caso: 'SIN_CONVENIO' }), {
+      ok: true,
+      decision: { asesor: true, convenio: null },
     })
-    assert.deepEqual(r, { ok: true, decision: { asesor: null, convenio: null } })
+    for (const caso of ['CONVENIO_SELF', 'CONVENIO_COMERCIAL'] as const) {
+      assert.deepEqual(resolverDecisionComision({ ...dentro, caso }), {
+        ok: true,
+        decision: { asesor: true, convenio: true },
+      })
+    }
+  })
+
+  test('dentro de ventana con flags: se decide igual que fuera, con las mismas reglas', ({
+    assert,
+  }) => {
+    const dentro = { ...base, dentroVentana: true }
+    assert.deepEqual(
+      resolverDecisionComision({
+        ...dentro,
+        caso: 'CONVENIO_COMERCIAL',
+        conComisionAsesor: true,
+        conComisionConvenio: false,
+      }),
+      { ok: true, decision: { asesor: true, convenio: false } }
+    )
+    assert.deepEqual(
+      resolverDecisionComision({ ...dentro, caso: 'SIN_CONVENIO', conComisionAsesor: false }),
+      { ok: true, decision: { asesor: false, convenio: null } }
+    )
+    // Combinaciones imposibles también dentro de ventana.
+    assert.isFalse(
+      resolverDecisionComision({ ...dentro, caso: 'CONVENIO_COMERCIAL', conComisionAsesor: true })
+        .ok
+    )
+    assert.isFalse(
+      resolverDecisionComision({
+        ...dentro,
+        caso: 'SIN_CONVENIO',
+        conComisionAsesor: true,
+        conComisionConvenio: true,
+      }).ok
+    )
+    assert.isFalse(
+      resolverDecisionComision({
+        ...dentro,
+        caso: 'CONVENIO_SELF',
+        conComisionAsesor: true,
+        conComisionConvenio: false,
+      }).ok
+    )
+    // Solo el flag de convenio, sin el del asesor: error.
+    assert.isFalse(
+      resolverDecisionComision({
+        ...dentro,
+        caso: 'CONVENIO_COMERCIAL',
+        conComisionConvenio: false,
+      }).ok
+    )
   })
 
   test('falta el flag del asesor → error', ({ assert }) => {
