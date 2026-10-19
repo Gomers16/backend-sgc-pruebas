@@ -210,3 +210,136 @@ Ninguna se borra en este plan. Condiciones:
 | `tickets_detalle_excepcion_dateo.con_comision` | Producción local y servidor sincronizados, más una migración que copie `con_comision` a las columnas nuevas en los tickets que solo la tengan (la regla de `sqlCopiaConComision` de 1797), más quitar los `COALESCE`/respaldos del código (`tickets_consulta_service.ts`, `debeRespetarSinComision()`, `lineaDeTiempoTicket()`, `resolucionTicket.ts`) y la escritura en `aprobar()`. |
 
 Las migraciones destructivas van solo después de sincronizar y con aprobación explícita.
+
+## 9. Verificación 2026-10-19 y procedimiento final
+
+> Verificación de solo lectura, hecha el 2026-10-19 después de escribir las secciones 1–8. **Donde esta sección contradice a las anteriores, manda esta.** No se copió, migró ni reinició nada.
+
+### 9.1 Resultado de la verificación
+
+**Estado de producción local**
+- `C:\dev\backend-sgc`: HEAD `a6cf69f`, sin commits posteriores, sin cambios ni archivos sin seguimiento.
+- `C:\dev\front-sgc`: HEAD `a6a95fd`, sin commits posteriores ni cambios. Solo hay dos archivos sin seguimiento, `deploy-front-casa.bat` y `deploy-front-oficina.bat`, que la copia no toca. **Por ellos no se puede usar `git clean` en el frontend.**
+
+**Archivos** (backend `555a702..b4039c0`, frontend `0d077ac..4fb7a52`)
+- Ningún archivo `M` es distinto de la base en producción local: **no hay nada que fusionar**.
+- Ningún archivo `A` existe ya en producción local: **no se pisa nada**.
+- No hay borrados (`D`).
+- Backend: 14 `M` y 19 `A`. Frontend: 9 `M` y 12 `A`. La lista es la de la sección 2, más `SINCRONIZAR_TICKETS_A_PRODUCCION_LOCAL.md`.
+
+**Dependencias**
+- `package.json` y `package-lock.json` son idénticos en las dos instalaciones (backend y frontend) y no cambian en el rango.
+- Producción local ya tiene instalados `exceljs@4.4.0`, `chart.js@4.5.0` y `vue-chartjs@5.3.2`.
+
+**Columnas que salen del modelo** (`asignado_a_id`, `cerrado_at`, `requiere_aprobacion_financiera`)
+- En producción local solo aparecen donde ya se sabía: modelos `Ticket`/`TipoTicket`, `preload('asignadoA')` en `tickets_controller.ts`, las migraciones `1787…` y los tipos de `ticketsService.ts` del frontend.
+- No hay triggers, vistas ni rutinas en la BD que las nombren, ni tareas programadas (`node-cron`/`setInterval`) en `app/`, `start/` ni `commands/`.
+
+**Cómo corre producción local**
+- `ecosystem.config.cjs`: pm2, nombre `backend-sgc`, `script: './bin/server.ts'`. **Corre las fuentes TypeScript, no `build/`.**
+- `build/` está viejo (no tiene `tickets_controller.js`) y no se usa. No hace falta `node ace build`: basta copiar y reiniciar.
+- Al momento de la verificación **no había ningún proceso `node` corriendo** en la máquina.
+
+### 9.2 Riesgos nuevos encontrados
+
+1. **`C:\dev\backend-sgc-server` también apunta a la BD `sgc`.**
+   - Es una copia de 2025-12 (`ec6a9ea`) con muchos archivos modificados sin commitear.
+   - **No tiene `debeRespetarSinComision()`**: su hook de Facturación nunca respeta un "sin comisión", ni siquiera el del asesor.
+   - Su `ecosystem.config.cjs` usa **el mismo nombre de pm2 (`backend-sgc`)**.
+   - Si alguien la arranca contra esta BD, paga completo cualquier ticket aprobado "sin comisión", y un `pm2 restart backend-sgc` podría reiniciar la instalación equivocada.
+   - **No arrancarla.** Antes de reiniciar, confirmar con `pm2 describe backend-sgc` que el `cwd` es `C:\dev\backend-sgc`.
+2. **Corrección a la sección 4.2:** el Rep General de producción local, en el Caso 3, deja la comisión "sin cambios" (no toca `monto_convenio`). La única vía de pago indebido es el **hook diferido de Facturación** (`applyCommissionHook()`).
+3. **Corrección a la sección 5:** no hay que compilar; producción local corre `bin/server.ts`.
+
+### 9.3 El hook diferido: qué pagaría producción local HOY
+
+En producción local (`facturacion_tickets_controller.ts`, rama Caso 3), `montoConvenio` sale tal cual de `calcularComision()`. Solo se fuerza `montoAsesor = 0`, y solo si `con_comision` es 0 (`debeRespetarSinComision()` devuelve un booleano que mira solo esa columna).
+
+Configuración vigente:
+- Global: `monto` (dateo nuevo del comercial) = **8.640** para vehículo y moto. Incentivo de convenio Caso 3 = `valor_placa_vehiculo` **20.000** o `valor_placa_moto` **15.000**.
+- Las 4 filas propias de comerciales también tienen `monto` 8.640.
+- 1.207 de los 1.218 convenios activos usan el incentivo global. Los otros 11 tienen fila propia con 0, así que su convenio cobra $0 en cualquier caso.
+
+**Caso concreto:** comercial con convenio de incentivo global, vehículo, sin descuento ni avance, aprobado en pruebas fuera de ventana. Facturación se confirma **después**, desde producción local.
+
+| Decisión en pruebas | Se guarda | Debería pagar (asesor / convenio) | Producción local paga HOY |
+|---|---|---|---|
+| Con comisión | `con_comision=1` | 8.640 / 20.000 | 8.640 / 20.000 ✔ |
+| Sin comisión asesor | `con_comision=0`, convenio 1 | 0 / 20.000 | 0 / 20.000 ✔ |
+| **Sin comisión convenio** | `con_comision=1`, convenio 0 | **8.640 / 0** | **8.640 / 20.000** ✘ (+20.000; moto +15.000) |
+| **Ninguno** | `con_comision=0`, convenio 0 | **0 / 0** | **0 / 20.000** ✘ (+20.000; moto +15.000) |
+
+Además, producción local no guarda la foto. Las estadísticas nuevas mostrarían esa comisión como "sin comisión convenio" con un "dejado de pagar" estimado de 20.000 que en realidad se pagó.
+
+Si Facturación **ya estaba confirmada** al aprobar, la comisión la crea el `aprobar()` de pruebas y queda bien (8.640 / 0).
+
+**Exposición hoy: 0 tickets.**
+- La BD tiene 5 tickets (`TSTDEMO1-3`, `QWE123`, `YTR123`, de agosto), todos sin convenio, sin `canal` y **con el turno borrado**.
+- Ninguno tiene `con_comision_convenio = 0`.
+- El único pendiente (#12) está dentro de ventana, no tiene convenio y su turno no existe, así que `aprobar()` respondería 404.
+
+### 9.4 Recomendación para cerrar la ventana
+
+1. **Sincronizar antes de que se apruebe cualquier ticket real con convenio fuera de ventana.** Hoy la exposición es 0 y producción local no está corriendo, así que es el momento más seguro. Al sincronizar, el hook de producción local pasa a ser el nuevo y la ventana desaparece.
+2. Hasta entonces, la regla operativa: **no aprobar desde pruebas** tickets fuera de ventana con convenio. Si se aprueba alguno, que no sea "sin comisión convenio" ni "ninguno" con Facturación sin confirmar.
+3. No propongo bloquear las opciones de convenio en el frontend de pruebas. Sería código temporal que hay que quitar después, y con exposición 0 y la sincronización inmediata no aporta. Solo tendría sentido si la sincronización se aplaza varios días mientras se aprueban tickets reales desde pruebas.
+4. Justo antes de copiar, repetir la consulta de exposición (paso 1 del procedimiento). Si devuelve filas, revisar esas comisiones a mano después de sincronizar.
+
+### 9.5 Procedimiento final
+
+Cada comando se muestra y se aprueba antes de correrlo. `PB`/`PF` = repos de pruebas, `LB=/c/dev/backend-sgc`, `LF=/c/dev/front-sgc`.
+
+**Paso 0 — Previo (solo lectura)**
+1. `git -C $LB status --short` y `git -C $LF status --short`: limpio, salvo los dos `.bat` del frontend.
+2. `git -C $LB rev-parse HEAD` = `a6cf69f`; `git -C $LF rev-parse HEAD` = `a6a95fd`.
+3. Repetir el bucle de la sección 9.1 (`git show <base>:<f> | diff -q - <destino>/<f>` para `M`, `test -e` para `A`): debe salir igual que ahora.
+4. Consulta de exposición (SELECT): tickets `APROBADO` con `con_comision_convenio = 0` cuyo dateo aún no tenga comisión, y tickets `PENDIENTE` con convenio y fuera de ventana.
+5. Respaldo de la BD: un `mysqldump` de las tablas de la sección 1. Esto **escribe un archivo**, así que necesita OK propio.
+6. `pm2 describe backend-sgc`: confirmar que `cwd` = `C:\dev\backend-sgc` y no `backend-sgc-server`.
+
+**Paso 1 — Copiar el backend**
+- `cp` archivo por archivo, desde `PB` (en `b4039c0`) a `LB`, con la lista exacta de `git -C $PB diff --name-status 555a702 b4039c0` (14 `M` + 19 `A`). Crear las carpetas que falten.
+- Verificar: `git -C $LB status --short` debe mostrar exactamente esos 33 archivos.
+
+**Paso 2 — Verificar el backend (sin reiniciar todavía)**
+- `npx tsc --noEmit` en `LB`.
+- `node ace migration:status` en `LB`: 1796–1799 `completed` (batches 35–38), sin `corrupt` ni `pending`. Si aparece alguna `pending`, **parar**.
+- **No** correr `migration:run` ni `migration:rollback`.
+
+**Paso 3 — Reiniciar el backend**
+- `pm2 restart backend-sgc`, o arrancarlo como se hace hoy si no está corriendo.
+- Humo del backend (pruebas 1–3 de la sección 9.6) con el frontend todavía viejo.
+
+**Paso 4 — Copiar y verificar el frontend**
+- `cp` de los 9 `M` + 12 `A` de `git -C $PF diff --name-status 0d077ac 4fb7a52`.
+- `git -C $LF status --short` = esos 21 archivos, más los dos `.bat`.
+- `npx vue-tsc --build` y `npx vitest run` en `LF`, luego servirlo como se hace hoy.
+
+**Paso 5 — Humo completo** (sección 9.6).
+
+**Paso 6 — Commits locales**
+- Un commit en `LB` y otro en `LF`, con mensajes que citen `b4039c0` y `4fb7a52`. **Sin push.**
+- El despliegue al servidor remoto va aparte: allá las migraciones 1796–1799 **no** están corridas.
+
+**Rollback (solo archivos; la BD no se toca)**
+- *Antes del commit del paso 6:*
+  - Archivos `M`: `git -C $LB restore --source=a6cf69f -- <lista de M>` y `git -C $LF restore --source=a6a95fd -- <lista de M>`.
+  - Archivos `A`: `rm` uno por uno según la lista. **Nunca `git clean -fd`**: en el frontend borraría los `.bat`.
+- *Después del commit:* `git -C $LB revert <commit>` y `git -C $LF revert <commit>`.
+- Luego reiniciar el backend (`pm2 restart backend-sgc`, después de verificar el `cwd`) y servir el frontend como antes.
+- Esperado tras el rollback: `migration:status` vuelve a marcar 1796–1799 como `corrupt`. Es normal. **No** hacer `migration:rollback`.
+
+### 9.6 Pruebas de humo (después de copiar)
+
+Usar una placa `TST…` y un turno de hoy creados para la prueba; no tocar tickets reales. Al final se borran esos datos (con OK).
+
+1. **Arranque:** `pm2 describe backend-sgc` muestra `online` y el `cwd` correcto; el log no tiene errores de importación (`#services/ticket_acceso_service`, etc.).
+2. **Bandeja:** `GET /api/tickets` como GERENCIA → 200 con `meta`. Como COMERCIAL → solo lo suyo. Como CONTABILIDAD → vacío.
+3. **Ticket viejo:** abrir #4 (de producción local, sin turno) → detalle, decisión "régimen anterior" e historial "reconstruido", sin 500.
+4. **Dateo:** turno de hoy sin dateo → 409 `REQUIERE_TICKET_DATEO` con `intento` → el botón lleva al formulario con "Datos del dateo".
+5. **Crear y aprobar, camino diferido (cierra 9.3):** ticket Caso 3 fuera de ventana → aprobar "sin comisión para el convenio" con Facturación sin confirmar → confirmar Facturación **desde producción local** → comisión con `monto_asesor` = 8.640 y `monto_convenio` = 0, foto guardada (`monto_convenio_calculado` = 20.000) y eventos `CREADO`/`APROBADO`.
+6. **Camino directo:** otro ticket con Facturación confirmada → aprobar "ninguno" → 0 / 0.
+7. **Rechazar:** con motivo → sin dateo ni comisión, evento `RECHAZADO`. Sin motivo → el botón queda deshabilitado (y la API responde 400).
+8. **Pantalla:** columna Turno "N° … · RTM", filtro por N° de turno + fecha, estadísticas (exacto/estimado), exportar a Excel, insignia de pendientes en el menú.
+9. **Configuración de ventana:** leerla funciona. No cambiar valores reales.
+10. **Limpieza:** borrar los datos de la placa de prueba (con OK) y confirmar que no quedó ningún ticket `TST…` pendiente.
