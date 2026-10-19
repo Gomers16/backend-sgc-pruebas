@@ -1835,6 +1835,19 @@ router
         }),
       ])
 
+    // 🆕 Historial: exportar a Excel con los mismos filtros del listado
+    router
+      .get('/facturacion/tickets/exportar', async (ctx) => {
+        const { default: Facturacion } = await import('#controllers/facturacion_tickets_controller')
+        return new Facturacion().exportar(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({
+          roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'OPERATIVO_TURNOS'],
+        }),
+      ])
+
     router
       .get('/facturacion/tickets/:id', async (ctx) => {
         const { default: Facturacion } = await import('#controllers/facturacion_tickets_controller')

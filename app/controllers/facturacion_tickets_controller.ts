@@ -9,6 +9,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import Database from '@adonisjs/lucid/services/db'
+import type { ModelQueryBuilderContract } from '@adonisjs/lucid/types/model'
+import ExcelJS from 'exceljs'
 import FacturacionTicket, { type FactEstado } from '#models/facturacion_ticket'
 import CaptacionDateo from '#models/captacion_dateo'
 import TurnoRtm from '#models/turno_rtm'
@@ -41,6 +43,13 @@ const DUP_WINDOW_MINUTES = 60
 const CONSECUTIVO_DESCUENTO_RE = /^[A-Z0-9-]{1,30}$/
 /** Índice único sobre la columna generada consecutivo_descuento_confirmado. */
 const UQ_CONSECUTIVO_DESCUENTO = 'uq_fact_consecutivo_descuento_confirmado'
+
+/** Historial (listado / exportar). */
+const ZONA_BOGOTA = 'America/Bogota'
+const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/
+const EXPORTAR_MAX_FILAS = 20000
+/** Fecha que muestra la columna "Fecha pago" del historial (con sus respaldos). */
+const SQL_FECHA_HISTORIAL = 'COALESCE(fecha_pago, confirmado_at, created_at)'
 
 /* ============================== Tipos DTO / Snapshots ============================== */
 
@@ -234,38 +243,11 @@ export default class FacturacionTicketsController {
   /** GET /facturacion/tickets */
   public async index({ request }: HttpContext) {
     const q = FacturacionTicket.query().orderBy('created_at', 'desc')
-
-    const desde = request.input('desde') as string | undefined
-    const hasta = request.input('hasta') as string | undefined
-    const sedeId = toIntOrNull(request.input('sede_id'))
-    const agenteId = toIntOrNull(request.input('agente_id'))
-    const placa =
-      (request.input('placa') as string | undefined)?.toUpperCase()?.replace(/\s+/g, '') || null
-    const estado = request.input('estado') as FactEstado | undefined
-    const turnoId = toIntOrNull(request.input('turno_id'))
-    const dateoId = toIntOrNull(request.input('dateo_id'))
-    const vendedor = request.input('vendedor') as string | undefined
-
-    if (desde) {
-      const d = DateTime.fromISO(desde).toSQL()
-      if (d) q.where('created_at', '>=', d)
-    }
-    if (hasta) {
-      const h = DateTime.fromISO(hasta).toSQL()
-      if (h) q.where('created_at', '<=', h)
-    }
-    if (sedeId) q.where('sede_id', sedeId)
-    if (agenteId) q.where('agente_id', agenteId)
-    if (placa) q.where('placa', placa)
-    if (estado) q.where('estado', estado)
-    if (turnoId) q.where('turno_id', turnoId)
-    if (dateoId) q.where('dateo_id', dateoId)
-    if (vendedor && vendedor.trim().length >= 2)
-      q.whereILike('vendedor_text', `%${vendedor.trim()}%`)
+    aplicarFiltrosLista(q, request)
 
     const page = Number(request.input('page') || 1)
     const limit = Math.min(Number(request.input('limit') || 20), 100)
-    const pag = await q.paginate(page, limit)
+    const [pag, resumen] = await Promise.all([q.paginate(page, limit), resumenLista(request)])
 
     const { meta, data } = pag.toJSON()
     const rows = data.map((t: any) => ({
@@ -287,9 +269,75 @@ export default class FacturacionTicketsController {
       descuento_id: t.descuentoId ?? null,
       descuento_monto_aplicado: t.descuentoMontoAplicado ?? null,
       consecutivo_descuento: t.consecutivoDescuento ?? null,
+      // 🆕 Historial: fecha que muestra la columna "Fecha pago" cuando no hay fecha_pago
+      confirmado_at: t.confirmadoAt ?? null,
+      created_at: t.createdAt ?? null,
     }))
 
-    return { meta, data: rows }
+    return { meta, data: rows, resumen }
+  }
+
+  /**
+   * GET /facturacion/tickets/exportar — mismo filtro que el listado, en Excel.
+   */
+  public async exportar({ request, response }: HttpContext) {
+    const q = FacturacionTicket.query().orderBy('created_at', 'desc').preload('descuento')
+    aplicarFiltrosLista(q, request)
+    const tickets = await q.limit(EXPORTAR_MAX_FILAS)
+
+    const workbook = new ExcelJS.Workbook()
+    const ws = workbook.addWorksheet('Facturación')
+    ws.columns = [
+      { header: 'ID', key: 'id', width: 8 },
+      { header: 'Estado', key: 'estado', width: 16 },
+      { header: 'Placa', key: 'placa', width: 10 },
+      { header: 'Fecha pago', key: 'fecha_pago', width: 19 },
+      { header: 'Total factura', key: 'total', width: 14 },
+      { header: 'Total sin descuento', key: 'total_sin_descuento', width: 14 },
+      { header: 'Descuento', key: 'descuento', width: 26 },
+      { header: 'Monto descuento', key: 'monto_descuento', width: 14 },
+      { header: 'Consec. descuento', key: 'consecutivo_descuento', width: 18 },
+      { header: 'Servicio', key: 'servicio', width: 30 },
+      { header: 'Sede', key: 'sede', width: 18 },
+      { header: 'Vendedor', key: 'vendedor', width: 28 },
+      { header: 'Prefijo', key: 'prefijo', width: 10 },
+      { header: 'Consecutivo factura', key: 'consecutivo', width: 16 },
+    ]
+    ws.getRow(1).font = { bold: true }
+    for (const t of tickets) {
+      const fecha = t.fechaPago ?? t.confirmadoAt ?? t.createdAt
+      ws.addRow({
+        id: t.id,
+        estado: t.estado,
+        placa: t.placa,
+        fecha_pago: fecha ? fecha.setZone(ZONA_BOGOTA).toFormat('yyyy-MM-dd HH:mm') : '',
+        total: Number(t.totalFactura ?? t.total ?? 0),
+        total_sin_descuento: t.totalSinDescuento ? Number(t.totalSinDescuento) : null,
+        descuento: t.descuento?.nombre ?? '',
+        monto_descuento: t.descuentoMontoAplicado ? Number(t.descuentoMontoAplicado) : null,
+        consecutivo_descuento: t.consecutivoDescuento ?? '',
+        servicio: t.servicioNombre ?? '',
+        sede: t.sedeNombre ?? '',
+        vendedor: t.vendedorText ?? '',
+        prefijo: t.prefijo ?? '',
+        consecutivo: t.consecutivo ?? '',
+      })
+    }
+    for (const k of ['total', 'total_sin_descuento', 'monto_descuento']) {
+      ws.getColumn(k).numFmt = '"$"#,##0'
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const sufijo =
+      [request.input('fecha_pago_desde'), request.input('fecha_pago_hasta')]
+        .filter((v) => typeof v === 'string' && FECHA_RE.test(v))
+        .join('_') || 'todos'
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response.header('Content-Disposition', `attachment; filename="Facturacion_${sufijo}.xlsx"`)
+    return response.send(buffer)
   }
 
   /** GET /facturacion/tickets/:id */
@@ -1826,6 +1874,114 @@ function digestSHA256(buffer: Buffer): string {
   const h = crypto.createHash('sha256')
   h.update(buffer)
   return h.digest('hex')
+}
+
+/* ============================== Historial: filtros ============================== */
+
+type ListaQuery = ModelQueryBuilderContract<typeof FacturacionTicket, any>
+
+/** Texto para LIKE: sin comodines del usuario. */
+function likeSeguro(v: string): string {
+  return v.replace(/[\\%_]/g, (c) => `\\${c}`)
+}
+
+/**
+ * Filtros del listado de facturación (GET /facturacion/tickets y /exportar).
+ * Conserva los parámetros de siempre (desde/hasta sobre created_at, placa
+ * exacta, vendedor, estado, sede, agente, turno, dateo) y agrega los del
+ * historial:
+ * - fecha_pago_desde / fecha_pago_hasta (YYYY-MM-DD, America/Bogota) sobre la
+ *   fecha que muestra la columna "Fecha pago" (fecha_pago → confirmado_at → created_at).
+ * - placa_contiene: parcial, sin importar mayúsculas ni espacios.
+ * - descuento_id: id del descuento, o "ninguno" para tickets sin descuento.
+ * - consecutivo_descuento (+ consecutivo_descuento_exacto=1): parcial por defecto.
+ * - servicio_id: incluye tickets viejos sin servicio_id con el mismo código.
+ */
+function aplicarFiltrosLista(q: ListaQuery, request: HttpContext['request']) {
+  const desde = request.input('desde') as string | undefined
+  const hasta = request.input('hasta') as string | undefined
+  const sedeId = toIntOrNull(request.input('sede_id'))
+  const agenteId = toIntOrNull(request.input('agente_id'))
+  const placa =
+    (request.input('placa') as string | undefined)?.toUpperCase()?.replace(/\s+/g, '') || null
+  const estado = request.input('estado') as FactEstado | undefined
+  const turnoId = toIntOrNull(request.input('turno_id'))
+  const dateoId = toIntOrNull(request.input('dateo_id'))
+  const vendedor = request.input('vendedor') as string | undefined
+
+  if (desde) {
+    const d = DateTime.fromISO(desde).toSQL()
+    if (d) q.where('created_at', '>=', d)
+  }
+  if (hasta) {
+    const h = DateTime.fromISO(hasta).toSQL()
+    if (h) q.where('created_at', '<=', h)
+  }
+  if (sedeId) q.where('sede_id', sedeId)
+  if (agenteId) q.where('agente_id', agenteId)
+  if (placa) q.where('placa', placa)
+  if (estado) q.where('estado', estado)
+  if (turnoId) q.where('turno_id', turnoId)
+  if (dateoId) q.where('dateo_id', dateoId)
+  if (vendedor && vendedor.trim().length >= 2)
+    q.whereILike('vendedor_text', `%${likeSeguro(vendedor.trim())}%`)
+
+  // 🆕 Historial
+  const fpDesde = String(request.input('fecha_pago_desde') ?? '')
+  const fpHasta = String(request.input('fecha_pago_hasta') ?? '')
+  // Las fechas se guardan en hora de Bogotá (conexión con timezone -05:00).
+  if (FECHA_RE.test(fpDesde)) q.whereRaw(`${SQL_FECHA_HISTORIAL} >= ?`, [`${fpDesde} 00:00:00`])
+  if (FECHA_RE.test(fpHasta)) q.whereRaw(`${SQL_FECHA_HISTORIAL} <= ?`, [`${fpHasta} 23:59:59`])
+
+  const placaContiene = String(request.input('placa_contiene') ?? '')
+    .toUpperCase()
+    .replace(/\s+/g, '')
+  if (placaContiene) {
+    q.whereRaw(`REPLACE(UPPER(placa), ' ', '') LIKE ?`, [`%${likeSeguro(placaContiene)}%`])
+  }
+
+  const descuento = String(request.input('descuento_id') ?? '').trim()
+  if (descuento === 'ninguno') q.whereNull('descuento_id')
+  else if (toIntOrNull(descuento)) q.where('descuento_id', toIntOrNull(descuento)!)
+
+  const consecutivo = String(request.input('consecutivo_descuento') ?? '')
+    .toUpperCase()
+    .replace(/\s+/g, '')
+  if (consecutivo) {
+    const exacto = ['1', 'true'].includes(String(request.input('consecutivo_descuento_exacto')))
+    if (exacto) q.where('consecutivo_descuento', consecutivo)
+    else q.whereILike('consecutivo_descuento', `%${likeSeguro(consecutivo)}%`)
+  }
+
+  const servicioId = toIntOrNull(request.input('servicio_id'))
+  if (servicioId) {
+    q.where((w) => {
+      w.where('servicio_id', servicioId).orWhere((v) => {
+        v.whereNull('servicio_id').whereIn(
+          'servicio_codigo',
+          Database.from('servicios').select('codigo_servicio').where('id', servicioId)
+        )
+      })
+    })
+  }
+}
+
+/** Línea resumen del historial con los mismos filtros (sin paginar). */
+async function resumenLista(request: HttpContext['request']) {
+  const q = FacturacionTicket.query()
+  aplicarFiltrosLista(q, request)
+  const [fila] = await q
+    .select(
+      Database.raw('COUNT(*) AS cantidad'),
+      Database.raw('COALESCE(SUM(COALESCE(total_factura, total, 0)), 0) AS total_facturado'),
+      Database.raw('COALESCE(SUM(COALESCE(descuento_monto_aplicado, 0)), 0) AS total_descuento')
+    )
+    .pojo<{ cantidad: number; total_facturado: string; total_descuento: string }>()
+  return {
+    cantidad: Number(fila?.cantidad ?? 0),
+    total_facturado: Number(fila?.total_facturado ?? 0),
+    total_descuento: Number(fila?.total_descuento ?? 0),
+  }
 }
 
 function toIntOrNull(v: unknown): number | null {
