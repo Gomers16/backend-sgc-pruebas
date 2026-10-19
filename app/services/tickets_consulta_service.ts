@@ -29,7 +29,10 @@ export interface FiltrosTickets {
   estado: (typeof ESTADOS_TICKET)[number] | null
   ventana: 'dentro' | 'fuera' | null
   placa: string | null
+  /** Id interno del turno (turnos_rtms.id). */
   turnoId: number | null
+  /** Número visible del turno (turno_numero, se repite cada día). */
+  turnoNumero: number | null
   decision: DecisionComision | null
   tipoTicketId: number | null
   creadoPorId: number | null
@@ -61,7 +64,14 @@ export function parseFiltrosTickets(
   }
 
   const ids: Record<string, number | null> = {}
-  for (const k of ['comercial_id', 'convenio_id', 'turno_id', 'tipo_ticket_id', 'creado_por_id']) {
+  for (const k of [
+    'comercial_id',
+    'convenio_id',
+    'turno_id',
+    'turno_numero',
+    'tipo_ticket_id',
+    'creado_por_id',
+  ]) {
     const n = num(input[k])
     if (Number.isNaN(n)) return { ok: false, message: `${k} debe ser numérico` }
     ids[k] = n
@@ -104,6 +114,7 @@ export function parseFiltrosTickets(
       ventana: ventana as FiltrosTickets['ventana'],
       placa,
       turnoId: ids.turno_id,
+      turnoNumero: ids.turno_numero,
       decision: decision as DecisionComision | null,
       tipoTicketId: ids.tipo_ticket_id,
       creadoPorId: ids.creado_por_id,
@@ -157,6 +168,11 @@ export function aplicarFiltrosTickets(q: any, f: FiltrosTickets, t = 't', d = 'd
   if (f.ventana) q.where(`${d}.dentro_ventana`, f.ventana === 'dentro' ? 1 : 0)
   if (f.placa) q.where(`${d}.placa`, 'like', `%${f.placa}%`)
   if (f.turnoId !== null) q.where(`${d}.turno_id`, f.turnoId)
+  if (f.turnoNumero !== null) {
+    q.whereRaw(`${d}.turno_id IN (SELECT id FROM turnos_rtms WHERE turno_numero = ?)`, [
+      f.turnoNumero,
+    ])
+  }
   if (f.decision) q.whereRaw(`${sqlDecisionComision(t, d)} = ?`, [f.decision])
   if (f.tipoTicketId !== null) q.where(`${t}.tipo_ticket_id`, f.tipoTicketId)
   if (f.creadoPorId !== null) q.where(`${t}.creado_por_id`, f.creadoPorId)

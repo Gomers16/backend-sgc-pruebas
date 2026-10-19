@@ -2880,7 +2880,7 @@ router
       })
       .use([middleware.auth()])
 
-    // 🆕 Configuración de ventana de ticket sin penalización (global +
+    // 🆕 Configuración de ventana de ticket con comisión completa (global +
     // override por asesor) — mismo patrón que
     // /captacion-dateos/config/max-redateos.
     router

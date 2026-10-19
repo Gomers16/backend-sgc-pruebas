@@ -107,12 +107,14 @@ export default class TicketsController {
    * GET /tickets
    * Filtros (tickets_consulta_service.ts::parseFiltrosTickets): fecha_desde,
    * fecha_hasta (YYYY-MM-DD, Bogotá), comercial_id, convenio_id, estado,
-   * ventana (dentro|fuera), placa, turno_id, decision (con | sin_asesor |
+   * ventana (dentro|fuera), placa, turno_id (id interno), turno_numero (número
+   * visible del turno; combinarlo con las fechas), decision (con | sin_asesor |
    * sin_convenio | sin_ninguno | regimen_anterior), tipo_ticket_id,
    * creado_por_id. Paginación: page, per_page (máx. PER_PAGE_MAX).
    * Respuesta: { data, meta: { total, current_page, per_page, last_page } };
-   * cada fila trae `resumen` (placa, turno, comercial, convenio, ventana,
-   * decisión de comisión) para la bandeja.
+   * cada fila trae `resumen` (placa, turno: id interno + número visible del
+   * día + fecha + servicio, comercial, convenio, ventana, decisión de
+   * comisión) para la bandeja.
    *
    * Visibilidad: si el rol del usuario NO está en tipo_ticket.roles_resuelve
    * (ni es SUPER_ADMIN/GERENCIA), solo ve los tickets que creó o donde es el
@@ -142,10 +144,14 @@ export default class TicketsController {
       .leftJoin('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 'tickets.id')
       .leftJoin('agentes_captacions as ac', 'ac.id', 'd.comercial_id')
       .leftJoin('convenios as cv', 'cv.id', 'd.convenio_id')
+      .leftJoin('turnos_rtms as tr', 'tr.id', 'd.turno_id')
+      .leftJoin('servicios as sv', 'sv.id', 'tr.servicio_id')
       .select(
         'tickets.*',
         'd.placa as r_placa',
         'd.turno_id as r_turno_id',
+        'tr.turno_numero as r_turno_numero',
+        'sv.codigo_servicio as r_servicio_codigo',
         'd.comercial_id as r_comercial_id',
         'ac.nombre as r_comercial_nombre',
         'd.convenio_id as r_convenio_id',
@@ -154,10 +160,10 @@ export default class TicketsController {
         'd.dentro_ventana as r_dentro_ventana',
         'd.minutos_exceso as r_minutos_exceso'
       )
+      .select(Database.raw("DATE_FORMAT(tr.fecha, '%Y-%m-%d') as r_turno_fecha"))
       .select(Database.raw(`${sqlDecisionComision('tickets', 'd')} as r_decision_comision`))
       .preload('tipoTicket')
       .preload('creadoPor')
-      .preload('asignadoA')
       .orderBy('tickets.created_at', 'desc')
       .orderBy('tickets.id', 'desc')
 
@@ -177,6 +183,9 @@ export default class TicketsController {
         resumen: {
           placa: t.$extras.r_placa ?? null,
           turnoId: t.$extras.r_turno_id ?? null,
+          turnoNumero: t.$extras.r_turno_numero ?? null,
+          turnoFecha: t.$extras.r_turno_fecha ?? null,
+          servicioCodigo: t.$extras.r_servicio_codigo ?? null,
           comercialId: t.$extras.r_comercial_id ?? null,
           comercialNombre: t.$extras.r_comercial_nombre ?? null,
           convenioId: t.$extras.r_convenio_id ?? null,
@@ -212,7 +221,6 @@ export default class TicketsController {
       .where('id', params.id)
       .preload('tipoTicket')
       .preload('creadoPor')
-      .preload('asignadoA')
       .preload('comentarios', (q) => {
         q.preload('usuario').orderBy('created_at', 'asc')
       })
@@ -228,7 +236,7 @@ export default class TicketsController {
     if (ticket.tipoTicket?.codigo === 'EXCEPCION_DATEO') {
       const detalle = await TicketDetalleExcepcionDateo.query()
         .where('ticket_id', ticket.id)
-        .preload('turno')
+        .preload('turno', (q) => q.preload('servicio'))
         .preload('comercial')
         .preload('convenio')
         .preload('aprobadoPor')

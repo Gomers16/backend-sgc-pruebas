@@ -30,8 +30,8 @@ export default class TipoTicket extends BaseModel {
   })
   declare rolesResuelve: string[]
 
-  @column({ columnName: 'requiere_aprobacion_financiera' })
-  declare requiereAprobacionFinanciera: boolean
+  // requiere_aprobacion_financiera sigue en la tabla (NOT NULL, default 0) pero
+  // nada la lee: no se mapea.
 
   /* ================== Relaciones ================== */
 

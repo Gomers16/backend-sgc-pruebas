@@ -47,7 +47,7 @@ function readOptionalNumber(input: unknown): number | null {
 export default class TicketsExcepcionDateoController {
   /**
    * GET /tickets/config/ventana
-   * Límite global de minutos de ventana sin penalización (fallback cuando no
+   * Límite global de minutos de ventana con comisión completa (fallback cuando no
    * hay override por asesor). Mismo patrón que
    * captacion_dateos_controller.ts::maxRedateosConfigGet(). Solo lectura:
    * sin fila devuelve el default (60), no la crea.

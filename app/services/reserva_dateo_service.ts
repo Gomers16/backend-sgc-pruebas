@@ -206,8 +206,9 @@ export async function buscarTurnoSinDateoHoy(
 /**
  * Todo turno SIN dateo vinculado (captacion_dateo_id NULL) requiere un
  * ticket "Excepción de Dateo" para registrar su dateo — sin excepción. Esta
- * función solo determina si ese ticket, al aprobarse, lleva penalización o
- * no: dentro de `minutosVentana` desde turno.horaIngreso = sin penalización.
+ * función solo determina si ese ticket, al aprobarse, necesita la decisión
+ * de comisión de gerencia: dentro de `minutosVentana` desde turno.horaIngreso
+ * = comisión completa, sin decisión.
  * Usada por captacion_dateos_controller.ts::store() (para el código de la
  * respuesta 409) y tickets_excepcion_dateo_controller.ts::crear() (para
  * fijar el snapshot `dentro_ventana` del ticket).

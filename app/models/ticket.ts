@@ -8,6 +8,9 @@ import Usuario from '#models/usuario'
 import TicketComentario from '#models/ticket_comentario'
 import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
 
+// asignado_a_id y cerrado_at siguen en la tabla (producción local, misma BD,
+// las declara) pero ningún flujo las escribe: no se mapean aquí. RESUELTO y
+// CERRADO existen en el ENUM de la BD; ningún flujo los asigna.
 export type TicketEstado = 'PENDIENTE' | 'APROBADO' | 'RECHAZADO' | 'RESUELTO' | 'CERRADO'
 
 export default class Ticket extends BaseModel {
@@ -28,9 +31,6 @@ export default class Ticket extends BaseModel {
   @column({ columnName: 'creado_por_id' })
   declare creadoPorId: number
 
-  @column({ columnName: 'asignado_a_id' })
-  declare asignadoAId: number | null
-
   @column({ columnName: 'modulo_relacionado' })
   declare moduloRelacionado: string | null
 
@@ -40,9 +40,6 @@ export default class Ticket extends BaseModel {
   @column.dateTime({ columnName: 'resuelto_at' })
   declare resueltoAt: DateTime | null
 
-  @column.dateTime({ columnName: 'cerrado_at' })
-  declare cerradoAt: DateTime | null
-
   /* ================== Relaciones ================== */
 
   @belongsTo(() => TipoTicket, { foreignKey: 'tipoTicketId' })
@@ -50,9 +47,6 @@ export default class Ticket extends BaseModel {
 
   @belongsTo(() => Usuario, { foreignKey: 'creadoPorId' })
   declare creadoPor: BelongsTo<typeof Usuario>
-
-  @belongsTo(() => Usuario, { foreignKey: 'asignadoAId' })
-  declare asignadoA: BelongsTo<typeof Usuario>
 
   @hasMany(() => TicketComentario, { foreignKey: 'ticketId' })
   declare comentarios: HasMany<typeof TicketComentario>
