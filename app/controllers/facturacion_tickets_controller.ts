@@ -23,7 +23,6 @@ import { debeRespetarSinComision, guardarFotoComisionTicket } from '#services/re
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
-  calcularComision,
   isRTM,
   inferTipoVehiculoComision,
   decidirCasoComision,
@@ -32,6 +31,7 @@ import {
 } from '#services/comision_calculo_service'
 import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
 import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
+import { construirComisionRTM, resolverDescuentoComision } from '#services/comision_ticket_service'
 
 /** Carpeta para subir tickets (local). */
 const UPLOAD_BASE_DIR = app.makePath('uploads/tickets')
@@ -1293,69 +1293,8 @@ export default class FacturacionTicketsController {
     // ── Leer valores recurrente/recuperación ──
     const recValues = await resolveConfigRecurrencia(dateo.agenteId, tipoVehiculoComision)
 
-    // 🆕 ── Detectar si hay descuento informativo ──
-    // Prioridad: ticket (aplicado en caja) > dateo (pre-marcado por el comercial)
-    const descuentoIdActivo = ticket.descuentoId ?? (dateo as any).descuentoId ?? null
-    // Distinguir origen: caja (ticket.descuentoId) vs dateo pre-marcado
-    const descuentoOrigenCaja = !!ticket.descuentoId && !(dateo as any).descuentoId
-    let tieneInformativo = false
-    let esInformativoPolicia = false
-    let esInformativoEmpleado = false // 🆕
-    let esAvancePropietario = false // 🆕 CAMBIO 1
-    let esObsequio = false // 🆕 CAMBIO NUEVO
-    // Código del descuento activo (o null) — usado por comision_calculo_service.calcularComision()
-    let codigoDescuentoActivo: string | null = null
-    if (descuentoIdActivo) {
-      const descuentoInfo = await Descuento.query()
-        .where('id', descuentoIdActivo)
-        .where('activo', true)
-        .first()
-      tieneInformativo = descuentoInfo !== null
-      codigoDescuentoActivo = descuentoInfo?.codigo ?? null
-      esInformativoPolicia = descuentoInfo?.codigo === 'INFORMATIVO_POLICIA'
-      esInformativoEmpleado = descuentoInfo?.codigo === 'INFORMATIVO_EMPLEADO' // 🆕
-      esAvancePropietario = descuentoInfo?.codigo === 'AVANCE_PROPIETARIO' // 🆕 CAMBIO 2
-      esObsequio = descuentoInfo?.codigo === 'INFORMATIVO_OBSEQUIO' // 🆕 CAMBIO NUEVO
-      console.log(
-        `🏷️ Descuento informativo: ${tieneInformativo ? `${descuentoInfo!.nombre} (ID ${descuentoIdActivo})` : 'NO'} | esPolicia: ${esInformativoPolicia} | esEmpleado: ${esInformativoEmpleado} | esAvancePropietario: ${esAvancePropietario} | esObsequio: ${esObsequio} | origenCaja: ${descuentoOrigenCaja}`
-      )
-    } else {
-      console.log('🏷️ Descuento informativo: NO')
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // 🆕 AVANCE — detectar y resolver monto según tipo vehículo
-    // ══════════════════════════════════════════════════════════
-    const esAvance = Boolean((dateo as any).esAvance ?? (dateo as any).es_avance ?? false)
-
-    // Monto real del AVANCE:
-    // 1. Si la cajera ingresó un monto explícito (descuentoMontoAplicado > 0) → usar ese
-    // 2. Si no → auto-resolver desde tabla descuentos según tipo de vehículo
-    //    MOTO    → descuento.valorMoto
-    //    VEHICULO → descuento.valorCarro
-    let montoAvance = 0
-    if (esAvance && descuentoIdActivo) {
-      const montoExplicito = Number(ticket.descuentoMontoAplicado ?? 0)
-      if (montoExplicito > 0) {
-        montoAvance = montoExplicito
-        console.log(`🆕 AVANCE monto explícito (cajera): $${montoAvance}`)
-      } else {
-        // Auto-resolver desde la tabla descuentos por tipo de vehículo
-        const descuentoRow = await Descuento.query()
-          .where('id', descuentoIdActivo)
-          .where('activo', true)
-          .first()
-        if (descuentoRow) {
-          const esMoto = tipoVehiculoComision === 'MOTO'
-          montoAvance = esMoto
-            ? Number((descuentoRow as any).valorMoto ?? (descuentoRow as any).valor_moto ?? 0)
-            : Number((descuentoRow as any).valorCarro ?? (descuentoRow as any).valor_carro ?? 0)
-          console.log(
-            `🆕 AVANCE auto-resuelto desde descuento "${descuentoRow.nombre}" | tipo: ${tipoVehiculoComision ?? 'desconocido'} | monto: $${montoAvance}`
-          )
-        }
-      }
-    }
+    const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision)
+    const { descuentoOrigenCaja, esAvance, montoAvance } = descuento
 
     console.log(`🆕 esAvance: ${esAvance} | montoAvance: $${montoAvance}`)
     // ══════════════════════════════════════════════════════════
@@ -1441,165 +1380,39 @@ export default class FacturacionTicketsController {
         return
       }
 
-      // ════════════════════════════════════════════════════
-      //  CASO 1: SIN CONVENIO — Comercial datea directo
-      // ════════════════════════════════════════════════════
-      if (caso === 'SIN_CONVENIO') {
-        if (!dateo.agenteId) {
-          console.warn('⚠️ Sin convenio y sin asesor')
-          await trx.rollback()
-          return
-        }
-
-        const c = new Comision()
-        c.captacionDateoId = dateo.id
-        c.asesorId = dateo.agenteId
-        c.convenioId = null
-        c.tipoServicio = 'RTM'
-        c.estado = 'PENDIENTE'
-        c.fechaCalculo = now
-        c.calculadoPor = usuarioId
-        c.porcentaje = '0'
-        c.asesorSecundarioId = null
-        c.montoConvenio = '0'
-        c.esAvance = false // Sin convenio: avance no aplica
-        c.descuentoCodigoAplicado = codigoDescuentoActivo
-        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
-        if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
-
-        const resultadoCaso1 = calcularComision({
-          caso: 'SIN_CONVENIO',
-          escenario,
-          tuvoContinuidad,
-          esAvance: false,
-          montoAvance: 0,
-          codigoDescuento: codigoDescuentoActivo,
-          origenDescuento,
-          cfgValues,
-          recValues,
-        })
-        c.base = String(resultadoCaso1.base)
-        c.monto = String(resultadoCaso1.monto)
-        c.montoAsesor = String(resultadoCaso1.montoAsesor)
-        c.valorNuevoDirecto = String(resultadoCaso1.valorNuevoDirectoFinal)
-        c.reglaAplicada = resultadoCaso1.reglaAplicada
-        console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
-
-        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
-          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
-        }
-        if (sinComisionTicket.asesor) c.montoAsesor = '0'
-        if (sinComisionTicket.convenio) c.montoConvenio = '0'
-
-        await c.useTransaction(trx).save()
-      } else if (caso === 'CONVENIO_SELF') {
-        // ═══════════════════════════════════════════════════════════
-        // CASO 2: Asesor convenio se datea a sí mismo
-        // El dinero va SIEMPRE a montoAsesor (él es asesor Y convenio)
-        // montoConvenio SIEMPRE es $0
-        // ═══════════════════════════════════════════════════════════
-        const c = new Comision()
-        c.captacionDateoId = dateo.id
-        c.asesorId = asesorConvenioIdReal
-        c.convenioId = dateo.convenioId
-        c.tipoServicio = 'RTM'
-        c.estado = 'PENDIENTE'
-        c.fechaCalculo = now
-        c.calculadoPor = usuarioId
-        c.porcentaje = '0'
-        c.asesorSecundarioId = null
-        c.valorNuevoDirecto = '0'
-        c.montoConvenio = '0' // Siempre $0 en CASO 2
-        c.esAvance = esAvance
-        c.descuentoCodigoAplicado = codigoDescuentoActivo
-        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
-        if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
-
-        const resultadoCaso2 = calcularComision({
-          caso: 'CONVENIO_SELF',
-          escenario,
-          tuvoContinuidad,
-          esAvance,
-          montoAvance,
-          codigoDescuento: codigoDescuentoActivo,
-          origenDescuento,
-          cfgValues,
-          recValues,
-        })
-        c.base = String(resultadoCaso2.base)
-        c.monto = String(resultadoCaso2.monto)
-        c.montoAsesor = String(resultadoCaso2.montoAsesor)
-        if (resultadoCaso2.descuentoMontoAplicado !== null) {
-          c.descuentoMontoAplicado = resultadoCaso2.descuentoMontoAplicado
-        }
-        c.reglaAplicada = resultadoCaso2.reglaAplicada
-        console.log(
-          `✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`
-        )
-
-        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
-          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
-        }
-        if (sinComisionTicket.asesor) c.montoAsesor = '0'
-        if (sinComisionTicket.convenio) c.montoConvenio = '0'
-
-        await c.useTransaction(trx).save()
-
-        // ════════════════════════════════════════════════════
-        //  CASO 3: CON CONVENIO — Comercial datea
-        // ════════════════════════════════════════════════════
-      } else {
-        if (!dateo.agenteId) {
-          console.warn('⚠️ Con convenio pero sin asesor comercial')
-          await trx.rollback()
-          return
-        }
-
-        const c = new Comision()
-        c.captacionDateoId = dateo.id
-        c.asesorId = dateo.agenteId
-        c.convenioId = dateo.convenioId
-        c.tipoServicio = 'RTM'
-        c.estado = 'PENDIENTE'
-        c.fechaCalculo = now
-        c.calculadoPor = usuarioId
-        c.porcentaje = '0'
-        c.asesorSecundarioId = asesorConvenioIdReal
-        c.valorNuevoDirecto = '0'
-        c.esAvance = esAvance
-        c.descuentoCodigoAplicado = codigoDescuentoActivo
-        c.descuentoObservacionCaja = ticket.descuentoObservacion ?? null
-        if (tipoVehiculoComision) (c as any).tipoVehiculo = tipoVehiculoComision
-
-        const resultadoCaso3 = calcularComision({
-          caso: 'CONVENIO_COMERCIAL',
-          escenario,
-          tuvoContinuidad,
-          esAvance,
-          montoAvance,
-          codigoDescuento: codigoDescuentoActivo,
-          origenDescuento,
-          cfgValues,
-          recValues,
-        })
-        c.base = String(resultadoCaso3.base)
-        c.monto = String(resultadoCaso3.monto)
-        c.montoAsesor = String(resultadoCaso3.montoAsesor)
-        c.montoConvenio = String(resultadoCaso3.montoConvenio)
-        if (resultadoCaso3.descuentoMontoAplicado !== null) {
-          c.descuentoMontoAplicado = resultadoCaso3.descuentoMontoAplicado
-        }
-        c.reglaAplicada = resultadoCaso3.reglaAplicada
-        console.log(
-          `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
-        )
-        if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
-          await guardarFotoComisionTicket(turnoActual!.id, c.montoAsesor, c.montoConvenio, trx)
-        }
-        if (sinComisionTicket.asesor) c.montoAsesor = '0'
-        if (sinComisionTicket.convenio) c.montoConvenio = '0'
-        await c.useTransaction(trx).save()
+      const c = construirComisionRTM({
+        caso,
+        dateo,
+        ticket,
+        escenario,
+        tuvoContinuidad,
+        descuento,
+        origenDescuento,
+        cfgValues,
+        recValues,
+        asesorConvenioIdReal,
+        tipoVehiculoComision,
+        now,
+        usuarioId,
+      })
+      if (!c) {
+        await trx.rollback()
+        return
       }
+
+      if (sinComisionTicket.asesor || sinComisionTicket.convenio) {
+        // construirComisionRTM() siempre asigna los dos montos.
+        await guardarFotoComisionTicket(
+          turnoActual!.id,
+          c.montoAsesor ?? '0',
+          c.montoConvenio ?? '0',
+          trx
+        )
+      }
+      if (sinComisionTicket.asesor) c.montoAsesor = '0'
+      if (sinComisionTicket.convenio) c.montoConvenio = '0'
+
+      await c.useTransaction(trx).save()
 
       if (dateo.resultado !== 'EXITOSO') {
         dateo.resultado = 'EXITOSO'
