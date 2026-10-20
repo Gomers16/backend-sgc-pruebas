@@ -352,7 +352,7 @@ function diferenciaDe(antes: MontosComision, despues: MontosComision): Diferenci
 }
 
 const pesos = (n: number) =>
-  `$${Math.abs(n).toLocaleString('es-CO', { maximumFractionDigits: 0 })}${n < 0 ? ' menos' : ''}`
+  `${n < 0 ? '−' : ''}$${Math.abs(n).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`
 
 function sinRecalcular(
   accion: AccionComisionEdicion,

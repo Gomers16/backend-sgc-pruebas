@@ -581,7 +581,7 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
     assert.isTrue(pc.requiereConfirmacionPago)
     assert.isBelow(pc.diferencia.total, 0)
     assert.include(pc.mensaje, 'Esta comisión ya fue pagada. Se modificará el monto en el sistema')
-    assert.include(pc.mensaje, 'Diferencia: $')
+    assert.include(pc.mensaje, 'Diferencia: −$')
 
     // Sin la casilla: 409 y nada cambia.
     const sin = await editar(client, ticket.id, AGREGAR_INFORMATIVO('PAG'))
