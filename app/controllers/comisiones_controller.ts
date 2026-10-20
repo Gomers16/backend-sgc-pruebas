@@ -22,6 +22,7 @@ import {
   ticketsOrigenPorDateo,
 } from '#services/ticket_comision_origen_service'
 import { consecutivoDescuentoDeTickets } from '#services/consecutivo_descuento_service'
+import { ajustesEdicionFacturaPorComision } from '#services/comision_ticket_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -411,10 +412,13 @@ export default class ComisionesController {
     const meta = paginated.getMeta()
     const data = paginated.all()
     const origenes = await ticketsOrigenPorDateo(data.map((c) => c.captacionDateoId))
+    const ajustes = await ajustesEdicionFacturaPorComision(data.map((c) => c.id))
     const rows = data.map((c) => ({
       ...mapComisionToDto(c),
       // 🆕 Ticket de Excepción de Dateo de origen (null si no viene de uno).
       ticket_origen: (c.captacionDateoId && origenes.get(c.captacionDateoId)) || null,
+      // 🆕 Última edición del descuento en Facturación que cambió esta comisión.
+      ajuste_edicion_factura: ajustes.get(c.id) ?? null,
     }))
 
     return response.ok({
@@ -787,9 +791,13 @@ export default class ComisionesController {
       )
     }
 
+    const ajustes = await ajustesEdicionFacturaPorComision([comision.id])
+
     const result = {
       ...dto,
       ticket_origen: origen,
+      // 🆕 Última edición del descuento en Facturación que cambió esta comisión.
+      ajuste_edicion_factura: ajustes.get(comision.id) ?? null,
       aprobado_at: comision.aprobadoAt?.toISO() ?? null,
       aprobado_por: comision.aprobadoPor ?? null,
       pagado_at: comision.pagadoAt?.toISO() ?? null,

@@ -308,6 +308,13 @@ const CAMPOS_RECALCULADOS = [
 ] as const
 type CampoComisionRecalculado = (typeof CAMPOS_RECALCULADOS)[number]
 
+export interface DiferenciaComision {
+  asesor: number
+  convenio: number
+  /** asesor + convenio */
+  total: number
+}
+
 export interface PlanComisionEdicion {
   accion: AccionComisionEdicion
   /** Aviso para la pantalla (null cuando se recalcula sin novedad). */
@@ -316,7 +323,15 @@ export interface PlanComisionEdicion {
   estado: string | null
   antes: MontosComision | null
   despues: MontosComision | null
-  /** Valores a escribir en la comisión existente (solo con RECALCULADA). */
+  /** después − antes (0 si no se recalcula). */
+  diferencia: DiferenciaComision
+  /** Liquidaciones (el comprobante de pago de comisiones) que la incluyen. */
+  liquidacionIds: number[]
+  /** PAGADA o en una liquidación: el backend exige confirmar_comision_pagada=true. */
+  requiereConfirmacionPago: boolean
+  /** Dateo del turno (para alinear sus campos de descuento de caja). */
+  dateoId: number | null
+  /** Valores a escribir en la comisión existente (solo si se recalcula). */
   cambios: Partial<Record<CampoComisionRecalculado, unknown>> | null
   /** Foto del valor calculado antes del $0 de un ticket "sin comisión" (o null). */
   fotoTicket: { turnoId: number; montoAsesor: string; montoConvenio: string } | null
@@ -328,10 +343,22 @@ const montosDe = (c: Pick<Comision, 'monto' | 'montoAsesor' | 'montoConvenio'>) 
   montoConvenio: Number(c.montoConvenio ?? 0),
 })
 
+const SIN_DIFERENCIA: DiferenciaComision = { asesor: 0, convenio: 0, total: 0 }
+
+function diferenciaDe(antes: MontosComision, despues: MontosComision): DiferenciaComision {
+  const asesor = despues.montoAsesor - antes.montoAsesor
+  const convenio = despues.montoConvenio - antes.montoConvenio
+  return { asesor, convenio, total: asesor + convenio }
+}
+
+const pesos = (n: number) =>
+  `$${Math.abs(n).toLocaleString('es-CO', { maximumFractionDigits: 0 })}${n < 0 ? ' menos' : ''}`
+
 function sinRecalcular(
   accion: AccionComisionEdicion,
   mensaje: string | null,
-  comision: Comision | null = null
+  comision: Comision | null = null,
+  extra: { liquidacionIds?: number[]; dateoId?: number | null } = {}
 ): PlanComisionEdicion {
   const antes = comision ? montosDe(comision) : null
   return {
@@ -341,6 +368,10 @@ function sinRecalcular(
     estado: comision?.estado ?? null,
     antes,
     despues: antes,
+    diferencia: SIN_DIFERENCIA,
+    liquidacionIds: extra.liquidacionIds ?? [],
+    requiereConfirmacionPago: false,
+    dateoId: extra.dateoId ?? null,
     cambios: null,
     fotoTicket: null,
   }
@@ -367,12 +398,16 @@ export async function comisionDelTicket(
  * Qué le pasa a la comisión del dateo del turno si el ticket queda con el
  * descuento que trae en memoria (ya editado, sin guardar). No escribe nada.
  *  - Sin comisión (o ticket no RTM) → SIN_COMISION.
- *  - APROBADA, PAGADA, ANULADA o dentro de una liquidación → NO_MODIFICADA.
- *  - PENDIENTE → mismo motor que applyCommissionHook() (calcularComision y
- *    la decisión "sin comisión" de un ticket de Excepción de Dateo). Con
- *    convenio la continuidad es la guardada en el turno al confirmar; si no
- *    hay, no se recalcula (SIN_CONTINUIDAD). Sin convenio, evaluarContinuidad()
- *    devuelve SIN_EVIDENCIA sin leer historial: el mismo valor se usa aquí.
+ *  - ANULADA → NO_MODIFICADA (solo aviso).
+ *  - PENDIENTE o APROBADA → RECALCULADA, sin cambiar su estado.
+ *  - PAGADA o dentro de una liquidación → AJUSTADA_TRAS_PAGO: se recalcula
+ *    igual, pero quien guarda debe confirmar que ya se pagó; las
+ *    liquidaciones emitidas no se tocan.
+ * El recálculo es el mismo motor de applyCommissionHook() (calcularComision
+ * y la decisión "sin comisión" de un ticket de Excepción de Dateo). Con
+ * convenio la continuidad es la guardada en el turno al confirmar; si no hay,
+ * no se recalcula (SIN_CONTINUIDAD). Sin convenio, evaluarContinuidad()
+ * devuelve SIN_EVIDENCIA sin leer historial: el mismo valor se usa aquí.
  */
 export async function planearRecalculoComision(
   ticket: FacturacionTicket,
@@ -382,18 +417,22 @@ export async function planearRecalculoComision(
     return sinRecalcular('SIN_COMISION', null)
   }
   const { comision, turno, dateoId } = await comisionDelTicket(ticket, trx)
-  if (!comision || !dateoId) return sinRecalcular('SIN_COMISION', null)
+  if (!comision || !dateoId) return sinRecalcular('SIN_COMISION', null, null, { dateoId })
 
-  const enLiquidacion = await (trx ?? Database)
+  const filasLiquidacion = (await (trx ?? Database)
     .from('liquidacion_detalle')
     .where('comision_id', comision.id)
-    .first()
-  if (comision.estado !== 'PENDIENTE' || enLiquidacion) {
-    const situacion = comision.estado !== 'PENDIENTE' ? comision.estado : 'en una liquidación'
+    .orderBy('liquidacion_id', 'asc')
+    .select('liquidacion_id')) as { liquidacion_id: number }[]
+  const liquidacionIds = filasLiquidacion.map((r) => Number(r.liquidacion_id))
+  const extra = { liquidacionIds, dateoId }
+
+  if (comision.estado === 'ANULADA') {
     return sinRecalcular(
       'NO_MODIFICADA',
-      `La comisión #${comision.id} ya está ${situacion}: no se modificó, ajústala en Comisiones.`,
-      comision
+      `La comisión #${comision.id} está ANULADA: no se modificó.`,
+      comision,
+      extra
     )
   }
 
@@ -405,7 +444,7 @@ export async function planearRecalculoComision(
       qConvenio.preload('asesorConvenio')
     })
     .first()
-  if (!dateo) return sinRecalcular('SIN_COMISION', null)
+  if (!dateo) return sinRecalcular('SIN_COMISION', null, null, extra)
 
   let asesorConvenioIdReal: number | null = null
   if (dateo.convenioId && (dateo.convenio as any)?.$preloaded?.asesorConvenio) {
@@ -419,7 +458,8 @@ export async function planearRecalculoComision(
       return sinRecalcular(
         'SIN_CONTINUIDAD',
         `No se pudo recalcular: falta la continuidad guardada. La comisión #${comision.id} no se modificó.`,
-        comision
+        comision,
+        extra
       )
     }
     tuvoContinuidad = guardada !== 'ROTA'
@@ -478,7 +518,8 @@ export async function planearRecalculoComision(
     return sinRecalcular(
       'NO_MODIFICADA',
       `No se pudo recalcular: la comisión #${comision.id} no coincide con el dateo actual. No se modificó, ajústala en Comisiones.`,
-      comision
+      comision,
+      extra
     )
   }
 
@@ -497,16 +538,110 @@ export async function planearRecalculoComision(
   const cambios: Partial<Record<CampoComisionRecalculado, unknown>> = {}
   for (const campo of CAMPOS_RECALCULADOS) cambios[campo] = (c as any)[campo] ?? null
 
+  const antes = montosDe(comision)
+  const despues = montosDe(c)
+  const diferencia = diferenciaDe(antes, despues)
+  const requiereConfirmacionPago = comision.estado === 'PAGADA' || liquidacionIds.length > 0
+  const avisos: string[] = []
+  if (requiereConfirmacionPago) {
+    const donde =
+      comision.estado === 'PAGADA'
+        ? 'ya fue pagada'
+        : `ya está en la liquidación #${liquidacionIds.join(', #')}`
+    avisos.push(
+      `Esta comisión ${donde}. Se modificará el monto en el sistema, pero el dinero ya entregado no cambia. Diferencia: ${pesos(diferencia.total)}.`
+    )
+  }
+  if (fotoTicket) {
+    avisos.push(
+      'El turno viene de un ticket de Excepción de Dateo aprobado sin comisión: esa decisión se respeta.'
+    )
+  }
+
   return {
-    accion: 'RECALCULADA',
-    mensaje: fotoTicket
-      ? 'El turno viene de un ticket de Excepción de Dateo aprobado sin comisión: esa decisión se respeta.'
-      : null,
+    accion: requiereConfirmacionPago ? 'AJUSTADA_TRAS_PAGO' : 'RECALCULADA',
+    mensaje: avisos.length ? avisos.join(' ') : null,
     comisionId: comision.id,
     estado: comision.estado,
-    antes: montosDe(comision),
-    despues: montosDe(c),
+    antes,
+    despues,
+    diferencia,
+    liquidacionIds,
+    requiereConfirmacionPago,
+    dateoId,
     cambios,
     fotoTicket,
   }
+}
+
+/**
+ * Nota que queda en comisiones.observacion al recalcular por una edición del
+ * descuento (se agrega al final, no reemplaza lo que había).
+ */
+export function notaEdicionFactura(p: {
+  ticketId: number
+  motivo: string
+  antes: MontosComision
+  despues: MontosComision
+  diferencia: DiferenciaComision
+  trasPago: boolean
+  usuario: string
+  fecha: DateTime
+}): string {
+  const total = (m: MontosComision) => pesos(m.montoAsesor + m.montoConvenio)
+  return (
+    `[${p.fecha.setZone('America/Bogota').toFormat('yyyy-LL-dd HH:mm')}] Edición de factura` +
+    ` ticket #${p.ticketId} por ${p.usuario}: ${total(p.antes)} → ${total(p.despues)}` +
+    ` (diferencia ${pesos(p.diferencia.total)})` +
+    `${p.trasPago ? ', ajustada tras el pago' : ''}. Motivo: ${p.motivo}`
+  )
+}
+
+/** Última edición de factura que cambió el monto de cada comisión (para Comisiones). */
+export interface AjusteEdicionFactura {
+  edicion_id: number
+  facturacion_ticket_id: number
+  diferencia: number
+  tras_pago: boolean
+  fecha: string | null
+}
+
+export async function ajustesEdicionFacturaPorComision(
+  comisionIds: number[]
+): Promise<Map<number, AjusteEdicionFactura>> {
+  const ids = Array.from(new Set(comisionIds.filter((id) => Number(id) > 0)))
+  const out = new Map<number, AjusteEdicionFactura>()
+  if (!ids.length) return out
+  const rows = (await Database.from('facturacion_descuento_ediciones')
+    .whereIn('comision_id', ids)
+    .whereIn('comision_accion', ['RECALCULADA', 'AJUSTADA_TRAS_PAGO'])
+    .orderBy('id', 'desc')
+    .select(
+      'id',
+      'comision_id',
+      'facturacion_ticket_id',
+      'comision_accion',
+      'comision_monto_asesor_anterior',
+      'comision_monto_asesor_nuevo',
+      'comision_monto_convenio_anterior',
+      'comision_monto_convenio_nuevo',
+      'created_at'
+    )) as any[]
+  const n = (v: unknown) => Number(v ?? 0) || 0
+  for (const r of rows) {
+    const id = Number(r.comision_id)
+    if (out.has(id)) continue
+    const diferencia =
+      n(r.comision_monto_asesor_nuevo) -
+      n(r.comision_monto_asesor_anterior) +
+      (n(r.comision_monto_convenio_nuevo) - n(r.comision_monto_convenio_anterior))
+    out.set(id, {
+      edicion_id: Number(r.id),
+      facturacion_ticket_id: Number(r.facturacion_ticket_id),
+      diferencia,
+      tras_pago: r.comision_accion === 'AJUSTADA_TRAS_PAGO',
+      fecha: r.created_at ? DateTime.fromJSDate(new Date(r.created_at)).toISO() : null,
+    })
+  }
+  return out
 }

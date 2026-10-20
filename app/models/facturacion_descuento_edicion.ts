@@ -11,9 +11,10 @@ import Usuario from '#models/usuario'
 
 /**
  * Qué se hizo con la comisión del dateo del turno al editar:
- *  - RECALCULADA: estaba PENDIENTE y se recalculó con el motor de siempre.
- *  - NO_MODIFICADA: APROBADA, PAGADA, ANULADA o en una liquidación.
- *  - SIN_CONTINUIDAD: PENDIENTE, pero el turno no tiene estado_continuidad guardado.
+ *  - RECALCULADA: PENDIENTE o APROBADA; se recalculó con el motor de siempre.
+ *  - NO_MODIFICADA: ANULADA, o la comisión no coincide con el dateo actual.
+ *  - SIN_CONTINUIDAD: con convenio y sin estado_continuidad guardado en el turno.
+ *  - AJUSTADA_TRAS_PAGO: PAGADA o en una liquidación; se recalculó con confirmación.
  *  - SIN_COMISION: el ticket no tiene comisión que recalcular.
  */
 export type AccionComisionEdicion =
@@ -21,6 +22,7 @@ export type AccionComisionEdicion =
   | 'NO_MODIFICADA'
   | 'SIN_CONTINUIDAD'
   | 'SIN_COMISION'
+  | 'AJUSTADA_TRAS_PAGO'
 
 const decimal = {
   consume: (v: unknown) => (v === null || v === undefined ? null : Number(v)),

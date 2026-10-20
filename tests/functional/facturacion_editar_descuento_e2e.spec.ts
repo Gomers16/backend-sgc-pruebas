@@ -21,12 +21,12 @@ const SEDE_ID = 2
 const SERVICIO_RTM_ID = 1
 const AGENTE_COMERCIAL_ID = 1
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, CONTABILIDAD: 12 }
-const DESCUENTO = { INFORMATIVO: 1, EMPLEADO: 3, POLICIA: 4 }
+const DESCUENTO = { INFORMATIVO: 1, AVANCE: 2, EMPLEADO: 3, POLICIA: 4 }
 // Valores de la BD de pruebas para vehículo (no moto).
 const MAX_INFORMATIVO = 50000
 const FIJO_EMPLEADO = 60000
 
-const PLACAS = Array.from({ length: 20 }, (_, i) => `TFE${String(900 + i)}`)
+const PLACAS = Array.from({ length: 30 }, (_, i) => `TFE${String(900 + i)}`)
 const RUN = Date.now().toString(36).toUpperCase()
 const cd = (sufijo: string) => `EDT-${RUN}-${sufijo}`
 
@@ -453,6 +453,12 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
     assert.equal(res.body().comision.accion, 'RECALCULADA')
     assert.equal(res.body().comision.comisionId, comision!.id)
     assert.notEqual(res.body().comision.despues.montoAsesor, res.body().comision.antes.montoAsesor)
+    const prev = res.body().comision
+    assert.equal(prev.estado, 'PENDIENTE')
+    assert.equal(prev.diferencia.asesor, prev.despues.montoAsesor - prev.antes.montoAsesor)
+    assert.equal(prev.diferencia.total, prev.diferencia.asesor + prev.diferencia.convenio)
+    assert.isFalse(prev.enLiquidacion)
+    assert.isFalse(prev.requiereConfirmacionPago)
 
     assert.deepEqual(await filaTicket(ticket.id), ticketAntes)
     assert.deepEqual(await filaComision(comision!.id), comisionAntes)
@@ -511,40 +517,121 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
     assert.equal(r.comisionMontoAsesorNuevo, Number(g.montoAsesor))
   }).timeout(40000)
 
-  test('comisión APROBADA, PAGADA o ANULADA: no se toca y avisa con su número', async ({
+  const AGREGAR_INFORMATIVO = (sufijo: string, extra: Record<string, unknown> = {}) => ({
+    descuento_id: DESCUENTO.INFORMATIVO,
+    descuento_monto_aplicado: 15000,
+    consecutivo_descuento: cd(sufijo),
+    motivo_edicion: `Edición de prueba ${sufijo}`,
+    ...extra,
+  })
+
+  test('comisión APROBADA: se recalcula sin cambiar su estado y deja nota', async ({
     assert,
     client,
   }) => {
-    for (const [i, estado] of (['APROBADA', 'PAGADA', 'ANULADA'] as const).entries()) {
-      const { ticket, comision } = await crearConfirmado(client, PLACAS[10 + i], {
-        dateo: 'SIN_CONVENIO',
-      })
-      await Database.from('comisiones').where('id', comision!.id).update({ estado })
-      const comisionAntes = await filaComision(comision!.id)
+    const { ticket, comision } = await crearConfirmado(client, PLACAS[10], {
+      dateo: 'SIN_CONVENIO',
+    })
+    const aprobadoAt = DateTime.now().minus({ hours: 1 }).toSQL({ includeOffset: false })
+    await Database.from('comisiones')
+      .where('id', comision!.id)
+      .update({ estado: 'APROBADA', aprobado_at: aprobadoAt, observacion: 'nota previa' })
+    const montoAntes = Number(comision!.montoAsesor)
 
-      const res = await editar(client, ticket.id, {
-        descuento_id: DESCUENTO.INFORMATIVO,
-        descuento_monto_aplicado: 15000,
-        consecutivo_descuento: cd(`EST-${estado}`),
-        motivo_edicion: `Comisión ${estado}`,
-      })
-      assert.equal(res.status(), 200, res.text())
-      assert.equal(res.body().comision.accion, 'NO_MODIFICADA')
-      assert.equal(
-        res.body().comision.mensaje,
-        `La comisión #${comision!.id} ya está ${estado}: no se modificó, ajústala en Comisiones.`
-      )
-      assert.deepEqual(await filaComision(comision!.id), comisionAntes)
-      // El ticket sí queda editado.
-      const editado = await FacturacionTicket.findOrFail(ticket.id)
-      assert.equal(Number(editado.totalFactura), 185000)
-      const [r] = await ediciones(ticket.id)
-      assert.equal(r.comisionAccion, 'NO_MODIFICADA')
-      assert.equal(r.comisionEstado, estado)
-    }
-  }).timeout(60000)
+    const res = await editar(client, ticket.id, AGREGAR_INFORMATIVO('APROB'))
+    assert.equal(res.status(), 200, res.text())
+    assert.equal(res.body().comision.accion, 'RECALCULADA')
+    assert.isFalse(res.body().comision.requiereConfirmacionPago)
 
-  test('comisión PENDIENTE dentro de una liquidación: no se toca', async ({ assert, client }) => {
+    const c = await Comision.findOrFail(comision!.id)
+    assert.equal(c.estado, 'APROBADA')
+    assert.isNotNull(c.aprobadoAt)
+    assert.notEqual(Number(c.montoAsesor), montoAntes)
+    assert.equal(Number(c.montoAsesor), res.body().comision.despues.montoAsesor)
+    assert.equal(c.descuentoCodigoAplicado, 'INFORMATIVO')
+    // La nota se agrega a lo que había.
+    assert.match(c.observacion!, /^nota previa\n\[.+\] Edición de factura ticket #\d+ por TEST /)
+    assert.include(c.observacion!, `ticket #${ticket.id}`)
+    assert.include(c.observacion!, 'Motivo: Edición de prueba APROB')
+    const [r] = await ediciones(ticket.id)
+    assert.equal(r.comisionAccion, 'RECALCULADA')
+    assert.equal(r.comisionEstado, 'APROBADA')
+  }).timeout(40000)
+
+  test('comisión PAGADA: exige confirmar_comision_pagada; luego ajusta, marca y deja la diferencia', async ({
+    assert,
+    client,
+  }) => {
+    const { ticket, comision } = await crearConfirmado(client, PLACAS[11], {
+      dateo: 'SIN_CONVENIO',
+    })
+    await Database.from('comisiones').where('id', comision!.id).update({ estado: 'PAGADA' })
+    const comisionAntes = await filaComision(comision!.id)
+    const ticketAntes = await filaTicket(ticket.id)
+
+    // Previsualizar: avisa con la diferencia, sin escribir nada.
+    const previa = await editar(client, ticket.id, {
+      ...AGREGAR_INFORMATIVO('PAG'),
+      motivo_edicion: '',
+      solo_previsualizar: true,
+    })
+    assert.equal(previa.status(), 200, previa.text())
+    const pc = previa.body().comision
+    assert.equal(pc.accion, 'AJUSTADA_TRAS_PAGO')
+    assert.isTrue(pc.requiereConfirmacionPago)
+    assert.isBelow(pc.diferencia.total, 0)
+    assert.include(pc.mensaje, 'Esta comisión ya fue pagada. Se modificará el monto en el sistema')
+    assert.include(pc.mensaje, 'Diferencia: $')
+
+    // Sin la casilla: 409 y nada cambia.
+    const sin = await editar(client, ticket.id, AGREGAR_INFORMATIVO('PAG'))
+    assert.equal(sin.status(), 409)
+    assert.equal(sin.body().code, 'COMISION_PAGADA_SIN_CONFIRMAR')
+    assert.deepEqual(await filaComision(comision!.id), comisionAntes)
+    assert.deepEqual(await filaTicket(ticket.id), ticketAntes)
+    assert.lengthOf(await ediciones(ticket.id), 0)
+
+    // Con la casilla: se ajusta, sigue PAGADA y queda la marca.
+    const con = await editar(
+      client,
+      ticket.id,
+      AGREGAR_INFORMATIVO('PAG', { confirmar_comision_pagada: true })
+    )
+    assert.equal(con.status(), 200, con.text())
+    const c = await Comision.findOrFail(comision!.id)
+    assert.equal(c.estado, 'PAGADA')
+    assert.equal(Number(c.montoAsesor), pc.despues.montoAsesor)
+    assert.include(c.observacion!, 'ajustada tras el pago')
+    const [r] = await ediciones(ticket.id)
+    assert.equal(r.comisionAccion, 'AJUSTADA_TRAS_PAGO')
+    assert.equal(r.comisionEstado, 'PAGADA')
+    assert.equal(r.comisionMontoAsesorNuevo! - r.comisionMontoAsesorAnterior!, pc.diferencia.asesor)
+
+    // Comisiones (detalle y lista) muestran el ajuste con la diferencia y el ticket.
+    const detalle = await client
+      .get(`/api/comisiones/${comision!.id}`)
+      .header('Authorization', `Bearer ${tokens.admin}`)
+    assert.equal(detalle.status(), 200, detalle.text())
+    assert.deepInclude(detalle.body().ajuste_edicion_factura, {
+      edicion_id: r.id,
+      facturacion_ticket_id: ticket.id,
+      diferencia: pc.diferencia.total,
+      tras_pago: true,
+    })
+    const lista = await client
+      .get('/api/comisiones')
+      .qs({ placa: PLACAS[11] })
+      .header('Authorization', `Bearer ${tokens.admin}`)
+    assert.equal(lista.status(), 200, lista.text())
+    const fila = lista.body().data.find((x: any) => x.id === comision!.id)
+    assert.equal(fila.ajuste_edicion_factura.facturacion_ticket_id, ticket.id)
+    assert.isTrue(fila.ajuste_edicion_factura.tras_pago)
+  }).timeout(40000)
+
+  test('comisión en una liquidación: igual que PAGADA; la liquidación no se toca', async ({
+    assert,
+    client,
+  }) => {
     const { ticket, comision } = await crearConfirmado(client, PLACAS[17], {
       dateo: 'SIN_CONVENIO',
     })
@@ -552,6 +639,8 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
       fecha_inicio: DateTime.now().toISODate(),
       fecha_fin: DateTime.now().toISODate(),
       tipo_origen: 'TABLA_GENERAL',
+      monto_total: comision!.montoAsesor,
+      cantidad_comisiones: 1,
       usuario_id: usuarios[0].id,
     })
     try {
@@ -560,25 +649,113 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
         comision_id: comision!.id,
         monto: comision!.montoAsesor,
       })
-      const comisionAntes = await filaComision(comision!.id)
-      const res = await editar(client, ticket.id, {
-        descuento_id: DESCUENTO.INFORMATIVO,
-        descuento_monto_aplicado: 15000,
-        consecutivo_descuento: cd('LIQ'),
-        motivo_edicion: 'Comisión ya liquidada',
-      })
-      assert.equal(res.status(), 200, res.text())
-      assert.equal(res.body().comision.accion, 'NO_MODIFICADA')
-      assert.equal(
-        res.body().comision.mensaje,
-        `La comisión #${comision!.id} ya está en una liquidación: no se modificó, ajústala en Comisiones.`
+      const liquidacionAntes = await Database.from('liquidaciones')
+        .where('id', liquidacionId)
+        .first()
+      const detalleAntes = await Database.from('liquidacion_detalle')
+        .where('liquidacion_id', liquidacionId)
+        .first()
+
+      const sin = await editar(client, ticket.id, AGREGAR_INFORMATIVO('LIQ'))
+      assert.equal(sin.status(), 409)
+      assert.equal(sin.body().code, 'COMISION_PAGADA_SIN_CONFIRMAR')
+      assert.include(sin.body().message, `ya está en la liquidación #${liquidacionId}`)
+      assert.isTrue(sin.body().comision.enLiquidacion)
+      assert.deepEqual(sin.body().comision.liquidacionIds, [liquidacionId])
+
+      const con = await editar(
+        client,
+        ticket.id,
+        AGREGAR_INFORMATIVO('LIQ', { confirmar_comision_pagada: true })
       )
-      assert.deepEqual(await filaComision(comision!.id), comisionAntes)
+      assert.equal(con.status(), 200, con.text())
+      assert.equal(con.body().comision.accion, 'AJUSTADA_TRAS_PAGO')
+      const c = await Comision.findOrFail(comision!.id)
+      assert.equal(c.estado, 'PENDIENTE')
+      assert.notEqual(Number(c.montoAsesor), Number(comision!.montoAsesor))
+      // Lo ya liquidado queda como se emitió.
+      assert.deepEqual(
+        await Database.from('liquidaciones').where('id', liquidacionId).first(),
+        liquidacionAntes
+      )
+      assert.deepEqual(
+        await Database.from('liquidacion_detalle').where('liquidacion_id', liquidacionId).first(),
+        detalleAntes
+      )
     } finally {
       await Database.from('liquidacion_detalle').where('liquidacion_id', liquidacionId).delete()
       await Database.from('liquidaciones').where('id', liquidacionId).delete()
     }
+  }).timeout(40000)
+
+  test('comisión ANULADA: no se toca y avisa con su número', async ({ assert, client }) => {
+    const { ticket, comision } = await crearConfirmado(client, PLACAS[12], {
+      dateo: 'SIN_CONVENIO',
+    })
+    await Database.from('comisiones').where('id', comision!.id).update({ estado: 'ANULADA' })
+    const comisionAntes = await filaComision(comision!.id)
+
+    const res = await editar(client, ticket.id, AGREGAR_INFORMATIVO('ANUL'))
+    assert.equal(res.status(), 200, res.text())
+    assert.equal(res.body().comision.accion, 'NO_MODIFICADA')
+    assert.equal(
+      res.body().comision.mensaje,
+      `La comisión #${comision!.id} está ANULADA: no se modificó.`
+    )
+    assert.deepEqual(await filaComision(comision!.id), comisionAntes)
+    const editado = await FacturacionTicket.findOrFail(ticket.id)
+    assert.equal(Number(editado.totalFactura), 185000)
+    const [r] = await ediciones(ticket.id)
+    assert.equal(r.comisionAccion, 'NO_MODIFICADA')
+    assert.equal(r.comisionEstado, 'ANULADA')
   }).timeout(30000)
+
+  test('Avance agregado a un ticket sin descuento: la comisión PENDIENTE baja al valor básico; dateo y comisión quedan alineados', async ({
+    assert,
+    client,
+  }) => {
+    const { ticket, comision, dateo } = await crearConfirmado(client, PLACAS[20], {
+      dateo: 'SIN_CONVENIO',
+    })
+    const gemelo = await crearConfirmado(client, PLACAS[21], {
+      dateo: 'SIN_CONVENIO',
+      descuentoId: DESCUENTO.AVANCE,
+      monto: 20000,
+    })
+    assert.isAbove(Number(comision!.montoAsesor), Number(gemelo.comision!.montoAsesor))
+
+    const res = await editar(client, ticket.id, {
+      descuento_id: DESCUENTO.AVANCE,
+      descuento_monto_aplicado: 20000,
+      descuento_observacion: 'Cliente pide en caja el descuento',
+      consecutivo_descuento: cd('AVANCE'),
+      motivo_edicion: 'Faltó el avance',
+    })
+    assert.equal(res.status(), 200, res.text())
+    const c = await Comision.findOrFail(comision!.id)
+    assert.equal(Number(c.montoAsesor), Number(gemelo.comision!.montoAsesor))
+    assert.equal(c.reglaAplicada, gemelo.comision!.reglaAplicada)
+    assert.include(c.reglaAplicada!, 'valor_dateo_recurrencia')
+    assert.equal(c.descuentoCodigoAplicado, 'AVANCE')
+    assert.equal(c.descuentoObservacionCaja, 'Cliente pide en caja el descuento')
+    let d = await Database.from('captacion_dateos').where('id', dateo!.id).first()
+    assert.equal(d.descuento_caja_id, DESCUENTO.AVANCE)
+    assert.equal(d.descuento_caja_observacion, 'Cliente pide en caja el descuento')
+    assert.isNotNull(d.descuento_caja_aplicado_at)
+
+    // Quitar el descuento: vuelve al valor de un ticket sin descuento.
+    const quitar = await editar(client, ticket.id, {
+      descuento_id: null,
+      motivo_edicion: 'El avance no aplicaba',
+    })
+    assert.equal(quitar.status(), 200, quitar.text())
+    const c2 = await Comision.findOrFail(comision!.id)
+    assert.equal(Number(c2.montoAsesor), Number(comision!.montoAsesor))
+    assert.isNull(c2.descuentoCodigoAplicado)
+    d = await Database.from('captacion_dateos').where('id', dateo!.id).first()
+    assert.isNull(d.descuento_caja_id)
+    assert.isNull(d.descuento_caja_aplicado_at)
+  }).timeout(40000)
 
   test('con convenio: recalcula con la continuidad guardada; sin ella no toca la comisión', async ({
     assert,

@@ -34,6 +34,7 @@ import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda
 import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
 import {
   construirComisionRTM,
+  notaEdicionFactura,
   planearRecalculoComision,
   resolverDescuentoComision,
   type PlanComisionEdicion,
@@ -1509,11 +1510,16 @@ export default class FacturacionTicketsController {
    * PATCH /facturacion/tickets/:id con motivo_edicion (ticket CONFIRMADA).
    * body: descuento_id (null = quitar), descuento_monto_aplicado,
    *       autorizado_por_id, descuento_observacion, consecutivo_descuento,
-   *       motivo_edicion (5–255), solo_previsualizar (no escribe nada).
+   *       motivo_edicion (5–255), solo_previsualizar (no escribe nada),
+   *       confirmar_comision_pagada (obligatorio si la comisión está PAGADA
+   *       o en una liquidación).
    * Solo SUPER_ADMIN / GERENCIA (403 para los demás). Recalcula el total desde
-   * total_sin_descuento, recalcula la comisión del dateo del turno si está
-   * PENDIENTE y deja registro en facturacion_descuento_ediciones, todo en una
-   * transacción.
+   * total_sin_descuento y la comisión del dateo del turno (PENDIENTE,
+   * APROBADA, o PAGADA/en liquidación con confirmación; ANULADA no), alinea
+   * los campos de descuento de caja del dateo y de la comisión, agrega una
+   * nota en comisiones.observacion y deja registro en
+   * facturacion_descuento_ediciones, todo en una transacción. Las
+   * liquidaciones emitidas no se tocan.
    */
   private async editarDescuentoConfirmado(
     ticketId: number,
@@ -1529,7 +1535,9 @@ export default class FacturacionTicketsController {
       })
     }
 
-    const soloPrevisualizar = [true, 'true', 1, '1'].includes(request.input('solo_previsualizar'))
+    const esVerdadero = (v: unknown) => [true, 'true', 1, '1'].includes(v as any)
+    const soloPrevisualizar = esVerdadero(request.input('solo_previsualizar'))
+    const confirmarComisionPagada = esVerdadero(request.input('confirmar_comision_pagada'))
     const motivo = String(request.input('motivo_edicion') ?? '').trim()
     if (!soloPrevisualizar) {
       if (motivo.length < MOTIVO_EDICION_MIN) {
@@ -1574,16 +1582,56 @@ export default class FacturacionTicketsController {
         return response.status(r.status).send(r.error)
       }
       const { antes, despues, comision } = r.resumen
+      // PAGADA o en una liquidación: el dinero ya salió; se exige confirmarlo.
+      if (comision.requiereConfirmacionPago && !confirmarComisionPagada) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'COMISION_PAGADA_SIN_CONFIRMAR',
+          message: comision.mensaje,
+          comision,
+        })
+      }
 
       ticket.useTransaction(trx)
       await ticket.save()
 
-      if (comision.accion === 'RECALCULADA' && r.planComision.cambios) {
+      // Snapshot de caja en el dateo, alineado con el ticket editado (mismos
+      // campos que escribe applyCommissionHook al confirmar).
+      if (r.planComision.dateoId) {
+        await CaptacionDateo.query({ client: trx })
+          .where('id', r.planComision.dateoId)
+          .update({
+            descuento_caja_id: ticket.descuentoId ?? null,
+            descuento_caja_observacion: ticket.descuentoId
+              ? (ticket.descuentoObservacion ?? null)
+              : null,
+            descuento_caja_aplicado_at: ticket.descuentoId
+              ? DateTime.now().toSQL({ includeOffset: false })
+              : null,
+          })
+      }
+
+      const recalculada =
+        comision.accion === 'RECALCULADA' || comision.accion === 'AJUSTADA_TRAS_PAGO'
+      if (recalculada && r.planComision.cambios) {
         const c = await Comision.query({ client: trx })
           .where('id', comision.comisionId!)
           .forUpdate()
           .firstOrFail()
         c.merge(r.planComision.cambios as Partial<Comision>)
+        const u = auth.user as any
+        const nota = notaEdicionFactura({
+          ticketId: ticket.id,
+          motivo,
+          antes: comision.antes!,
+          despues: comision.despues!,
+          diferencia: comision.diferencia,
+          trasPago: comision.accion === 'AJUSTADA_TRAS_PAGO',
+          usuario:
+            [u?.nombres, u?.apellidos].filter(Boolean).join(' ') || `usuario #${u?.id ?? '—'}`,
+          fecha: DateTime.now(),
+        })
+        c.observacion = c.observacion ? `${c.observacion}\n${nota}` : nota
         await c.useTransaction(trx).save()
         const foto = r.planComision.fotoTicket
         if (foto) {
@@ -1612,7 +1660,7 @@ export default class FacturacionTicketsController {
           comisionId: comision.comisionId,
           comisionEstado: comision.estado,
           comisionAccion: comision.accion,
-          comisionMensaje: comision.mensaje,
+          comisionMensaje: comision.mensaje ? comision.mensaje.slice(0, 255) : null,
           comisionMontoAnterior: comision.antes?.monto ?? null,
           comisionMontoNuevo: comision.despues?.monto ?? null,
           comisionMontoAsesorAnterior: comision.antes?.montoAsesor ?? null,
@@ -2081,7 +2129,9 @@ type ResultadoEdicionDescuento =
         ticketId: number
         antes: EstadoDescuentoTicket
         despues: EstadoDescuentoTicket
-        comision: Omit<PlanComisionEdicion, 'cambios' | 'fotoTicket'>
+        comision: Omit<PlanComisionEdicion, 'cambios' | 'fotoTicket' | 'dateoId'> & {
+          enLiquidacion: boolean
+        }
       }
       planComision: PlanComisionEdicion
     }
@@ -2235,6 +2285,10 @@ async function planearEdicionDescuento(
     estado: planComision.estado,
     antes: planComision.antes,
     despues: planComision.despues,
+    diferencia: planComision.diferencia,
+    liquidacionIds: planComision.liquidacionIds,
+    enLiquidacion: planComision.liquidacionIds.length > 0,
+    requiereConfirmacionPago: planComision.requiereConfirmacionPago,
   }
   return {
     ok: true,
