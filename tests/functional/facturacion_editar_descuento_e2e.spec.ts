@@ -416,6 +416,8 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
       .get(`/api/facturacion/tickets/${ticket.id}`)
       .header('Authorization', `Bearer ${tokens.admin}`)
     assert.isFalse(detalle.body().documentosPoliciaCompletos)
+    assert.isNull(detalle.body().descuentoId)
+    assert.isNull(detalle.body().descuentoObservacion)
     assert.deepEqual(detalle.body().documentosPoliciaFaltantes, [
       'carnet',
       'tarjeta_propiedad',

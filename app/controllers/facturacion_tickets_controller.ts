@@ -223,7 +223,11 @@ interface TicketDTO {
   // 🆕
   descuentoAplicado?: DescuentoAplicadoDTO | null
   confirmedBy?: { id: number; nombres?: string | null; apellidos?: string | null } | null
-  // 🆕 Documentos de INFORMATIVO_POLICIA ya subidos (edición del descuento)
+  // 🆕 Edición del descuento en el Historial: estado actual del descuento
+  descuentoId: number | null
+  descuentoMontoAplicado: number | null
+  autorizadoPorId: number | null
+  descuentoObservacion: string | null
   documentosPoliciaCompletos: boolean
   documentosPoliciaFaltantes: string[]
 }
@@ -2451,6 +2455,10 @@ function buildTicketDTO(ticket: FacturacionTicket): TicketDTO {
     turno: turnoDTO,
     dateo: dateoEnriquecido,
     descuentoAplicado: null,
+    descuentoId: pick('descuentoId', 'descuento_id'),
+    descuentoMontoAplicado: pick('descuentoMontoAplicado', 'descuento_monto_aplicado'),
+    autorizadoPorId: pick('autorizadoPorId', 'autorizado_por_id'),
+    descuentoObservacion: pick('descuentoObservacion', 'descuento_observacion'),
     documentosPoliciaCompletos: ticket.documentosPoliciaCargados,
     documentosPoliciaFaltantes: ticket.documentosPoliciaFaltantes,
   }
