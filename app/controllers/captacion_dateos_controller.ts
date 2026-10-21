@@ -1663,6 +1663,9 @@ export default class CaptacionDateosController {
             comision.valorRtmMoto = 0
             comision.valorRtmVehiculo = 0
             comision.esAvance = item.esAvance ?? false
+            // Mismos campos que construirComisionRTM(): la regla y el código del descuento.
+            comision.reglaAplicada = resultadoCalculo.reglaAplicada
+            comision.descuentoCodigoAplicado = codigoDescuentoActivo
             if (resultadoCalculo.descuentoMontoAplicado !== null) {
               comision.descuentoMontoAplicado = resultadoCalculo.descuentoMontoAplicado
             }

@@ -698,9 +698,12 @@ export default class FacturacionTicketsController {
     // 🆕 Edición del descuento de un ticket ya CONFIRMADA (Historial): solo
     // con motivo_edicion / solo_previsualizar; sin ellos el PATCH sigue igual.
     const body = request.all()
+    // solo_previsualizar nunca escribe, en ningún estado: sin confirmar
+    // devuelve la comisión ESTIMADA con el mismo motor.
+    const previsualiza = [true, 'true', 1, '1'].includes(body.solo_previsualizar)
     if (
-      ticket.estado === 'CONFIRMADA' &&
-      ('motivo_edicion' in body || 'solo_previsualizar' in body)
+      previsualiza ||
+      (ticket.estado === 'CONFIRMADA' && ('motivo_edicion' in body || 'solo_previsualizar' in body))
     ) {
       return this.editarDescuentoConfirmado(ticket.id, { request, response, auth })
     }
@@ -1558,7 +1561,7 @@ export default class FacturacionTicketsController {
     if (soloPrevisualizar) {
       const ticket = await FacturacionTicket.find(ticketId)
       if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
-      const r = await planearEdicionDescuento(ticket, body)
+      const r = await planearEdicionDescuento(ticket, body, undefined, { permitirSinCambio: true })
       if (!r.ok) return response.status(r.status).send(r.error)
       return { previsualizacion: true, ...r.resumen }
     }
@@ -2165,7 +2168,8 @@ function estadoDescuentoTicket(
 async function planearEdicionDescuento(
   ticket: FacturacionTicket,
   body: Record<string, unknown>,
-  trx?: TransactionClientContract
+  trx?: TransactionClientContract,
+  opts: { permitirSinCambio?: boolean } = {}
 ): Promise<ResultadoEdicionDescuento> {
   const fallo = (status: number, error: Record<string, unknown>) =>
     ({ ok: false, status, error }) as const
@@ -2257,7 +2261,8 @@ async function planearEdicionDescuento(
     autorizadoPorId === antes.autorizadoPorId &&
     observacion === antes.observacion &&
     consecutivo === antes.consecutivoDescuento
-  if (sinCambio) {
+  // La previsualización sí responde sin cambio: el diálogo muestra la comisión al abrir.
+  if (sinCambio && !opts.permitirSinCambio) {
     return fallo(422, {
       code: 'SIN_CAMBIO',
       message: 'El descuento del ticket no cambia: no hay nada que guardar.',
@@ -2289,6 +2294,8 @@ async function planearEdicionDescuento(
     liquidacionIds: planComision.liquidacionIds,
     enLiquidacion: planComision.liquidacionIds.length > 0,
     requiereConfirmacionPago: planComision.requiereConfirmacionPago,
+    // Quién cobra y cuánto con este descuento: mismo cálculo que se guarda.
+    desglose: planComision.desglose,
   }
   return {
     ok: true,

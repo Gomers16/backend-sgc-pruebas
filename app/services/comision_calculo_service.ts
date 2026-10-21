@@ -48,13 +48,39 @@ export function inferTipoVehiculoComision(opts: {
  *   Resolución de configuración (cascada asesor → global)
  * ============================================================*/
 
+/**
+ * Fila de configuración (comisiones.es_config = true) de la que salió un
+ * valor. null en `id` = no hay fila y se usó el valor de respaldo del código.
+ */
+export interface FuenteConfig {
+  id: number | null
+  asesorId: number | null
+  tipoVehiculo: string | null
+  /** Columna de la fila que se leyó (base, monto, valor_placa_vehiculo…). */
+  campo: string
+}
+
 export interface ConfigComisionResuelta {
   valorIncentivo: number
   valorIncentivoPorTipo: number
   valorIncentivoCaso3: number
   valorDateoNuevo: number
   valorNuevoDirecto: number
+  /** De qué fila salió cada valor (solo informativo: no cambia el cálculo). */
+  fuentes?: {
+    valorIncentivo: FuenteConfig
+    valorIncentivoCaso3: FuenteConfig
+    valorDateoNuevo: FuenteConfig
+    valorNuevoDirecto: FuenteConfig
+  }
 }
+
+const fuenteDe = (row: Comision | null, campo: string): FuenteConfig => ({
+  id: row?.id ?? null,
+  asesorId: row?.asesorId ?? null,
+  tipoVehiculo: ((row as any)?.tipoVehiculo as string | null | undefined) ?? null,
+  campo,
+})
 
 export async function resolveConfigComision(params: {
   asesorId: number | null
@@ -153,16 +179,20 @@ export async function resolveConfigComision(params: {
   }
   const rowEsDelConvenio =
     !!rowIncentivo && !!asesorConvenioId && rowIncentivo.asesorId === asesorConvenioId
+  const campoTipoIncentivo = tipoVehiculo === 'MOTO' ? 'valor_placa_moto' : 'valor_placa_vehiculo'
   let valorIncentivoCaso3 = rowEsDelConvenio ? leerCampoTipoIncentivo(rowIncentivo) : null
+  let fuenteCaso3 = fuenteDe(rowIncentivo, campoTipoIncentivo)
   if (valorIncentivoCaso3 === null) {
     const rowGlobalTipo = tipoVehiculo ? await tryFind(null, tipoVehiculo) : null
-    valorIncentivoCaso3 =
-      leerCampoTipoIncentivo(rowGlobalTipo) ?? (rowGlobalTipo ? num(rowGlobalTipo.base) : null)
+    const delCampo = leerCampoTipoIncentivo(rowGlobalTipo)
+    valorIncentivoCaso3 = delCampo ?? (rowGlobalTipo ? num(rowGlobalTipo.base) : null)
+    fuenteCaso3 = fuenteDe(rowGlobalTipo, delCampo !== null ? campoTipoIncentivo : 'base')
   }
   if (valorIncentivoCaso3 === null) {
     const rowGlobalNull = await tryFind(null, null)
-    valorIncentivoCaso3 =
-      leerCampoTipoIncentivo(rowGlobalNull) ?? (rowGlobalNull ? num(rowGlobalNull.base) : 0)
+    const delCampo = leerCampoTipoIncentivo(rowGlobalNull)
+    valorIncentivoCaso3 = delCampo ?? (rowGlobalNull ? num(rowGlobalNull.base) : 0)
+    fuenteCaso3 = fuenteDe(rowGlobalNull, delCampo !== null ? campoTipoIncentivo : 'base')
   }
 
   return {
@@ -171,12 +201,27 @@ export async function resolveConfigComision(params: {
     valorIncentivoCaso3,
     valorDateoNuevo: num(rowComercial?.monto),
     valorNuevoDirecto: num(rowComercial?.valorNuevoDirecto),
+    fuentes: {
+      valorIncentivo: fuenteDe(rowIncentivo, 'base'),
+      valorIncentivoCaso3: fuenteCaso3,
+      valorDateoNuevo: fuenteDe(rowComercial, 'monto'),
+      valorNuevoDirecto: fuenteDe(rowComercial, 'valor_nuevo_directo'),
+    },
   }
 }
 
 export interface ConfigRecurrenciaResuelta {
   valorRecurrente: number
   valorRecuperacion: number
+  /**
+   * De dónde salió valorRecurrente (solo informativo). tabla/id null = valor
+   * de respaldo del código.
+   */
+  fuenteRecurrente?: {
+    tabla: 'configuracion_recurrencia_asesores' | 'configuracion_recurrencia_global' | null
+    id: number | null
+    campo: string
+  }
 }
 
 export async function resolveConfigRecurrencia(
@@ -189,6 +234,16 @@ export async function resolveConfigRecurrencia(
 
   let valorRecurrente: number
   let valorRecuperacion: number
+
+  const campoTipo = esMoto ? 'valor_dateo_recurrencia_moto' : 'valor_dateo_recurrencia_vehiculo'
+  const usaCampoTipo = globalCfg?.[campoTipo] !== null && globalCfg?.[campoTipo] !== undefined
+  let fuenteRecurrente: NonNullable<ConfigRecurrenciaResuelta['fuenteRecurrente']> = globalCfg
+    ? {
+        tabla: 'configuracion_recurrencia_global',
+        id: globalCfg.id ?? null,
+        campo: usaCampoTipo ? campoTipo : 'valor_dateo_recurrencia',
+      }
+    : { tabla: null, id: null, campo: 'valor_dateo_recurrencia' }
 
   if (esMoto) {
     valorRecurrente = Number(
@@ -212,11 +267,18 @@ export async function resolveConfigRecurrencia(
       .where('recurrencia_habilitada', true)
       .first()
 
-    if (asesorCfg?.valor_dateo_recurrencia) valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
+    if (asesorCfg?.valor_dateo_recurrencia) {
+      valorRecurrente = Number(asesorCfg.valor_dateo_recurrencia)
+      fuenteRecurrente = {
+        tabla: 'configuracion_recurrencia_asesores',
+        id: asesorCfg.id ?? null,
+        campo: 'valor_dateo_recurrencia',
+      }
+    }
     if (asesorCfg?.valor_dateo_recuperacion) valorRecuperacion = Number(asesorCfg.valor_dateo_recuperacion)
   }
 
-  return { valorRecurrente, valorRecuperacion }
+  return { valorRecurrente, valorRecuperacion, fuenteRecurrente }
 }
 
 /* ============================================================
@@ -283,6 +345,14 @@ export interface ParametrosCalculoComision {
   recValues: ConfigRecurrenciaResuelta
 }
 
+/** Valor de configuración que interviene en una regla (ver ConfigComisionResuelta). */
+export type CampoConfigComision =
+  | 'valorNuevoDirecto'
+  | 'valorRecurrente'
+  | 'valorIncentivo'
+  | 'valorDateoNuevo'
+  | 'valorIncentivoCaso3'
+
 export interface ResultadoCalculoComision {
   base: number
   monto: number
@@ -292,6 +362,10 @@ export interface ResultadoCalculoComision {
   descuentoMontoAplicado: number | null
   /** Descripción legible de qué rama del cálculo real se aplicó */
   reglaAplicada: string
+  /** Valores de configuración que pagan algo en esta rama ([] = la regla deja todo en $0). */
+  camposUsados: CampoConfigComision[]
+  /** La regla en palabras simples, para mostrarla en pantalla. */
+  explicacion: string
 }
 
 export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculoComision {
@@ -319,6 +393,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
           valorNuevoDirectoFinal: 0,
           descuentoMontoAplicado: null,
           reglaAplicada: `Caso 1 · Sin convenio · Nuevo + informativo (${codigoDescuento}) → valor_dateo_recurrencia`,
+          camposUsados: ['valorRecurrente'],
+          explicacion: `Cliente nuevo sin convenio con descuento (${codigoDescuento}): el asesor comercial cobra el valor de recurrencia en lugar del valor nuevo directo.`,
         }
       }
       return {
@@ -329,6 +405,9 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: cfgValues.valorNuevoDirecto,
         descuentoMontoAplicado: null,
         reglaAplicada: 'Caso 1 · Sin convenio · Nuevo directo → valor_nuevo_directo',
+        camposUsados: ['valorNuevoDirecto'],
+        explicacion:
+          'Cliente nuevo sin convenio y sin descuento: el asesor comercial cobra el valor nuevo directo.',
       }
     }
     // Recuperación es solo una categoría informativa/de reporte para el
@@ -341,6 +420,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       valorNuevoDirectoFinal: 0,
       descuentoMontoAplicado: null,
       reglaAplicada: `Caso 1 · Sin convenio · ${esClienteRecurrente ? 'Recurrente' : 'Recuperación'} → valor_dateo_recurrencia`,
+      camposUsados: ['valorRecurrente'],
+      explicacion: `Cliente ${esClienteRecurrente ? 'recurrente' : 'de recuperación'} sin convenio: el asesor comercial cobra el valor de recurrencia (la recuperación paga lo mismo que la recurrencia). El descuento no cambia este valor.`,
     }
   }
 
@@ -355,6 +436,9 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: montoAvance,
         reglaAplicada: 'Caso 2 · Convenio self-dateo · Avance → $0 (ya cobró vía descuento en factura)',
+        camposUsados: [],
+        explicacion:
+          'El dateo trae marca de avance: el asesor convenio ya cobró con el descuento de la factura, así que la comisión queda en $0.',
       }
     }
     if (esDescuentoEspecialCaja) {
@@ -366,6 +450,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
         reglaAplicada: `Caso 2 · Convenio self-dateo · ${codigoDescuento} aplicado en caja → $0`,
+        camposUsados: [],
+        explicacion: `En caja se puso un informativo especial (${codigoDescuento}) que el dateo no traía: la comisión del asesor convenio queda en $0.`,
       }
     }
     if (esClienteNuevo) {
@@ -377,6 +463,9 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
         reglaAplicada: 'Caso 2 · Convenio self-dateo · Nuevo (continuidad automática) → incentivo base',
+        camposUsados: ['valorIncentivo'],
+        explicacion:
+          'El asesor convenio se dateó a sí mismo con un cliente nuevo: cobra su incentivo base.',
       }
     }
     // Recurrente o Recuperación
@@ -389,6 +478,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
         reglaAplicada: `Caso 2 · Convenio self-dateo · ${esClienteRecuperacion ? 'Recuperación' : 'Recurrente'} CON continuidad → incentivo base`,
+        camposUsados: ['valorIncentivo'],
+        explicacion: `Cliente ${esClienteRecuperacion ? 'de recuperación' : 'recurrente'} que siguió con el mismo asesor convenio (continuidad respetada): cobra su incentivo base.`,
       }
     }
     return {
@@ -399,6 +490,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       valorNuevoDirectoFinal: 0,
       descuentoMontoAplicado: null,
       reglaAplicada: `Caso 2 · Convenio self-dateo · ${esClienteRecuperacion ? 'Recuperación' : 'Recurrente'} SIN continuidad → valor_dateo_recurrencia`,
+      camposUsados: ['valorRecurrente'],
+      explicacion: `Cliente ${esClienteRecuperacion ? 'de recuperación' : 'recurrente'} con la continuidad rota (pasó por otro canal o convenio): el asesor convenio cobra el valor de recurrencia.`,
     }
   }
 
@@ -413,6 +506,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
         reglaAplicada: `Caso 3 · Comercial+convenio · Nuevo + ${codigoDescuento} en caja → comercial dateo_nuevo | convenio $0`,
+        camposUsados: ['valorDateoNuevo'],
+        explicacion: `Cliente nuevo con un informativo especial (${codigoDescuento}) puesto en caja: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0.`,
       }
     }
     if (esAvance) {
@@ -424,6 +519,9 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: montoAvance,
         reglaAplicada: 'Caso 3 · Comercial+convenio · Nuevo + Avance → comercial dateo_nuevo | convenio $0',
+        camposUsados: ['valorDateoNuevo'],
+        explicacion:
+          'El dateo trae marca de avance: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con el descuento de la factura.',
       }
     }
     return {
@@ -434,11 +532,15 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       valorNuevoDirectoFinal: 0,
       descuentoMontoAplicado: null,
       reglaAplicada: 'Caso 3 · Comercial+convenio · Nuevo → comercial dateo_nuevo | convenio incentivo (Global si no tiene propio)',
+      camposUsados: ['valorDateoNuevo', 'valorIncentivoCaso3'],
+      explicacion:
+        'Cliente nuevo: el asesor comercial cobra el dateo vía convenio y el convenio cobra aparte su incentivo por tipo de vehículo (el de la Global si su fila propia lo deja vacío).',
     }
   }
 
   // Recurrente o Recuperación (misma fórmula — el informativo no tiene rama especial aquí)
   const etiqueta = esClienteRecuperacion ? 'Recuperación' : 'Recurrente'
+  const cliente = esClienteRecuperacion ? 'de recuperación' : 'recurrente'
   if (esAvance) {
     return {
       base: cfgValues.valorIncentivoCaso3,
@@ -448,6 +550,8 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       valorNuevoDirectoFinal: 0,
       descuentoMontoAplicado: montoAvance,
       reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} + Avance → comercial dateo_nuevo | convenio $0`,
+      camposUsados: ['valorDateoNuevo'],
+      explicacion: `Cliente ${cliente} con marca de avance en el dateo: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con el descuento de la factura.`,
     }
   }
   return {
@@ -458,5 +562,7 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
     valorNuevoDirectoFinal: 0,
     descuentoMontoAplicado: null,
     reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} → comercial dateo_nuevo | convenio incentivo (Global si no tiene propio)`,
+    camposUsados: ['valorDateoNuevo', 'valorIncentivoCaso3'],
+    explicacion: `Cliente ${cliente}: el asesor comercial cobra el dateo vía convenio y el convenio cobra su incentivo por tipo de vehículo. Con cliente ${cliente}, un informativo puesto en caja no cambia nada.`,
   }
 }

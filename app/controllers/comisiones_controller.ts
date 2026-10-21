@@ -22,7 +22,12 @@ import {
   ticketsOrigenPorDateo,
 } from '#services/ticket_comision_origen_service'
 import { consecutivoDescuentoDeTickets } from '#services/consecutivo_descuento_service'
-import { ajustesEdicionFacturaPorComision } from '#services/comision_ticket_service'
+import {
+  TEXTO_CASO,
+  ajustesEdicionFacturaPorComision,
+  casoDeComisionGuardada,
+  desgloseDeComisionGuardada,
+} from '#services/comision_ticket_service'
 import {
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -199,6 +204,11 @@ function mapComisionToDto(c: Comision) {
     monto_convenio: montoConvenioRaw,
     es_avance: esAvance,
     base: baseIncentivo,
+
+    // 🆕 Caso (por cómo quedó guardada) y la regla con la que se calculó.
+    caso: casoDeComisionGuardada(c),
+    caso_texto: TEXTO_CASO[casoDeComisionGuardada(c)],
+    regla_aplicada: c.reglaAplicada ?? null,
 
     tiene_desglose: tieneDesglose,
     desglose: tieneDesglose
@@ -792,6 +802,9 @@ export default class ComisionesController {
     }
 
     const ajustes = await ajustesEdicionFacturaPorComision([comision.id])
+    // 🆕 Quién cobra y cuánto según el motor, con la factura del turno (mismo
+    // cálculo que la edición de facturas).
+    const motor = await desgloseDeComisionGuardada(comision)
 
     const result = {
       ...dto,
@@ -805,6 +818,9 @@ export default class ComisionesController {
       anulado_at: comision.anuladoAt?.toISO() ?? null,
       anulado_por: comision.anuladoPor ?? null,
       observacion: comision.observacion ?? null,
+      desglose_motor: motor.desglose,
+      desglose_factura_id: motor.facturaId,
+      desglose_motivo: motor.motivo,
     }
 
     return response.ok(result)
@@ -1458,6 +1474,8 @@ export default class ComisionesController {
       comision.estado = 'PENDIENTE'
       comision.fechaCalculo = DateTime.now()
       ;(comision as any).esAvance = Boolean(payload.es_avance)
+      // Creada a mano: no pasa por el motor; queda dicho en la regla.
+      comision.reglaAplicada = 'Manual · creada a mano en Comisiones (montos digitados)'
 
       const descuentoObservacion = payload.descuento_observacion
         ? String(payload.descuento_observacion).trim()

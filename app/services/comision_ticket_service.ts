@@ -18,9 +18,11 @@ import Comision from '#models/comision'
 import Descuento from '#models/descuento'
 import CaptacionDateo from '#models/captacion_dateo'
 import TurnoRtm from '#models/turno_rtm'
+import FacturacionTicketModel from '#models/facturacion_ticket'
 import type FacturacionTicket from '#models/facturacion_ticket'
 import type { AccionComisionEdicion } from '#models/facturacion_descuento_edicion'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
+import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   calcularComision,
   decidirCasoComision,
@@ -28,11 +30,13 @@ import {
   isRTM,
   resolveConfigComision,
   resolveConfigRecurrencia,
+  type CampoConfigComision,
   type CasoComision,
   type ConfigComisionResuelta,
   type ConfigRecurrenciaResuelta,
   type EscenarioCliente,
   type OrigenDescuento,
+  type ResultadoCalculoComision,
   type TipoVehiculoComision,
 } from '#services/comision_calculo_service'
 
@@ -142,6 +146,13 @@ export interface EntradaComisionRTM {
  * Excepción de Dateo: eso lo hace quien guarda, después de la foto.
  */
 export function construirComisionRTM(p: EntradaComisionRTM): Comision | null {
+  return construirComisionRTMDetallada(p)?.comision ?? null
+}
+
+/** Igual que construirComisionRTM(), con el resultado de calcularComision() (regla, campos usados y explicación). */
+export function construirComisionRTMDetallada(
+  p: EntradaComisionRTM
+): { comision: Comision; resultado: ResultadoCalculoComision } | null {
   const { caso, dateo, ticket, escenario, tuvoContinuidad, origenDescuento } = p
   const { cfgValues, recValues, asesorConvenioIdReal, tipoVehiculoComision, now, usuarioId } = p
   const { esAvance, montoAvance, codigoDescuentoActivo } = p.descuento
@@ -187,8 +198,8 @@ export function construirComisionRTM(p: EntradaComisionRTM): Comision | null {
     c.montoAsesor = String(resultadoCaso1.montoAsesor)
     c.valorNuevoDirecto = String(resultadoCaso1.valorNuevoDirectoFinal)
     c.reglaAplicada = resultadoCaso1.reglaAplicada
-    console.log(`✅ ${resultadoCaso1.reglaAplicada} → $${resultadoCaso1.monto}`)
-    return c
+    console.log(`✅ ${resultadoCaso1.reglaAplicada} → ${resultadoCaso1.monto}`)
+    return { comision: c, resultado: resultadoCaso1 }
   }
 
   if (caso === 'CONVENIO_SELF') {
@@ -232,8 +243,8 @@ export function construirComisionRTM(p: EntradaComisionRTM): Comision | null {
       c.descuentoMontoAplicado = resultadoCaso2.descuentoMontoAplicado
     }
     c.reglaAplicada = resultadoCaso2.reglaAplicada
-    console.log(`✅ ${resultadoCaso2.reglaAplicada} → asesor cobra $${resultadoCaso2.montoAsesor}`)
-    return c
+    console.log(`✅ ${resultadoCaso2.reglaAplicada} → asesor cobra ${resultadoCaso2.montoAsesor}`)
+    return { comision: c, resultado: resultadoCaso2 }
   }
 
   // ════════════════════════════════════════════════════
@@ -280,9 +291,9 @@ export function construirComisionRTM(p: EntradaComisionRTM): Comision | null {
   }
   c.reglaAplicada = resultadoCaso3.reglaAplicada
   console.log(
-    `✅ ${resultadoCaso3.reglaAplicada} → comercial $${resultadoCaso3.montoAsesor} | convenio $${resultadoCaso3.montoConvenio}`
+    `✅ ${resultadoCaso3.reglaAplicada} → comercial ${resultadoCaso3.montoAsesor} | convenio ${resultadoCaso3.montoConvenio}`
   )
-  return c
+  return { comision: c, resultado: resultadoCaso3 }
 }
 
 /* ===================== Edición del descuento de un ticket CONFIRMADA ===================== */
@@ -335,6 +346,8 @@ export interface PlanComisionEdicion {
   cambios: Partial<Record<CampoComisionRecalculado, unknown>> | null
   /** Foto del valor calculado antes del $0 de un ticket "sin comisión" (o null). */
   fotoTicket: { turnoId: number; montoAsesor: string; montoConvenio: string } | null
+  /** Lo que muestra la pantalla (mismo cálculo); null sin dateo o sin factura RTM. */
+  desglose: DesgloseComision | null
 }
 
 const montosDe = (c: Pick<Comision, 'monto' | 'montoAsesor' | 'montoConvenio'>) => ({
@@ -374,6 +387,7 @@ function sinRecalcular(
     dateoId: extra.dateoId ?? null,
     cambios: null,
     fotoTicket: null,
+    desglose: null,
   }
 }
 
@@ -394,48 +408,210 @@ export async function comisionDelTicket(
   return { comision: await q.first(), turno, dateoId }
 }
 
+/* ===================== Desglose de la comisión (para la pantalla) ===================== */
+
+export type RolBeneficiario = 'ASESOR_COMERCIAL' | 'ASESOR_CONVENIO' | 'CONVENIO'
+
+export interface BeneficiarioComision {
+  rol: RolBeneficiario
+  /** id de agentes_captacions (asesores) o de convenios (CONVENIO). */
+  id: number | null
+  nombre: string | null
+  /** Tipo de asesor (ASESOR_COMERCIAL / ASESOR_CONVENIO) o tipo del convenio. */
+  tipo: string | null
+  /** Para CONVENIO: quién recibe su parte (el asesor convenio). */
+  cobraAsesorConvenio: { id: number; nombre: string } | null
+  /** Monto guardado hoy (null = la comisión todavía no existe). */
+  antes: number | null
+  /** Monto con este descuento (el que se guarda; el estimado si no existe). */
+  despues: number
+}
+
+export interface ValorConfigUsado {
+  campo: CampoConfigComision
+  /** Nombre del campo como en Configuración de comisiones. */
+  etiqueta: string
+  valor: number
+  /** FILA_PROPIA del asesor, fila GLOBAL, o valor de RESPALDO del código (sin fila). */
+  fuente: 'FILA_PROPIA' | 'GLOBAL' | 'RESPALDO'
+  tabla: string | null
+  filaId: number | null
+  asesorId: number | null
+  tipoVehiculo: string | null
+  columna: string
+  /** true si este valor paga algo en la regla aplicada. */
+  usado: boolean
+}
+
+export type CodigoAlertaComision =
+  | 'CONFIG_EN_CERO'
+  | 'SIN_COMISION_TICKET'
+  | 'AVANCE_HEREDADO'
+  | 'SIN_CONTINUIDAD'
+  | 'ESTIMADO'
+  | 'NO_MODIFICADA'
+  | 'DISTINTO_AL_MOTOR'
+
+export interface AlertaComision {
+  codigo: CodigoAlertaComision
+  tipo: 'info' | 'warning' | 'error'
+  mensaje: string
+}
+
 /**
- * Qué le pasa a la comisión del dateo del turno si el ticket queda con el
- * descuento que trae en memoria (ya editado, sin guardar). No escribe nada.
- *  - Sin comisión (o ticket no RTM) → SIN_COMISION.
- *  - ANULADA → NO_MODIFICADA (solo aviso).
- *  - PENDIENTE o APROBADA → RECALCULADA, sin cambiar su estado.
- *  - PAGADA o dentro de una liquidación → AJUSTADA_TRAS_PAGO: se recalcula
- *    igual, pero quien guarda debe confirmar que ya se pagó; las
- *    liquidaciones emitidas no se tocan.
- * El recálculo es el mismo motor de applyCommissionHook() (calcularComision
- * y la decisión "sin comisión" de un ticket de Excepción de Dateo). Con
- * convenio la continuidad es la guardada en el turno al confirmar; si no hay,
- * no se recalcula (SIN_CONTINUIDAD). Sin convenio, evaluarContinuidad()
- * devuelve SIN_EVIDENCIA sin leer historial: el mismo valor se usa aquí.
+ * Todo lo que la pantalla muestra de la comisión de un ticket: sale del mismo
+ * cálculo que se guarda (calcularComision vía construirComisionRTMDetallada),
+ * nunca de una copia de la regla en el frontend.
  */
-export async function planearRecalculoComision(
+export interface DesgloseComision {
+  /** La comisión no existe todavía: los montos son lo que se pagaría. */
+  estimado: boolean
+  /** false cuando no se recalculó (ANULADA, sin continuidad, no coincide): montos = los guardados. */
+  recalculado: boolean
+  caso: CasoComision
+  casoTexto: string
+  escenario: EscenarioCliente
+  escenarioTexto: string
+  continuidad: { aplica: boolean; estado: string | null; texto: string }
+  tipoVehiculo: TipoVehiculoComision | null
+  descuento: {
+    codigo: string | null
+    origen: OrigenDescuento | null
+    origenTexto: string
+    /** Marca es_avance del dateo (la usa el motor, no el código). */
+    esAvance: boolean
+  }
+  /** reglaAplicada del motor (o la guardada si no se recalculó). */
+  regla: string | null
+  explicacion: string
+  /** regla_aplicada guardada hoy en la comisión (null si no existe o no la guardó). */
+  reglaGuardada: string | null
+  beneficiarios: BeneficiarioComision[]
+  configuracion: ValorConfigUsado[]
+  alertas: AlertaComision[]
+}
+
+export const TEXTO_CASO: Record<CasoComision, string> = {
+  SIN_CONVENIO: 'Asesor comercial sin convenio',
+  CONVENIO_COMERCIAL: 'Asesor comercial con convenio',
+  CONVENIO_SELF: 'Asesor convenio que se datea a sí mismo',
+}
+
+const TEXTO_ESCENARIO: Record<EscenarioCliente, string> = {
+  NUEVO: 'Cliente nuevo',
+  RECURRENTE: 'Cliente recurrente',
+  RECUPERACION: 'Cliente de recuperación',
+}
+
+const ETIQUETA_CAMPO: Record<CampoConfigComision, string> = {
+  valorNuevoDirecto: 'Comisión cliente nuevo directo',
+  valorRecurrente: 'Dateo recurrente',
+  valorIncentivo: 'Incentivo base del asesor convenio',
+  valorDateoNuevo: 'Comisión dateo vía convenio',
+  valorIncentivoCaso3: 'Incentivo del convenio por tipo de vehículo',
+}
+
+/** Valores de configuración que puede usar cada caso (en orden de pantalla). */
+const CAMPOS_POR_CASO: Record<CasoComision, CampoConfigComision[]> = {
+  SIN_CONVENIO: ['valorNuevoDirecto', 'valorRecurrente'],
+  CONVENIO_SELF: ['valorIncentivo', 'valorRecurrente'],
+  CONVENIO_COMERCIAL: ['valorDateoNuevo', 'valorIncentivoCaso3'],
+}
+
+/** Caso de una comisión ya guardada, por cómo quedó escrita (sin recalcular). */
+export function casoDeComisionGuardada(c: {
+  convenioId: number | null
+  asesorSecundarioId: number | null
+}): CasoComision {
+  if (!c.convenioId) return 'SIN_CONVENIO'
+  return c.asesorSecundarioId ? 'CONVENIO_COMERCIAL' : 'CONVENIO_SELF'
+}
+
+function valoresConfig(
+  caso: CasoComision,
+  cfg: ConfigComisionResuelta,
+  rec: ConfigRecurrenciaResuelta,
+  usados: CampoConfigComision[]
+): ValorConfigUsado[] {
+  return CAMPOS_POR_CASO[caso].map((campo) => {
+    if (campo === 'valorRecurrente') {
+      const f = rec.fuenteRecurrente
+      return {
+        campo,
+        etiqueta: ETIQUETA_CAMPO[campo],
+        valor: rec.valorRecurrente,
+        fuente: !f?.tabla
+          ? 'RESPALDO'
+          : f.tabla === 'configuracion_recurrencia_asesores'
+            ? 'FILA_PROPIA'
+            : 'GLOBAL',
+        tabla: f?.tabla ?? null,
+        filaId: f?.id ?? null,
+        asesorId: null,
+        tipoVehiculo: null,
+        columna: f?.campo ?? 'valor_dateo_recurrencia',
+        usado: usados.includes(campo),
+      }
+    }
+    const f = cfg.fuentes?.[campo]
+    return {
+      campo,
+      etiqueta: ETIQUETA_CAMPO[campo],
+      valor: cfg[campo],
+      fuente: !f?.id ? 'RESPALDO' : f.asesorId ? 'FILA_PROPIA' : 'GLOBAL',
+      tabla: f?.id ? 'comisiones (es_config)' : null,
+      filaId: f?.id ?? null,
+      asesorId: f?.asesorId ?? null,
+      tipoVehiculo: f?.tipoVehiculo ?? null,
+      columna: f?.campo ?? campo,
+      usado: usados.includes(campo),
+    }
+  })
+}
+
+/** Aviso por cada valor de configuración en 0 que hace que alguien cobre $0. */
+function alertasConfigEnCero(valores: ValorConfigUsado[]): AlertaComision[] {
+  return valores
+    .filter((v) => v.usado && v.valor === 0)
+    .map((v) => {
+      const fila =
+        v.fuente === 'RESPALDO'
+          ? 'no hay fila de configuración (valor de respaldo del código)'
+          : `${v.fuente === 'GLOBAL' ? 'la fila Global' : 'la fila propia'} #${v.filaId}` +
+            `${v.tipoVehiculo ? ` (${v.tipoVehiculo})` : ''}, columna ${v.columna}`
+      const extra =
+        v.fuente === 'FILA_PROPIA' && v.campo === 'valorIncentivoCaso3'
+          ? ' Un 0 no cae a la Global (solo un campo vacío cae).'
+          : v.fuente === 'GLOBAL' && v.campo === 'valorIncentivo'
+            ? ' El asesor convenio no tiene fila propia y la Global tiene la base en 0.'
+            : ''
+      return {
+        codigo: 'CONFIG_EN_CERO' as const,
+        tipo: 'warning' as const,
+        mensaje: `${v.etiqueta} viene en $0 desde la configuración: ${fila}.${extra} Parece un error de configuración: revísalo en Configuración de comisiones.`,
+      }
+    })
+}
+
+/** Lo que el motor resolvió para el ticket (sin guardar nada). */
+interface ContextoComisionTicket {
+  dateo: CaptacionDateo
+  turno: TurnoRtm | null
+  caso: CasoComision
+  escenario: EscenarioCliente
+  tipoVehiculoComision: TipoVehiculoComision | null
+  asesorConvenioIdReal: number | null
+  descuento: DescuentoComisionResuelto
+  cfgValues: ConfigComisionResuelta
+  recValues: ConfigRecurrenciaResuelta
+}
+
+async function contextoComisionTicket(
   ticket: FacturacionTicket,
+  turno: TurnoRtm | null,
+  dateoId: number,
   trx?: TransactionClientContract
-): Promise<PlanComisionEdicion> {
-  if (!isRTM(ticket.servicioCodigo, ticket.servicioNombre)) {
-    return sinRecalcular('SIN_COMISION', null)
-  }
-  const { comision, turno, dateoId } = await comisionDelTicket(ticket, trx)
-  if (!comision || !dateoId) return sinRecalcular('SIN_COMISION', null, null, { dateoId })
-
-  const filasLiquidacion = (await (trx ?? Database)
-    .from('liquidacion_detalle')
-    .where('comision_id', comision.id)
-    .orderBy('liquidacion_id', 'asc')
-    .select('liquidacion_id')) as { liquidacion_id: number }[]
-  const liquidacionIds = filasLiquidacion.map((r) => Number(r.liquidacion_id))
-  const extra = { liquidacionIds, dateoId }
-
-  if (comision.estado === 'ANULADA') {
-    return sinRecalcular(
-      'NO_MODIFICADA',
-      `La comisión #${comision.id} está ANULADA: no se modificó.`,
-      comision,
-      extra
-    )
-  }
-
+): Promise<ContextoComisionTicket | null> {
   const dateo = await CaptacionDateo.query({ client: trx })
     .where('id', dateoId)
     .preload('agente')
@@ -444,25 +620,11 @@ export async function planearRecalculoComision(
       qConvenio.preload('asesorConvenio')
     })
     .first()
-  if (!dateo) return sinRecalcular('SIN_COMISION', null, null, extra)
+  if (!dateo) return null
 
   let asesorConvenioIdReal: number | null = null
   if (dateo.convenioId && (dateo.convenio as any)?.$preloaded?.asesorConvenio) {
     asesorConvenioIdReal = (dateo.convenio as any).$preloaded.asesorConvenio.id
-  }
-
-  let tuvoContinuidad = true
-  if (asesorConvenioIdReal || dateo.convenioId) {
-    const guardada = turno?.estadoContinuidad ?? null
-    if (!guardada) {
-      return sinRecalcular(
-        'SIN_CONTINUIDAD',
-        `No se pudo recalcular: falta la continuidad guardada. La comisión #${comision.id} no se modificó.`,
-        comision,
-        extra
-      )
-    }
-    tuvoContinuidad = guardada !== 'ROTA'
   }
 
   const turnoTipoVehiculo = (turno as any)?.tipoVehiculo ?? (turno as any)?.tipo_vehiculo ?? null
@@ -492,22 +654,369 @@ export async function planearRecalculoComision(
     canal: dateo.canal,
     asesorConvenioIdDelConvenio: asesorConvenioIdReal,
   })
-
-  const c = construirComisionRTM({
-    caso,
+  return {
     dateo,
-    ticket,
+    turno,
+    caso,
     escenario,
-    tuvoContinuidad,
+    tipoVehiculoComision,
+    asesorConvenioIdReal,
     descuento,
-    origenDescuento: descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
     cfgValues,
     recValues,
-    asesorConvenioIdReal,
-    tipoVehiculoComision,
+  }
+}
+
+function ejecutarMotor(
+  ctx: ContextoComisionTicket,
+  ticket: FacturacionTicket,
+  tuvoContinuidad: boolean
+) {
+  return construirComisionRTMDetallada({
+    caso: ctx.caso,
+    dateo: ctx.dateo,
+    ticket,
+    escenario: ctx.escenario,
+    tuvoContinuidad,
+    descuento: ctx.descuento,
+    origenDescuento: ctx.descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
+    cfgValues: ctx.cfgValues,
+    recValues: ctx.recValues,
+    asesorConvenioIdReal: ctx.asesorConvenioIdReal,
+    tipoVehiculoComision: ctx.tipoVehiculoComision,
     now: DateTime.now(),
     usuarioId: null,
   })
+}
+
+/**
+ * Arma el desglose a partir del contexto y del resultado del motor. Pura:
+ * no consulta la BD (la prueba de consistencia la llama directamente).
+ *  - resultado null: no se recalculó; montos y regla = los guardados.
+ */
+export function armarDesglose(p: {
+  caso: CasoComision
+  escenario: EscenarioCliente
+  tipoVehiculo: TipoVehiculoComision | null
+  continuidadEstado: string | null
+  codigoDescuento: string | null
+  origenDescuento: OrigenDescuento | null
+  esAvance: boolean
+  cfgValues: ConfigComisionResuelta
+  recValues: ConfigRecurrenciaResuelta
+  resultado: ResultadoCalculoComision | null
+  /** Montos que se guardarían (ya con el $0 de un ticket "sin comisión"). */
+  despues: { montoAsesor: number; montoConvenio: number } | null
+  /** Comisión guardada hoy (null = no existe: estimado). */
+  guardada: { montoAsesor: number; montoConvenio: number; reglaAplicada: string | null } | null
+  personas: {
+    comercial: { id: number; nombre: string; tipo: string | null } | null
+    asesorConvenio: { id: number; nombre: string; tipo: string | null } | null
+    convenio: { id: number; nombre: string; tipo: string | null } | null
+  }
+  sinComisionTicket: { asesor: boolean; convenio: boolean }
+}): DesgloseComision {
+  const { caso, resultado, guardada } = p
+  const despues =
+    p.despues ??
+    (guardada
+      ? { montoAsesor: guardada.montoAsesor, montoConvenio: guardada.montoConvenio }
+      : {
+          montoAsesor: 0,
+          montoConvenio: 0,
+        })
+  const conConvenio = caso !== 'SIN_CONVENIO'
+
+  const beneficiarios: BeneficiarioComision[] = []
+  const persona = (
+    rol: RolBeneficiario,
+    x: { id: number; nombre: string; tipo: string | null } | null
+  ) => ({
+    rol,
+    id: x?.id ?? null,
+    nombre: x?.nombre ?? null,
+    tipo: x?.tipo ?? null,
+    cobraAsesorConvenio: null,
+  })
+  if (caso === 'CONVENIO_SELF') {
+    beneficiarios.push({
+      ...persona('ASESOR_CONVENIO', p.personas.asesorConvenio),
+      antes: guardada ? guardada.montoAsesor : null,
+      despues: despues.montoAsesor,
+    })
+  } else {
+    beneficiarios.push({
+      ...persona('ASESOR_COMERCIAL', p.personas.comercial),
+      antes: guardada ? guardada.montoAsesor : null,
+      despues: despues.montoAsesor,
+    })
+    if (caso === 'CONVENIO_COMERCIAL') {
+      const ac = p.personas.asesorConvenio
+      beneficiarios.push({
+        ...persona('CONVENIO', p.personas.convenio),
+        cobraAsesorConvenio: ac ? { id: ac.id, nombre: ac.nombre } : null,
+        antes: guardada ? guardada.montoConvenio : null,
+        despues: despues.montoConvenio,
+      })
+    }
+  }
+
+  const configuracion = valoresConfig(caso, p.cfgValues, p.recValues, resultado?.camposUsados ?? [])
+  const alertas: AlertaComision[] = []
+  if (!guardada) {
+    alertas.push({
+      codigo: 'ESTIMADO',
+      tipo: 'info',
+      mensaje:
+        'Todavía no existe la comisión: estos montos son un ESTIMADO de lo que se pagaría con este descuento.',
+    })
+  }
+  if (resultado) alertas.push(...alertasConfigEnCero(configuracion))
+  if (p.sinComisionTicket.asesor || p.sinComisionTicket.convenio) {
+    const quien = [
+      p.sinComisionTicket.asesor
+        ? caso === 'CONVENIO_SELF'
+          ? 'el asesor convenio'
+          : 'el asesor comercial'
+        : null,
+      p.sinComisionTicket.convenio && caso === 'CONVENIO_COMERCIAL' ? 'el convenio' : null,
+    ]
+      .filter(Boolean)
+      .join(' y ')
+    const motor = resultado
+      ? ` (el motor calcularía asesor ${pesos(resultado.montoAsesor)}${caso === 'CONVENIO_COMERCIAL' ? `, convenio ${pesos(resultado.montoConvenio)}` : ''})`
+      : ''
+    alertas.push({
+      codigo: 'SIN_COMISION_TICKET',
+      tipo: 'warning',
+      mensaje: `El turno viene de un ticket de Excepción de Dateo aprobado sin comisión para ${quien || 'el asesor'}: esa decisión se respeta y queda en $0${motor}.`,
+    })
+  }
+  const codigo = p.codigoDescuento
+  if (conConvenio && p.esAvance && !(codigo ?? '').toUpperCase().includes('AVANCE')) {
+    alertas.push({
+      codigo: 'AVANCE_HEREDADO',
+      tipo: 'warning',
+      mensaje: `El dateo trae marca de avance y no cambia aunque el código ahora sea ${codigo ?? 'ninguno'}: la comisión se sigue calculando como avance.`,
+    })
+  }
+
+  const continuidadAplica = conConvenio
+  const continuidadTexto = !continuidadAplica
+    ? 'No aplica (sin convenio)'
+    : p.continuidadEstado === 'ROTA'
+      ? 'Rota: el cliente pasó por otro canal o convenio'
+      : p.continuidadEstado === 'CONTINUA'
+        ? 'Continúa con el mismo asesor convenio'
+        : p.continuidadEstado === 'SIN_EVIDENCIA'
+          ? 'Sin evidencia (se respeta como continua)'
+          : 'Vacía: no está guardada en el turno'
+
+  return {
+    estimado: !guardada,
+    recalculado: !!resultado,
+    caso,
+    casoTexto: TEXTO_CASO[caso],
+    escenario: p.escenario,
+    escenarioTexto: TEXTO_ESCENARIO[p.escenario],
+    continuidad: {
+      aplica: continuidadAplica,
+      estado: p.continuidadEstado,
+      texto: continuidadTexto,
+    },
+    tipoVehiculo: p.tipoVehiculo,
+    descuento: {
+      codigo,
+      origen: codigo ? p.origenDescuento : null,
+      origenTexto: !codigo
+        ? 'Sin descuento'
+        : p.origenDescuento === 'CAJA'
+          ? 'Puesto en caja (el dateo no traía descuento)'
+          : 'Pre-marcado en el dateo',
+      esAvance: p.esAvance,
+    },
+    regla: resultado?.reglaAplicada ?? guardada?.reglaAplicada ?? null,
+    explicacion: resultado
+      ? resultado.explicacion
+      : 'No se recalculó: se muestran los montos guardados en la comisión.',
+    reglaGuardada: guardada?.reglaAplicada ?? null,
+    beneficiarios,
+    configuracion,
+    alertas,
+  }
+}
+
+function personasDelDateo(ctx: ContextoComisionTicket) {
+  const agente = (ctx.dateo as any).$preloaded?.agente ?? null
+  const convenio = (ctx.dateo as any).$preloaded?.convenio ?? null
+  const asesorConvenio = convenio?.$preloaded?.asesorConvenio ?? null
+  const p = (x: any, tipo: string | null = x?.tipo ?? null) =>
+    x ? { id: Number(x.id), nombre: String(x.nombre ?? ''), tipo } : null
+  return {
+    comercial: p(agente),
+    asesorConvenio: p(asesorConvenio),
+    convenio: p(convenio, convenio?.tipo ?? null),
+  }
+}
+
+/** Desglose de un contexto ya resuelto (ver armarDesglose). */
+function desgloseDe(
+  ctx: ContextoComisionTicket,
+  extra: {
+    continuidadEstado: string | null
+    resultado: ResultadoCalculoComision | null
+    despues: { montoAsesor: number; montoConvenio: number } | null
+    guardada: Comision | null
+    sinComisionTicket: { asesor: boolean; convenio: boolean }
+  }
+): DesgloseComision {
+  return armarDesglose({
+    caso: ctx.caso,
+    escenario: ctx.escenario,
+    tipoVehiculo: ctx.tipoVehiculoComision,
+    continuidadEstado: extra.continuidadEstado,
+    codigoDescuento: ctx.descuento.codigoDescuentoActivo,
+    origenDescuento: ctx.descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
+    // Caso 1 nunca tiene avance (construirComisionRTM lo guarda en false).
+    esAvance: ctx.caso === 'SIN_CONVENIO' ? false : ctx.descuento.esAvance,
+    cfgValues: ctx.cfgValues,
+    recValues: ctx.recValues,
+    resultado: extra.resultado,
+    despues: extra.despues,
+    guardada: extra.guardada
+      ? {
+          montoAsesor: Number(extra.guardada.montoAsesor ?? 0),
+          montoConvenio: Number(extra.guardada.montoConvenio ?? 0),
+          reglaAplicada: extra.guardada.reglaAplicada ?? null,
+        }
+      : null,
+    personas: personasDelDateo(ctx),
+    sinComisionTicket: extra.sinComisionTicket,
+  })
+}
+
+const conAlerta = (d: DesgloseComision | null, a: AlertaComision) =>
+  d ? { ...d, alertas: [...d.alertas, a] } : d
+
+/**
+ * Qué le pasa a la comisión del dateo del turno si el ticket queda con el
+ * descuento que trae en memoria (ya editado, sin guardar). No escribe nada.
+ *  - Ticket no RTM o sin dateo → SIN_COMISION (sin desglose).
+ *  - Con dateo y sin comisión → SIN_COMISION con desglose ESTIMADO.
+ *  - ANULADA → NO_MODIFICADA (solo aviso).
+ *  - PENDIENTE o APROBADA → RECALCULADA, sin cambiar su estado.
+ *  - PAGADA o dentro de una liquidación → AJUSTADA_TRAS_PAGO: se recalcula
+ *    igual, pero quien guarda debe confirmar que ya se pagó; las
+ *    liquidaciones emitidas no se tocan.
+ * El recálculo es el mismo motor de applyCommissionHook() (calcularComision
+ * y la decisión "sin comisión" de un ticket de Excepción de Dateo). Con
+ * convenio la continuidad es la guardada en el turno al confirmar; si no hay,
+ * no se recalcula (SIN_CONTINUIDAD). Sin convenio, evaluarContinuidad()
+ * devuelve SIN_EVIDENCIA sin leer historial: el mismo valor se usa aquí.
+ * `desglose` es lo que muestra la pantalla, del mismo cálculo.
+ */
+export async function planearRecalculoComision(
+  ticket: FacturacionTicket,
+  trx?: TransactionClientContract
+): Promise<PlanComisionEdicion> {
+  if (!isRTM(ticket.servicioCodigo, ticket.servicioNombre)) {
+    return sinRecalcular('SIN_COMISION', null)
+  }
+  const { comision, turno, dateoId } = await comisionDelTicket(ticket, trx)
+  if (!dateoId) return sinRecalcular('SIN_COMISION', null)
+
+  if (!comision) {
+    // Facturación sin comisión todavía: lo que pagaría, como estimado.
+    const ctx = await contextoComisionTicket(ticket, turno, dateoId, trx)
+    const plan = sinRecalcular('SIN_COMISION', null, null, { dateoId })
+    if (!ctx) return plan
+    const conConvenio = !!(ctx.asesorConvenioIdReal || ctx.dateo.convenioId)
+    const continuidadEstado =
+      turno?.estadoContinuidad ??
+      (conConvenio
+        ? await evaluarContinuidad(
+            {
+              placa: (turno as any)?.placa ?? ticket.placaTurno ?? ctx.dateo.placa ?? '',
+              asesorConvenioId: ctx.asesorConvenioIdReal,
+              convenioId: ctx.dateo.convenioId,
+            },
+            trx
+          )
+        : 'SIN_EVIDENCIA')
+    const motor = ejecutarMotor(ctx, ticket, continuidadEstado !== 'ROTA')
+    if (!motor) return plan
+    const sinComisionTicket = await debeRespetarSinComision(turno?.id ?? null)
+    const c = motor.comision
+    return {
+      ...plan,
+      desglose: desgloseDe(ctx, {
+        continuidadEstado,
+        resultado: motor.resultado,
+        despues: {
+          montoAsesor: sinComisionTicket.asesor ? 0 : Number(c.montoAsesor ?? 0),
+          montoConvenio: sinComisionTicket.convenio ? 0 : Number(c.montoConvenio ?? 0),
+        },
+        guardada: null,
+        sinComisionTicket,
+      }),
+    }
+  }
+
+  const filasLiquidacion = (await (trx ?? Database)
+    .from('liquidacion_detalle')
+    .where('comision_id', comision.id)
+    .orderBy('liquidacion_id', 'asc')
+    .select('liquidacion_id')) as { liquidacion_id: number }[]
+  const liquidacionIds = filasLiquidacion.map((r) => Number(r.liquidacion_id))
+  const extra = { liquidacionIds, dateoId }
+
+  const ctx = await contextoComisionTicket(ticket, turno, dateoId, trx)
+  const sinComisionTicket = await debeRespetarSinComision(turno?.id ?? null)
+  const guardadaSinMotor = (
+    accion: AccionComisionEdicion,
+    mensaje: string,
+    codigo: CodigoAlertaComision,
+    alerta = mensaje
+  ) => {
+    const plan = sinRecalcular(accion, mensaje, comision, extra)
+    const d = ctx
+      ? desgloseDe(ctx, {
+          continuidadEstado: turno?.estadoContinuidad ?? null,
+          resultado: null,
+          despues: null,
+          guardada: comision,
+          sinComisionTicket,
+        })
+      : null
+    return { ...plan, desglose: conAlerta(d, { codigo, tipo: 'warning', mensaje: alerta }) }
+  }
+
+  if (comision.estado === 'ANULADA') {
+    return guardadaSinMotor(
+      'NO_MODIFICADA',
+      `La comisión #${comision.id} está ANULADA: no se modificó.`,
+      'NO_MODIFICADA'
+    )
+  }
+  if (!ctx) return sinRecalcular('SIN_COMISION', null, null, extra)
+  const { dateo } = ctx
+
+  let tuvoContinuidad = true
+  if (ctx.asesorConvenioIdReal || dateo.convenioId) {
+    const guardada = turno?.estadoContinuidad ?? null
+    if (!guardada) {
+      return guardadaSinMotor(
+        'SIN_CONTINUIDAD',
+        `No se pudo recalcular: falta la continuidad guardada. La comisión #${comision.id} no se modificó.`,
+        'SIN_CONTINUIDAD',
+        `Continuidad guardada vacía: no se recalculó. La comisión #${comision.id} no se modificó.`
+      )
+    }
+    tuvoContinuidad = guardada !== 'ROTA'
+  }
+
+  const motor = ejecutarMotor(ctx, ticket, tuvoContinuidad)
+  const c = motor?.comision ?? null
   // El dateo ya no corresponde a la comisión guardada (otro asesor/convenio):
   // no se adivina, se deja como está.
   if (
@@ -515,15 +1024,13 @@ export async function planearRecalculoComision(
     (c.asesorId ?? null) !== (comision.asesorId ?? null) ||
     (c.convenioId ?? null) !== (comision.convenioId ?? null)
   ) {
-    return sinRecalcular(
+    return guardadaSinMotor(
       'NO_MODIFICADA',
       `No se pudo recalcular: la comisión #${comision.id} no coincide con el dateo actual. No se modificó, ajústala en Comisiones.`,
-      comision,
-      extra
+      'NO_MODIFICADA'
     )
   }
 
-  const sinComisionTicket = await debeRespetarSinComision(turno?.id ?? null)
   const fotoTicket =
     turno && (sinComisionTicket.asesor || sinComisionTicket.convenio)
       ? {
@@ -571,7 +1078,75 @@ export async function planearRecalculoComision(
     dateoId,
     cambios,
     fotoTicket,
+    desglose: desgloseDe(ctx, {
+      continuidadEstado: turno?.estadoContinuidad ?? null,
+      resultado: motor!.resultado,
+      despues: { montoAsesor: despues.montoAsesor, montoConvenio: despues.montoConvenio },
+      guardada: comision,
+      sinComisionTicket,
+    }),
   }
+}
+
+/**
+ * Desglose de una comisión ya guardada (GET /comisiones/:id): el mismo
+ * planearRecalculoComision() con la factura CONFIRMADA del turno tal como
+ * está hoy. `antes` = lo guardado; `despues` = lo que el motor paga hoy. Si
+ * no coinciden se agrega el aviso DISTINTO_AL_MOTOR (p. ej. un ajuste manual).
+ * null cuando el turno no tiene factura confirmada (el motor necesita su
+ * descuento y su tipo de vehículo).
+ */
+export async function desgloseDeComisionGuardada(
+  comision: Pick<Comision, 'id' | 'captacionDateoId'>
+): Promise<{ desglose: DesgloseComision | null; facturaId: number | null; motivo: string | null }> {
+  if (!comision.captacionDateoId) {
+    return { desglose: null, facturaId: null, motivo: 'La comisión no tiene dateo.' }
+  }
+  const dateo = await CaptacionDateo.find(comision.captacionDateoId)
+  const turnoIds = [dateo?.consumidoTurnoId].filter((x): x is number => !!x)
+  const turnoDelDateo = await TurnoRtm.query()
+    .where('captacion_dateo_id', comision.captacionDateoId)
+    .select('id')
+  for (const t of turnoDelDateo) if (!turnoIds.includes(t.id)) turnoIds.push(t.id)
+  const ticket = await FacturacionTicketModel.query()
+    .where('estado', 'CONFIRMADA')
+    .where((q) => {
+      q.where('dateo_id', comision.captacionDateoId!)
+      if (turnoIds.length) q.orWhereIn('turno_id', turnoIds)
+    })
+    .orderBy('id', 'desc')
+    .first()
+  if (!ticket) {
+    return {
+      desglose: null,
+      facturaId: null,
+      motivo: 'El turno no tiene factura confirmada: el desglose del motor aparece al confirmarla.',
+    }
+  }
+  const plan = await planearRecalculoComision(ticket)
+  let desglose = plan.desglose
+  if (desglose && plan.comisionId !== null && plan.comisionId !== comision.id) {
+    desglose = conAlerta(desglose, {
+      codigo: 'NO_MODIFICADA',
+      tipo: 'warning',
+      mensaje: `La factura #${ticket.id} corresponde a la comisión #${plan.comisionId}, no a esta: el desglose es de esa comisión.`,
+    })
+  }
+  if (
+    desglose &&
+    desglose.recalculado &&
+    (plan.diferencia.asesor !== 0 || plan.diferencia.convenio !== 0)
+  ) {
+    const motor = desglose.beneficiarios
+      .map((b) => `${b.nombre ?? b.rol} ${pesos(b.despues)}`)
+      .join(', ')
+    desglose = conAlerta(desglose, {
+      codigo: 'DISTINTO_AL_MOTOR',
+      tipo: 'warning',
+      mensaje: `Lo guardado no coincide con lo que el motor paga hoy con esta factura y la configuración vigente (${motor}). Puede ser un ajuste manual o un cambio de configuración posterior.`,
+    })
+  }
+  return { desglose, facturaId: ticket.id, motivo: null }
 }
 
 /**
