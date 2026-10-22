@@ -13,6 +13,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Comision from '#models/comision'
 import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
+import { esAvanceEfectivo } from '#services/comision_calculo_service'
 import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
 import { esTurnoSegundaVez } from '#services/segunda_vez_service'
 
@@ -1285,6 +1286,19 @@ export default class RepGeneralImportController {
         if (sinComisionTicket.convenio) comision.montoConvenio = '0'
         console.log(
           `   ${etiqueta} Comisión #${comision.id} | Comercial+convenio → sin cambios (dateo $${comision.montoAsesor ?? 0} + incentivo $${comision.montoConvenio ?? 0})`
+        )
+      } else if (
+        comision.esAvance &&
+        esAvanceEfectivo({
+          caso: 'CONVENIO_SELF',
+          codigoDescuento: comision.descuentoCodigoAplicado ?? null,
+        })
+      ) {
+        // CASO 2 con Avance: queda en $0 en todos los escenarios (el asesor
+        // convenio ya cobró con el descuento de la factura). La
+        // reclasificación de recurrencia no lo cambia.
+        console.log(
+          `   🔒 ${etiqueta} Comisión #${comision.id} | Convenio datea con Avance → se respeta $${comision.montoAsesor ?? 0}`
         )
       } else {
         // CASO 2: Convenio datea él mismo

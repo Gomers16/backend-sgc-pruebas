@@ -26,6 +26,7 @@ import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   calcularComision,
   decidirCasoComision,
+  esAvanceEfectivo,
   inferTipoVehiculoComision,
   isRTM,
   resolveConfigComision,
@@ -54,7 +55,8 @@ export interface DescuentoComisionResuelto {
 export async function resolverDescuentoComision(
   ticket: FacturacionTicket,
   dateo: CaptacionDateo,
-  tipoVehiculoComision: TipoVehiculoComision | null
+  tipoVehiculoComision: TipoVehiculoComision | null,
+  caso: CasoComision
 ): Promise<DescuentoComisionResuelto> {
   // 🆕 ── Detectar si hay descuento informativo ──
   // Prioridad: ticket (aplicado en caja) > dateo (pre-marcado por el comercial)
@@ -89,7 +91,13 @@ export async function resolverDescuentoComision(
   // ══════════════════════════════════════════════════════════
   // 🆕 AVANCE — detectar y resolver monto según tipo vehículo
   // ══════════════════════════════════════════════════════════
-  const esAvance = Boolean((dateo as any).esAvance ?? (dateo as any).es_avance ?? false)
+  // Manda el descuento final de la factura (el del ticket): si la cajera
+  // quitó o cambió un Avance pre-marcado, ya no es avance. La marca
+  // es_avance del dateo es solo informativa.
+  const esAvance = esAvanceEfectivo({
+    caso,
+    codigoDescuento: ticket.descuentoId ? codigoDescuentoActivo : null,
+  })
 
   // Monto real del AVANCE:
   // 1. Si la cajera ingresó un monto explícito (descuentoMontoAplicado > 0) → usar ese
@@ -647,13 +655,13 @@ async function contextoComisionTicket(
     tipoVehiculo: tipoVehiculoComision,
   })
   const recValues = await resolveConfigRecurrencia(dateo.agenteId, tipoVehiculoComision)
-  const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision)
   const caso = decidirCasoComision({
     convenioId: dateo.convenioId,
     agenteId: dateo.agenteId,
     canal: dateo.canal,
     asesorConvenioIdDelConvenio: asesorConvenioIdReal,
   })
+  const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision, caso)
   return {
     dateo,
     turno,
@@ -701,7 +709,10 @@ export function armarDesglose(p: {
   continuidadEstado: string | null
   codigoDescuento: string | null
   origenDescuento: OrigenDescuento | null
+  /** esAvanceEfectivo(): el descuento final es Avance. */
   esAvance: boolean
+  /** Marca es_avance del dateo (solo informativa). */
+  marcaAvanceDateo: boolean
   cfgValues: ConfigComisionResuelta
   recValues: ConfigRecurrenciaResuelta
   resultado: ResultadoCalculoComision | null
@@ -793,11 +804,14 @@ export function armarDesglose(p: {
     })
   }
   const codigo = p.codigoDescuento
-  if (conConvenio && p.esAvance && !(codigo ?? '').toUpperCase().includes('AVANCE')) {
+  if (conConvenio && p.marcaAvanceDateo && !p.esAvance) {
     alertas.push({
       codigo: 'AVANCE_HEREDADO',
       tipo: 'warning',
-      mensaje: `El dateo trae marca de avance y no cambia aunque el código ahora sea ${codigo ?? 'ninguno'}: la comisión se sigue calculando como avance.`,
+      mensaje:
+        caso === 'CONVENIO_SELF'
+          ? 'El dateo traía Avance, pero el descuento final de la factura no es Avance: el asesor convenio cobra su comisión.'
+          : 'El dateo traía Avance, pero el descuento final de la factura no es Avance: el convenio cobra su comisión.',
     })
   }
 
@@ -879,6 +893,7 @@ function desgloseDe(
     origenDescuento: ctx.descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
     // Caso 1 nunca tiene avance (construirComisionRTM lo guarda en false).
     esAvance: ctx.caso === 'SIN_CONVENIO' ? false : ctx.descuento.esAvance,
+    marcaAvanceDateo: Boolean(ctx.dateo.esAvance),
     cfgValues: ctx.cfgValues,
     recValues: ctx.recValues,
     resultado: extra.resultado,

@@ -29,6 +29,7 @@ import Database from '@adonisjs/lucid/services/db'
 import {
   calcularComision,
   decidirCasoComision,
+  esAvanceEfectivo,
   inferTipoVehiculoComision,
   resolveConfigComision,
   resolveConfigRecurrencia,
@@ -270,13 +271,11 @@ export async function estadisticasTickets(f: FiltrosTickets) {
       'cd.convenio_id',
       'cd.canal',
       'cd.descuento_id',
-      'cd.es_avance',
       'ds.codigo as descuento_codigo',
       'ds.valor_carro',
       'ds.valor_moto',
       'cv.asesor_convenio_id',
       'c.id as comision_id',
-      'c.es_avance as c_es_avance',
       'c.descuento_codigo_aplicado as c_descuento_codigo'
     )
     .select(
@@ -328,10 +327,10 @@ export async function estadisticasTickets(f: FiltrosTickets) {
     }
 
     const enProceso = r.comision_id === null || r.comision_id === undefined
-    const esAvance = caso !== 'SIN_CONVENIO' && Boolean(enProceso ? r.es_avance : r.c_es_avance)
     const codigoDescuento: string | null = enProceso
       ? (r.descuento_codigo ?? null)
       : (r.c_descuento_codigo ?? null)
+    const esAvance = esAvanceEfectivo({ caso, codigoDescuento })
     const origenDescuento: OrigenDescuento =
       !enProceso && codigoDescuento && !r.descuento_id ? 'CAJA' : 'DATEO'
     const montoAvance =

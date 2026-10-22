@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import Database from '@adonisjs/lucid/services/db'
 import {
   calcularComision,
+  esAvanceEfectivo,
   resolveConfigComision,
   resolveConfigRecurrencia,
   type CasoComision,
@@ -14,7 +15,9 @@ import { armarDesglose } from '#services/comision_ticket_service'
 // Lo que promete el diálogo (desglose: montos, regla, explicación y avisos)
 // contra lo que paga calcularComision() con la configuración vigente de la
 // BD, para los 3 casos, escenarios, continuidad, vehículos, los 7 descuentos
-// del catálogo más "sin descuento", origen y marca de avance. Solo lee.
+// del catálogo más "sin descuento", origen (dateo o caja) y marca de avance
+// del dateo (solo informativa: manda el descuento final, esAvanceEfectivo).
+// Solo lee.
 
 const SIN_FILA = 999999999 // asesor sin fila propia → configuración Global
 
@@ -61,9 +64,10 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                 for (const origen of (codigo
                   ? ['DATEO', 'CAJA']
                   : [null]) as (OrigenDescuento | null)[])
-                  for (const esAvance of caso === 'SIN_CONVENIO' ? [false] : [false, true]) {
+                  for (const marca of caso === 'SIN_CONVENIO' ? [false] : [false, true]) {
                     combinaciones++
-                    const donde = `${caso}/${convenioId}/${tv}/${escenario}/${continuidad}/${codigo}/${origen}/avance=${esAvance}`
+                    const esAvance = esAvanceEfectivo({ caso, codigoDescuento: codigo })
+                    const donde = `${caso}/${convenioId}/${tv}/${escenario}/${continuidad}/${codigo}/${origen}/marca=${marca}`
                     const r = calcularComision({
                       caso,
                       escenario,
@@ -83,6 +87,7 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                       codigoDescuento: codigo,
                       origenDescuento: origen,
                       esAvance,
+                      marcaAvanceDateo: marca,
                       cfgValues,
                       recValues,
                       resultado: r,
@@ -133,6 +138,27 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                     if (caso !== 'CONVENIO_COMERCIAL' && usados.length)
                       assert.notInclude(d.explicacion, 'queda en $0', donde)
 
+                    // 3b. Avance (dateo o caja, cualquier escenario): Caso 3 convenio $0 y
+                    // el comercial conserva su valor; Caso 2 en $0; Caso 1 lo ignora.
+                    if (codigo === 'AVANCE') {
+                      if (caso === 'CONVENIO_COMERCIAL') {
+                        assert.equal(r.montoConvenio, 0, donde)
+                        assert.equal(r.montoAsesor, cfgValues.valorDateoNuevo, donde)
+                        assert.include(d.explicacion, 'Avance', donde)
+                      } else if (caso === 'CONVENIO_SELF') {
+                        assert.equal(r.montoAsesor, 0, donde)
+                        assert.include(d.explicacion, 'Avance', donde)
+                      } else {
+                        assert.isFalse(esAvance, donde)
+                        assert.notInclude(r.reglaAplicada, 'Avance', donde)
+                      }
+                      assert.equal(d.descuento.esAvance, caso !== 'SIN_CONVENIO', donde)
+                    } else {
+                      // La marca sola ya no hace avance.
+                      assert.isFalse(esAvance, donde)
+                      assert.notInclude(r.reglaAplicada, '+ Avance', donde)
+                    }
+
                     // 4. Avisos: cada valor usado en 0 trae CONFIG_EN_CERO; avance heredado.
                     const enCero = usados.filter((v) => v.valor === 0).length
                     assert.equal(
@@ -140,8 +166,7 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                       enCero,
                       donde
                     )
-                    const heredado =
-                      caso !== 'SIN_CONVENIO' && esAvance && !(codigo ?? '').includes('AVANCE')
+                    const heredado = caso !== 'SIN_CONVENIO' && marca && !esAvance
                     assert.equal(
                       d.alertas.some((a) => a.codigo === 'AVANCE_HEREDADO'),
                       heredado,
@@ -182,6 +207,7 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
       codigoDescuento: null,
       origenDescuento: null,
       esAvance: false,
+      marcaAvanceDateo: false,
       cfgValues,
       recValues,
       resultado: r,

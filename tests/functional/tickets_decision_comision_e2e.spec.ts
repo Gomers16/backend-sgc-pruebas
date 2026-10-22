@@ -55,6 +55,7 @@ const P = {
   MAL_CASO3: 'TKD415',
   CAJA_DESCUENTO: 'TKD416',
   AVANCE: 'TKD417',
+  AVANCE_SIN_DESCUENTO: 'TKD422',
   PROD_LOCAL: 'TKD418',
   COPIA_1: 'TKD419',
   COPIA_0: 'TKD420',
@@ -481,12 +482,12 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     assert.match(String(c.reglaAplicada), /Nuevo \+ informativo \(INFORMATIVO_POLICIA\)/)
   })
 
-  test('aprobar() con avance del intento: Caso 3 Nuevo + Avance, convenio en $0', async ({
+  test('aprobar() con Avance en la factura confirmada: Caso 3 Nuevo + Avance, convenio en $0', async ({
     client,
     assert,
   }) => {
     const turno = await turnoDirecto(P.AVANCE)
-    await facturacion(turno.id, P.AVANCE, 'CONFIRMADA')
+    await facturacion(turno.id, P.AVANCE, 'CONFIRMADA', { descuentoId: DESCUENTO.AVANCE })
     const ticketId = await crearTicket(client, turno.id, comercial.id, {
       ...conConvenio(),
       descuento_id: DESCUENTO.AVANCE,
@@ -502,6 +503,26 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     assert.equal(Number(c.montoConvenio), 0)
     // Sin monto explícito en caja: el avance sale del valor del descuento (carro).
     assert.equal(Number(c.descuentoMontoAplicado), 75000)
+  })
+
+  test('aprobar() con Avance en el intento pero la factura confirmada sin descuento: manda la factura, el convenio cobra', async ({
+    client,
+    assert,
+  }) => {
+    const turno = await turnoDirecto(P.AVANCE_SIN_DESCUENTO)
+    await facturacion(turno.id, P.AVANCE_SIN_DESCUENTO, 'CONFIRMADA')
+    const ticketId = await crearTicket(client, turno.id, comercial.id, {
+      ...conConvenio(),
+      descuento_id: DESCUENTO.AVANCE,
+      es_avance: true,
+      comprobante_avance_url: await subir(client),
+    })
+    const r = await aprobar(client, ticketId, flagsBody({ asesor: true, convenio: true }))
+    r.assertStatus(200)
+    const c = await Comision.findOrFail(r.body().comisionId)
+    assert.isFalse(Boolean(c.esAvance))
+    assert.notMatch(String(c.reglaAplicada), /Avance/)
+    assert.isAbove(Number(c.montoConvenio), 0)
   })
 
   // ───────────── Transición con producción local ─────────────

@@ -328,12 +328,29 @@ export const CODIGOS_DESCUENTO_ESPECIAL_CAJA = [
   'INFORMATIVO_SOAT_RTM',
 ] as const
 
+/** Código del descuento Avance (AVANCE_PROPIETARIO es otro: especial de caja). */
+export const CODIGO_DESCUENTO_AVANCE = 'AVANCE'
+
+/**
+ * Única fuente de "la comisión es de avance": el descuento final de la
+ * factura es AVANCE, venga pre-marcado en el dateo o puesto en caja, con
+ * cualquier monto (también $0). Si la cajera lo cambia o lo quita, manda el
+ * descuento final. La marca es_avance del dateo es solo informativa. El
+ * Caso 1 nunca tiene avance.
+ */
+export function esAvanceEfectivo(p: {
+  caso: CasoComision
+  codigoDescuento: string | null
+}): boolean {
+  return p.caso !== 'SIN_CONVENIO' && p.codigoDescuento === CODIGO_DESCUENTO_AVANCE
+}
+
 export interface ParametrosCalculoComision {
   caso: CasoComision
   escenario: EscenarioCliente
   /** Solo relevante en CONVENIO_SELF (Caso 2) + escenario RECURRENTE/RECUPERACION */
   tuvoContinuidad: boolean
-  /** Ignorado si caso === 'SIN_CONVENIO' (Caso 1 nunca tiene avance) */
+  /** esAvanceEfectivo(); ignorado si caso === 'SIN_CONVENIO' (Caso 1 nunca tiene avance) */
   esAvance: boolean
   /** Monto de avance ya resuelto (solo se refleja en descuentoMontoAplicado) */
   montoAvance: number
@@ -438,7 +455,7 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         reglaAplicada: 'Caso 2 · Convenio self-dateo · Avance → $0 (ya cobró vía descuento en factura)',
         camposUsados: [],
         explicacion:
-          'El dateo trae marca de avance: el asesor convenio ya cobró con el descuento de la factura, así que la comisión queda en $0.',
+          'El descuento de la factura es Avance: el asesor convenio ya cobró con ese descuento, así que la comisión queda en $0.',
       }
     }
     if (esDescuentoEspecialCaja) {
@@ -521,7 +538,7 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         reglaAplicada: 'Caso 3 · Comercial+convenio · Nuevo + Avance → comercial dateo_nuevo | convenio $0',
         camposUsados: ['valorDateoNuevo'],
         explicacion:
-          'El dateo trae marca de avance: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con el descuento de la factura.',
+          'El descuento de la factura es Avance: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con ese descuento.',
       }
     }
     return {
@@ -551,7 +568,7 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       descuentoMontoAplicado: montoAvance,
       reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} + Avance → comercial dateo_nuevo | convenio $0`,
       camposUsados: ['valorDateoNuevo'],
-      explicacion: `Cliente ${cliente} con marca de avance en el dateo: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con el descuento de la factura.`,
+      explicacion: `Cliente ${cliente} con descuento Avance en la factura: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con ese descuento.`,
     }
   }
   return {

@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import {
   calcularComision,
   decidirCasoComision,
+  esAvanceEfectivo,
   type ConfigComisionResuelta,
   type ConfigRecurrenciaResuelta,
 } from '#services/comision_calculo_service'
@@ -238,5 +239,42 @@ test.group('decidirCasoComision', () => {
 
   test('con convenio y datea un comercial → CONVENIO_COMERCIAL', ({ assert }) => {
     assert.equal(decidirCasoComision(base), 'CONVENIO_COMERCIAL')
+  })
+})
+
+test.group('comision_calculo_service · esAvanceEfectivo (manda el descuento final)', () => {
+  test('AVANCE con convenio es avance; el Caso 1 nunca', ({ assert }) => {
+    assert.isTrue(esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: 'AVANCE' }))
+    assert.isTrue(esAvanceEfectivo({ caso: 'CONVENIO_SELF', codigoDescuento: 'AVANCE' }))
+    assert.isFalse(esAvanceEfectivo({ caso: 'SIN_CONVENIO', codigoDescuento: 'AVANCE' }))
+  })
+
+  test('otro descuento, sin descuento o AVANCE_PROPIETARIO no son avance', ({ assert }) => {
+    for (const codigo of [null, 'INFORMATIVO', 'AVANCE_PROPIETARIO', 'INFORMATIVO_POLICIA']) {
+      assert.isFalse(
+        esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: codigo }),
+        String(codigo)
+      )
+    }
+  })
+
+  test('Caso 3 con Avance: convenio $0 en nuevo, recurrente y recuperación', ({ assert }) => {
+    for (const escenario of ['NUEVO', 'RECURRENTE', 'RECUPERACION'] as const) {
+      for (const origenDescuento of ['DATEO', 'CAJA'] as const) {
+        const r = calcularComision({
+          caso: 'CONVENIO_COMERCIAL',
+          escenario,
+          tuvoContinuidad: true,
+          esAvance: esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: 'AVANCE' }),
+          montoAvance: 0,
+          codigoDescuento: 'AVANCE',
+          origenDescuento,
+          cfgValues,
+          recValues,
+        })
+        assert.equal(r.montoConvenio, 0, `${escenario}/${origenDescuento}`)
+        assert.equal(r.montoAsesor, cfgValues.valorDateoNuevo, `${escenario}/${origenDescuento}`)
+      }
+    }
   })
 })

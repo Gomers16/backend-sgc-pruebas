@@ -1320,7 +1320,14 @@ export default class FacturacionTicketsController {
     // ── Leer valores recurrente/recuperación ──
     const recValues = await resolveConfigRecurrencia(dateo.agenteId, tipoVehiculoComision)
 
-    const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision)
+    const caso = decidirCasoComision({
+      convenioId: dateo.convenioId,
+      agenteId: dateo.agenteId,
+      canal: dateo.canal,
+      asesorConvenioIdDelConvenio: asesorConvenioIdReal,
+    })
+
+    const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision, caso)
     const { descuentoOrigenCaja, esAvance, montoAvance } = descuento
 
     console.log(`🆕 esAvance: ${esAvance} | montoAvance: $${montoAvance}`)
@@ -1363,13 +1370,6 @@ export default class FacturacionTicketsController {
     }
 
     // ── Verificar duplicado ──
-    const caso = decidirCasoComision({
-      convenioId: dateo.convenioId,
-      agenteId: dateo.agenteId,
-      canal: dateo.canal,
-      asesorConvenioIdDelConvenio: asesorConvenioIdReal,
-    })
-
     const startDay = now.startOf('day').toSQL()
     const endDay = now.endOf('day').toSQL()
 

@@ -30,6 +30,7 @@ import {
   calcularComision,
   inferTipoVehiculoComision,
   decidirCasoComision,
+  esAvanceEfectivo,
   type CasoComision,
   type EscenarioCliente,
   type OrigenDescuento,
@@ -675,8 +676,17 @@ export default class TicketsExcepcionDateoController {
             .first()
         : null
       const codigoDescuento = descuentoActivo?.codigo ?? null
-      // Avance solo aplica con convenio (Caso 1 nunca lo usa).
-      const esAvance = caso !== 'SIN_CONVENIO' && esAvanceGuardado
+      // Avance: manda el descuento final de la factura confirmada; sin
+      // factura todavía, el del intento (applyCommissionHook lo recalcula al
+      // confirmar). La marca es_avance del intento es solo informativa.
+      const esAvance = esAvanceEfectivo({
+        caso,
+        codigoDescuento: facturacionConfirmada
+          ? facturacionConfirmada.descuentoId
+            ? codigoDescuento
+            : null
+          : codigoDescuento,
+      })
       let montoAvance = 0
       if (esAvance && descuentoActivo) {
         const montoExplicito = Number(facturacionConfirmada?.descuentoMontoAplicado ?? 0)
