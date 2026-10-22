@@ -37,7 +37,7 @@ import {
   calcularComision,
   isRTM,
   inferTipoVehiculoComision,
-  esAvanceEfectivo,
+  esDescuentoFinalAvance,
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
@@ -1627,17 +1627,20 @@ export default class CaptacionDateosController {
                 ? 'CONVENIO_SELF'
                 : 'CONVENIO_COMERCIAL'
 
-            // Avance: el descuento del dateo (esta ruta no tiene paso de
-            // caja); la marca es_avance es solo informativa.
-            const esAvance = esAvanceEfectivo({ caso, codigoDescuento: codigoDescuentoActivo })
+            // Descuento final: el del dateo (esta ruta no tiene paso de caja).
+            // Con convenio, cualquier descuento deja al convenio en $0; la
+            // marca es_avance es solo informativa.
+            const esAvance = esDescuentoFinalAvance({
+              caso,
+              codigoDescuentoFinal: codigoDescuentoActivo,
+            })
             const resultadoCalculo = calcularComision({
               caso,
               escenario,
               tuvoContinuidad,
-              esAvance,
               montoAvance: 0,
               codigoDescuento: codigoDescuentoActivo,
-              origenDescuento: 'DATEO',
+              codigoDescuentoFinal: codigoDescuentoActivo,
               cfgValues,
               recValues,
             })

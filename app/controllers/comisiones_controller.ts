@@ -32,6 +32,7 @@ import {
   resolveConfigComision,
   resolveConfigRecurrencia,
   calcularComision,
+  CODIGO_DESCUENTO_AVANCE,
   type CasoComision,
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
@@ -1724,19 +1725,15 @@ export default class ComisionesController {
       return response.badRequest({ message: 'escenario debe ser NUEVO, RECURRENTE o RECUPERACION' })
 
     const conConvenio = Boolean(payload.conConvenio)
+    // esAvance (sin código) se simula como un descuento AVANCE en la factura.
     const esAvance = actor === 'COMERCIAL' && !conConvenio ? false : Boolean(payload.esAvance)
     const tuvoContinuidad =
       actor === 'CONVENIO' && !conConvenio ? Boolean(payload.tuvoContinuidad) : true
 
+    // origenDescuento se acepta pero ya no cambia el cálculo: manda el código
+    // final de la factura (convenioSinComisionPorDescuento).
     const codigoDescuento = payload.codigoDescuento ? String(payload.codigoDescuento) : null
-    let origenDescuento: 'DATEO' | 'CAJA' | null = null
     if (codigoDescuento) {
-      const origenRaw = String(payload.origenDescuento || '').toUpperCase()
-      if (!['DATEO', 'CAJA'].includes(origenRaw))
-        return response.badRequest({
-          message: 'origenDescuento debe ser DATEO o CAJA cuando hay descuento',
-        })
-      origenDescuento = origenRaw as 'DATEO' | 'CAJA'
       const descuentoExiste = await Descuento.query()
         .where('codigo', codigoDescuento)
         .where('activo', true)
@@ -1780,10 +1777,9 @@ export default class ComisionesController {
       caso,
       escenario: escenario as EscenarioCliente,
       tuvoContinuidad,
-      esAvance,
       montoAvance: 0,
       codigoDescuento,
-      origenDescuento,
+      codigoDescuentoFinal: codigoDescuento ?? (esAvance ? CODIGO_DESCUENTO_AVANCE : null),
       cfgValues,
       recValues,
     })

@@ -29,14 +29,13 @@ import Database from '@adonisjs/lucid/services/db'
 import {
   calcularComision,
   decidirCasoComision,
-  esAvanceEfectivo,
+  esDescuentoFinalAvance,
   inferTipoVehiculoComision,
   resolveConfigComision,
   resolveConfigRecurrencia,
   type ConfigComisionResuelta,
   type ConfigRecurrenciaResuelta,
   type EscenarioCliente,
-  type OrigenDescuento,
 } from '#services/comision_calculo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
@@ -330,9 +329,7 @@ export async function estadisticasTickets(f: FiltrosTickets) {
     const codigoDescuento: string | null = enProceso
       ? (r.descuento_codigo ?? null)
       : (r.c_descuento_codigo ?? null)
-    const esAvance = esAvanceEfectivo({ caso, codigoDescuento })
-    const origenDescuento: OrigenDescuento =
-      !enProceso && codigoDescuento && !r.descuento_id ? 'CAJA' : 'DATEO'
+    const esAvance = esDescuentoFinalAvance({ caso, codigoDescuentoFinal: codigoDescuento })
     const montoAvance =
       esAvance && r.descuento_id ? n(tipoVehiculo === 'MOTO' ? r.valor_moto : r.valor_carro) : 0
 
@@ -340,10 +337,9 @@ export async function estadisticasTickets(f: FiltrosTickets) {
       caso,
       escenario,
       tuvoContinuidad,
-      esAvance,
       montoAvance,
       codigoDescuento,
-      origenDescuento,
+      codigoDescuentoFinal: codigoDescuento,
       cfgValues: await cacheCfg.get(kCfg)!,
       recValues: await cacheRec.get(kRec)!,
     })

@@ -30,7 +30,7 @@ const SEDE_ID = 2
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'
-const DESCUENTO = { AVANCE: 2, INFORMATIVO_POLICIA: 4 } as const
+const DESCUENTO = { INFORMATIVO: 1, AVANCE: 2, INFORMATIVO_POLICIA: 4 } as const
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64'
@@ -56,6 +56,7 @@ const P = {
   CAJA_DESCUENTO: 'TKD416',
   AVANCE: 'TKD417',
   AVANCE_SIN_DESCUENTO: 'TKD422',
+  INFORMATIVO_CONVENIO: 'TKD423',
   PROD_LOCAL: 'TKD418',
   COPIA_1: 'TKD419',
   COPIA_0: 'TKD420',
@@ -499,7 +500,7 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     const c = await Comision.findOrFail(r.body().comisionId)
     assert.isTrue(Boolean(c.esAvance))
     assert.equal(c.descuentoCodigoAplicado, 'AVANCE')
-    assert.match(String(c.reglaAplicada), /Caso 3 .*Nuevo \+ Avance/)
+    assert.match(String(c.reglaAplicada), /Caso 3 .*Nuevo \+ descuento AVANCE/)
     assert.equal(Number(c.montoConvenio), 0)
     // Sin monto explícito en caja: el avance sale del valor del descuento (carro).
     assert.equal(Number(c.descuentoMontoAplicado), 75000)
@@ -521,8 +522,27 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
     r.assertStatus(200)
     const c = await Comision.findOrFail(r.body().comisionId)
     assert.isFalse(Boolean(c.esAvance))
-    assert.notMatch(String(c.reglaAplicada), /Avance/)
+    assert.notMatch(String(c.reglaAplicada), /descuento/)
     assert.isAbove(Number(c.montoConvenio), 0)
+  })
+
+  test('aprobar() con Informativo en la factura confirmada (Caso 3): convenio $0 por el descuento y "sin comisión" del asesor al final', async ({
+    client,
+    assert,
+  }) => {
+    const turno = await turnoDirecto(P.INFORMATIVO_CONVENIO)
+    await facturacion(turno.id, P.INFORMATIVO_CONVENIO, 'CONFIRMADA', {
+      descuentoId: DESCUENTO.INFORMATIVO,
+    })
+    const ticketId = await crearTicket(client, turno.id, comercial.id, conConvenio())
+    const r = await aprobar(client, ticketId, flagsBody({ asesor: false, convenio: true }))
+    r.assertStatus(200)
+    const c = await Comision.findOrFail(r.body().comisionId)
+    assert.equal(c.descuentoCodigoAplicado, 'INFORMATIVO')
+    assert.match(String(c.reglaAplicada), /Caso 3 .*Nuevo \+ descuento INFORMATIVO .*convenio \$0/)
+    assert.equal(Number(c.montoConvenio), 0, 'el descuento deja al convenio en $0')
+    assert.equal(Number(c.montoAsesor), 0, '"sin comisión" del asesor se aplica al final')
+    assert.isAbove(Number(c.monto), 0, 'monto = lo que calculó el motor para el comercial')
   })
 
   // ───────────── Transición con producción local ─────────────

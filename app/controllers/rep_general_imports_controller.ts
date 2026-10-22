@@ -13,7 +13,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Comision from '#models/comision'
 import { evaluarContinuidad, type EstadoContinuidad } from '#services/continuidad_service'
 import { debeRespetarSinComision } from '#services/reserva_dateo_service'
-import { esAvanceEfectivo } from '#services/comision_calculo_service'
+import { convenioSinComisionPorDescuento } from '#services/comision_calculo_service'
 import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
 import { esTurnoSegundaVez } from '#services/segunda_vez_service'
 
@@ -1279,26 +1279,27 @@ export default class RepGeneralImportController {
       } else if (esComercialConConvenio) {
         // CASO 3: Comercial + convenio
         // montoAsesor = valorDateoNuevo (mismo para nuevo/recurrente/recuperacion)
-        // montoConvenio = valorIncentivoPorTipo (mismo para todos los casos)
-        // No se recalcula nada — los montos ya son correctos. Solo se
-        // asegura la decisión "sin comisión" del ticket, si la hay.
+        // montoConvenio = valorIncentivoPorTipo, o $0 si la factura tiene
+        // descuento (convenioSinComisionPorDescuento): igual en todos los
+        // escenarios. No se recalcula nada — los montos ya son correctos.
+        // Solo se asegura la decisión "sin comisión" del ticket, si la hay.
         if (sinComisionTicket.asesor) comision.montoAsesor = '0'
         if (sinComisionTicket.convenio) comision.montoConvenio = '0'
         console.log(
           `   ${etiqueta} Comisión #${comision.id} | Comercial+convenio → sin cambios (dateo $${comision.montoAsesor ?? 0} + incentivo $${comision.montoConvenio ?? 0})`
         )
       } else if (
-        comision.esAvance &&
-        esAvanceEfectivo({
+        Number(comision.montoAsesor ?? 0) === 0 &&
+        convenioSinComisionPorDescuento({
           caso: 'CONVENIO_SELF',
-          codigoDescuento: comision.descuentoCodigoAplicado ?? null,
+          codigoDescuentoFinal: comision.descuentoCodigoAplicado ?? null,
         })
       ) {
-        // CASO 2 con Avance: queda en $0 en todos los escenarios (el asesor
-        // convenio ya cobró con el descuento de la factura). La
-        // reclasificación de recurrencia no lo cambia.
+        // CASO 2 con descuento en la factura: quedó en $0 en todos los
+        // escenarios (convenioSinComisionPorDescuento). La reclasificación
+        // de recurrencia no lo cambia.
         console.log(
-          `   🔒 ${etiqueta} Comisión #${comision.id} | Convenio datea con Avance → se respeta $${comision.montoAsesor ?? 0}`
+          `   🔒 ${etiqueta} Comisión #${comision.id} | Convenio datea con descuento ${comision.descuentoCodigoAplicado} → se respeta $0`
         )
       } else {
         // CASO 2: Convenio datea él mismo

@@ -319,30 +319,29 @@ export function decidirCasoComision(d: {
 }
 export type OrigenDescuento = 'DATEO' | 'CAJA'
 
-/** Códigos de descuento que activan la rama especial "aplicado en caja" en Caso 2/3 */
-export const CODIGOS_DESCUENTO_ESPECIAL_CAJA = [
-  'INFORMATIVO_POLICIA',
-  'INFORMATIVO_EMPLEADO',
-  'AVANCE_PROPIETARIO',
-  'INFORMATIVO_OBSEQUIO',
-  'INFORMATIVO_SOAT_RTM',
-] as const
-
-/** Código del descuento Avance (AVANCE_PROPIETARIO es otro: especial de caja). */
+/** Código del descuento Avance: solo decide el monto de avance guardado y la marca es_avance informativa. */
 export const CODIGO_DESCUENTO_AVANCE = 'AVANCE'
 
 /**
- * Única fuente de "la comisión es de avance": el descuento final de la
- * factura es AVANCE, venga pre-marcado en el dateo o puesto en caja, con
- * cualquier monto (también $0). Si la cajera lo cambia o lo quita, manda el
- * descuento final. La marca es_avance del dateo es solo informativa. El
- * Caso 1 nunca tiene avance.
+ * Única regla del descuento para el convenio: con convenio (Casos 2 y 3),
+ * cualquier descuento que quede en la factura final deja en $0 la comisión
+ * del convenio (en el Caso 2, la del asesor convenio), en cualquier escenario
+ * y con cualquier monto, incluso $0. Manda el código final de la factura: si
+ * la cajera quita el descuento, el convenio cobra normal. El Caso 1 no cambia.
  */
-export function esAvanceEfectivo(p: {
+export function convenioSinComisionPorDescuento(p: {
   caso: CasoComision
-  codigoDescuento: string | null
+  codigoDescuentoFinal: string | null
 }): boolean {
-  return p.caso !== 'SIN_CONVENIO' && p.codigoDescuento === CODIGO_DESCUENTO_AVANCE
+  return p.caso !== 'SIN_CONVENIO' && !!p.codigoDescuentoFinal
+}
+
+/** El descuento final es Avance (solo para el monto de avance y la marca informativa; no decide el pago). */
+export function esDescuentoFinalAvance(p: {
+  caso: CasoComision
+  codigoDescuentoFinal: string | null
+}): boolean {
+  return p.caso !== 'SIN_CONVENIO' && p.codigoDescuentoFinal === CODIGO_DESCUENTO_AVANCE
 }
 
 export interface ParametrosCalculoComision {
@@ -350,14 +349,12 @@ export interface ParametrosCalculoComision {
   escenario: EscenarioCliente
   /** Solo relevante en CONVENIO_SELF (Caso 2) + escenario RECURRENTE/RECUPERACION */
   tuvoContinuidad: boolean
-  /** esAvanceEfectivo(); ignorado si caso === 'SIN_CONVENIO' (Caso 1 nunca tiene avance) */
-  esAvance: boolean
-  /** Monto de avance ya resuelto (solo se refleja en descuentoMontoAplicado) */
+  /** Monto de avance ya resuelto (solo se refleja en descuentoMontoAplicado si el descuento final es Avance) */
   montoAvance: number
-  /** Código del descuento activo, o null si no hay ninguno */
+  /** Código del descuento activo (el de la factura o, si no tiene, el pre-marcado en el dateo). Lo usa el Caso 1. */
   codigoDescuento: string | null
-  /** Dónde se marcó el descuento: comercial en el dateo, o cajera en el ticket */
-  origenDescuento: OrigenDescuento | null
+  /** Código del descuento final de la factura (null si no tiene). Casos 2 y 3: convenioSinComisionPorDescuento(). */
+  codigoDescuentoFinal: string | null
   cfgValues: ConfigComisionResuelta
   recValues: ConfigRecurrenciaResuelta
 }
@@ -386,17 +383,26 @@ export interface ResultadoCalculoComision {
 }
 
 export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculoComision {
-  const { caso, escenario, tuvoContinuidad, esAvance, montoAvance, codigoDescuento, origenDescuento, cfgValues, recValues } = p
+  const {
+    caso,
+    escenario,
+    tuvoContinuidad,
+    montoAvance,
+    codigoDescuento,
+    codigoDescuentoFinal,
+    cfgValues,
+    recValues,
+  } = p
 
   const esClienteNuevo = escenario === 'NUEVO'
   const esClienteRecurrente = escenario === 'RECURRENTE'
   const esClienteRecuperacion = escenario === 'RECUPERACION'
 
   const tieneInformativo = !!codigoDescuento
-  const esDescuentoEspecialCaja =
-    !!codigoDescuento &&
-    origenDescuento === 'CAJA' &&
-    (CODIGOS_DESCUENTO_ESPECIAL_CAJA as readonly string[]).includes(codigoDescuento)
+  const convenioEnCero = convenioSinComisionPorDescuento({ caso, codigoDescuentoFinal })
+  const descuentoMontoAplicado = esDescuentoFinalAvance({ caso, codigoDescuentoFinal })
+    ? montoAvance
+    : null
 
   if (caso === 'SIN_CONVENIO') {
     // ════════════════════════ CASO 1 ════════════════════════
@@ -442,33 +448,26 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
     }
   }
 
+  const etiqueta = esClienteNuevo ? 'Nuevo' : esClienteRecuperacion ? 'Recuperación' : 'Recurrente'
+  const cliente = esClienteNuevo
+    ? 'nuevo'
+    : esClienteRecuperacion
+      ? 'de recuperación'
+      : 'recurrente'
+
   if (caso === 'CONVENIO_SELF') {
     // ════════════════════════ CASO 2 ════════════════════════
-    if (esAvance) {
+    if (convenioEnCero) {
       return {
         base: cfgValues.valorIncentivoPorTipo,
         monto: 0,
         montoAsesor: 0,
         montoConvenio: 0,
         valorNuevoDirectoFinal: 0,
-        descuentoMontoAplicado: montoAvance,
-        reglaAplicada: 'Caso 2 · Convenio self-dateo · Avance → $0 (ya cobró vía descuento en factura)',
+        descuentoMontoAplicado,
+        reglaAplicada: `Caso 2 · Convenio self-dateo · ${etiqueta} + descuento ${codigoDescuentoFinal} → $0`,
         camposUsados: [],
-        explicacion:
-          'El descuento de la factura es Avance: el asesor convenio ya cobró con ese descuento, así que la comisión queda en $0.',
-      }
-    }
-    if (esDescuentoEspecialCaja) {
-      return {
-        base: 0,
-        monto: 0,
-        montoAsesor: 0,
-        montoConvenio: 0,
-        valorNuevoDirectoFinal: 0,
-        descuentoMontoAplicado: null,
-        reglaAplicada: `Caso 2 · Convenio self-dateo · ${codigoDescuento} aplicado en caja → $0`,
-        camposUsados: [],
-        explicacion: `En caja se puso un informativo especial (${codigoDescuento}) que el dateo no traía: la comisión del asesor convenio queda en $0.`,
+        explicacion: `La factura tiene descuento (${codigoDescuentoFinal}): con convenio, cualquier descuento deja en cero la comisión del asesor convenio.`,
       }
     }
     if (esClienteNuevo) {
@@ -494,9 +493,9 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         montoConvenio: 0,
         valorNuevoDirectoFinal: 0,
         descuentoMontoAplicado: null,
-        reglaAplicada: `Caso 2 · Convenio self-dateo · ${esClienteRecuperacion ? 'Recuperación' : 'Recurrente'} CON continuidad → incentivo base`,
+        reglaAplicada: `Caso 2 · Convenio self-dateo · ${etiqueta} CON continuidad → incentivo base`,
         camposUsados: ['valorIncentivo'],
-        explicacion: `Cliente ${esClienteRecuperacion ? 'de recuperación' : 'recurrente'} que siguió con el mismo asesor convenio (continuidad respetada): cobra su incentivo base.`,
+        explicacion: `Cliente ${cliente} que siguió con el mismo asesor convenio (continuidad respetada): cobra su incentivo base.`,
       }
     }
     return {
@@ -506,41 +505,28 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
       montoConvenio: 0,
       valorNuevoDirectoFinal: 0,
       descuentoMontoAplicado: null,
-      reglaAplicada: `Caso 2 · Convenio self-dateo · ${esClienteRecuperacion ? 'Recuperación' : 'Recurrente'} SIN continuidad → valor_dateo_recurrencia`,
+      reglaAplicada: `Caso 2 · Convenio self-dateo · ${etiqueta} SIN continuidad → valor_dateo_recurrencia`,
       camposUsados: ['valorRecurrente'],
-      explicacion: `Cliente ${esClienteRecuperacion ? 'de recuperación' : 'recurrente'} con la continuidad rota (pasó por otro canal o convenio): el asesor convenio cobra el valor de recurrencia.`,
+      explicacion: `Cliente ${cliente} con la continuidad rota (pasó por otro canal o convenio): el asesor convenio cobra el valor de recurrencia.`,
     }
   }
 
   // ════════════════════════ CASO 3: CONVENIO_COMERCIAL ════════════════════════
+  // El comercial cobra el dateo vía convenio en todos los escenarios.
+  if (convenioEnCero) {
+    return {
+      base: cfgValues.valorIncentivoCaso3,
+      monto: cfgValues.valorDateoNuevo,
+      montoAsesor: cfgValues.valorDateoNuevo,
+      montoConvenio: 0,
+      valorNuevoDirectoFinal: 0,
+      descuentoMontoAplicado,
+      reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} + descuento ${codigoDescuentoFinal} → comercial dateo_nuevo | convenio $0`,
+      camposUsados: ['valorDateoNuevo'],
+      explicacion: `La factura tiene descuento (${codigoDescuentoFinal}): con convenio, cualquier descuento deja en cero la comisión del convenio. El asesor comercial cobra su valor normal (dateo vía convenio).`,
+    }
+  }
   if (esClienteNuevo) {
-    if (esDescuentoEspecialCaja) {
-      return {
-        base: cfgValues.valorIncentivoCaso3,
-        monto: cfgValues.valorDateoNuevo,
-        montoAsesor: cfgValues.valorDateoNuevo,
-        montoConvenio: 0,
-        valorNuevoDirectoFinal: 0,
-        descuentoMontoAplicado: null,
-        reglaAplicada: `Caso 3 · Comercial+convenio · Nuevo + ${codigoDescuento} en caja → comercial dateo_nuevo | convenio $0`,
-        camposUsados: ['valorDateoNuevo'],
-        explicacion: `Cliente nuevo con un informativo especial (${codigoDescuento}) puesto en caja: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0.`,
-      }
-    }
-    if (esAvance) {
-      return {
-        base: cfgValues.valorIncentivoCaso3,
-        monto: cfgValues.valorDateoNuevo,
-        montoAsesor: cfgValues.valorDateoNuevo,
-        montoConvenio: 0,
-        valorNuevoDirectoFinal: 0,
-        descuentoMontoAplicado: montoAvance,
-        reglaAplicada: 'Caso 3 · Comercial+convenio · Nuevo + Avance → comercial dateo_nuevo | convenio $0',
-        camposUsados: ['valorDateoNuevo'],
-        explicacion:
-          'El descuento de la factura es Avance: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con ese descuento.',
-      }
-    }
     return {
       base: cfgValues.valorIncentivoCaso3,
       monto: cfgValues.valorDateoNuevo,
@@ -554,23 +540,6 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
         'Cliente nuevo: el asesor comercial cobra el dateo vía convenio y el convenio cobra aparte su incentivo por tipo de vehículo (el de la Global si su fila propia lo deja vacío).',
     }
   }
-
-  // Recurrente o Recuperación (misma fórmula — el informativo no tiene rama especial aquí)
-  const etiqueta = esClienteRecuperacion ? 'Recuperación' : 'Recurrente'
-  const cliente = esClienteRecuperacion ? 'de recuperación' : 'recurrente'
-  if (esAvance) {
-    return {
-      base: cfgValues.valorIncentivoCaso3,
-      monto: cfgValues.valorDateoNuevo,
-      montoAsesor: cfgValues.valorDateoNuevo,
-      montoConvenio: 0,
-      valorNuevoDirectoFinal: 0,
-      descuentoMontoAplicado: montoAvance,
-      reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} + Avance → comercial dateo_nuevo | convenio $0`,
-      camposUsados: ['valorDateoNuevo'],
-      explicacion: `Cliente ${cliente} con descuento Avance en la factura: el asesor comercial cobra el dateo vía convenio y el convenio queda en $0 porque ya cobró con ese descuento.`,
-    }
-  }
   return {
     base: cfgValues.valorIncentivoCaso3,
     monto: cfgValues.valorDateoNuevo,
@@ -580,6 +549,6 @@ export function calcularComision(p: ParametrosCalculoComision): ResultadoCalculo
     descuentoMontoAplicado: null,
     reglaAplicada: `Caso 3 · Comercial+convenio · ${etiqueta} → comercial dateo_nuevo | convenio incentivo (Global si no tiene propio)`,
     camposUsados: ['valorDateoNuevo', 'valorIncentivoCaso3'],
-    explicacion: `Cliente ${cliente}: el asesor comercial cobra el dateo vía convenio y el convenio cobra su incentivo por tipo de vehículo. Con cliente ${cliente}, un informativo puesto en caja no cambia nada.`,
+    explicacion: `Cliente ${cliente}: el asesor comercial cobra el dateo vía convenio y el convenio cobra su incentivo por tipo de vehículo.`,
   }
 }

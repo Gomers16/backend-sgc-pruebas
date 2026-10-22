@@ -26,7 +26,8 @@ import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   calcularComision,
   decidirCasoComision,
-  esAvanceEfectivo,
+  convenioSinComisionPorDescuento,
+  esDescuentoFinalAvance,
   inferTipoVehiculoComision,
   isRTM,
   resolveConfigComision,
@@ -47,6 +48,9 @@ export interface DescuentoComisionResuelto {
   descuentoOrigenCaja: boolean
   /** Código del descuento activo (o null) — el que usa calcularComision(). */
   codigoDescuentoActivo: string | null
+  /** Código del descuento final de la factura (null si no tiene): decide el pago del convenio. */
+  codigoDescuentoFinal: string | null
+  /** El descuento final es Avance (monto de avance y marca es_avance informativa). */
   esAvance: boolean
   montoAvance: number
 }
@@ -92,12 +96,12 @@ export async function resolverDescuentoComision(
   // 🆕 AVANCE — detectar y resolver monto según tipo vehículo
   // ══════════════════════════════════════════════════════════
   // Manda el descuento final de la factura (el del ticket): si la cajera
-  // quitó o cambió un Avance pre-marcado, ya no es avance. La marca
-  // es_avance del dateo es solo informativa.
-  const esAvance = esAvanceEfectivo({
-    caso,
-    codigoDescuento: ticket.descuentoId ? codigoDescuentoActivo : null,
-  })
+  // quitó o cambió el pre-marcado, cuenta lo que quedó. Con convenio,
+  // cualquier descuento final deja al convenio en $0
+  // (convenioSinComisionPorDescuento); Avance solo decide el monto de
+  // avance guardado. La marca es_avance del dateo es solo informativa.
+  const codigoDescuentoFinal = ticket.descuentoId ? codigoDescuentoActivo : null
+  const esAvance = esDescuentoFinalAvance({ caso, codigoDescuentoFinal })
 
   // Monto real del AVANCE:
   // 1. Si la cajera ingresó un monto explícito (descuentoMontoAplicado > 0) → usar ese
@@ -128,7 +132,14 @@ export async function resolverDescuentoComision(
     }
   }
 
-  return { descuentoIdActivo, descuentoOrigenCaja, codigoDescuentoActivo, esAvance, montoAvance }
+  return {
+    descuentoIdActivo,
+    descuentoOrigenCaja,
+    codigoDescuentoActivo,
+    codigoDescuentoFinal,
+    esAvance,
+    montoAvance,
+  }
 }
 
 export interface EntradaComisionRTM {
@@ -138,7 +149,6 @@ export interface EntradaComisionRTM {
   escenario: EscenarioCliente
   tuvoContinuidad: boolean
   descuento: DescuentoComisionResuelto
-  origenDescuento: OrigenDescuento
   cfgValues: ConfigComisionResuelta
   recValues: ConfigRecurrenciaResuelta
   asesorConvenioIdReal: number | null
@@ -161,9 +171,9 @@ export function construirComisionRTM(p: EntradaComisionRTM): Comision | null {
 export function construirComisionRTMDetallada(
   p: EntradaComisionRTM
 ): { comision: Comision; resultado: ResultadoCalculoComision } | null {
-  const { caso, dateo, ticket, escenario, tuvoContinuidad, origenDescuento } = p
+  const { caso, dateo, ticket, escenario, tuvoContinuidad } = p
   const { cfgValues, recValues, asesorConvenioIdReal, tipoVehiculoComision, now, usuarioId } = p
-  const { esAvance, montoAvance, codigoDescuentoActivo } = p.descuento
+  const { esAvance, montoAvance, codigoDescuentoActivo, codigoDescuentoFinal } = p.descuento
 
   // ════════════════════════════════════════════════════
   //  CASO 1: SIN CONVENIO — Comercial datea directo
@@ -194,10 +204,9 @@ export function construirComisionRTMDetallada(
       caso: 'SIN_CONVENIO',
       escenario,
       tuvoContinuidad,
-      esAvance: false,
       montoAvance: 0,
       codigoDescuento: codigoDescuentoActivo,
-      origenDescuento,
+      codigoDescuentoFinal,
       cfgValues,
       recValues,
     })
@@ -237,10 +246,9 @@ export function construirComisionRTMDetallada(
       caso: 'CONVENIO_SELF',
       escenario,
       tuvoContinuidad,
-      esAvance,
       montoAvance,
       codigoDescuento: codigoDescuentoActivo,
-      origenDescuento,
+      codigoDescuentoFinal,
       cfgValues,
       recValues,
     })
@@ -283,10 +291,9 @@ export function construirComisionRTMDetallada(
     caso: 'CONVENIO_COMERCIAL',
     escenario,
     tuvoContinuidad,
-    esAvance,
     montoAvance,
     codigoDescuento: codigoDescuentoActivo,
-    origenDescuento,
+    codigoDescuentoFinal,
     cfgValues,
     recValues,
   })
@@ -454,7 +461,6 @@ export interface ValorConfigUsado {
 export type CodigoAlertaComision =
   | 'CONFIG_EN_CERO'
   | 'SIN_COMISION_TICKET'
-  | 'AVANCE_HEREDADO'
   | 'SIN_CONTINUIDAD'
   | 'ESTIMADO'
   | 'NO_MODIFICADA'
@@ -486,8 +492,8 @@ export interface DesgloseComision {
     codigo: string | null
     origen: OrigenDescuento | null
     origenTexto: string
-    /** Marca es_avance del dateo (la usa el motor, no el código). */
-    esAvance: boolean
+    /** Con convenio y descuento final: la comisión del convenio queda en $0 (convenioSinComisionPorDescuento). */
+    convenioSinComision: boolean
   }
   /** reglaAplicada del motor (o la guardada si no se recalculó). */
   regla: string | null
@@ -687,7 +693,6 @@ function ejecutarMotor(
     escenario: ctx.escenario,
     tuvoContinuidad,
     descuento: ctx.descuento,
-    origenDescuento: ctx.descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
     cfgValues: ctx.cfgValues,
     recValues: ctx.recValues,
     asesorConvenioIdReal: ctx.asesorConvenioIdReal,
@@ -709,10 +714,8 @@ export function armarDesglose(p: {
   continuidadEstado: string | null
   codigoDescuento: string | null
   origenDescuento: OrigenDescuento | null
-  /** esAvanceEfectivo(): el descuento final es Avance. */
-  esAvance: boolean
-  /** Marca es_avance del dateo (solo informativa). */
-  marcaAvanceDateo: boolean
+  /** Código del descuento final de la factura (null si no tiene). */
+  codigoDescuentoFinal: string | null
   cfgValues: ConfigComisionResuelta
   recValues: ConfigRecurrenciaResuelta
   resultado: ResultadoCalculoComision | null
@@ -803,17 +806,9 @@ export function armarDesglose(p: {
       mensaje: `El turno viene de un ticket de Excepción de Dateo aprobado sin comisión para ${quien || 'el asesor'}: esa decisión se respeta y queda en $0${motor}.`,
     })
   }
-  const codigo = p.codigoDescuento
-  if (conConvenio && p.marcaAvanceDateo && !p.esAvance) {
-    alertas.push({
-      codigo: 'AVANCE_HEREDADO',
-      tipo: 'warning',
-      mensaje:
-        caso === 'CONVENIO_SELF'
-          ? 'El dateo traía Avance, pero el descuento final de la factura no es Avance: el asesor convenio cobra su comisión.'
-          : 'El dateo traía Avance, pero el descuento final de la factura no es Avance: el convenio cobra su comisión.',
-    })
-  }
+  // Con convenio manda el descuento final de la factura; en el Caso 1, el
+  // activo (el de la factura o, si no tiene, el pre-marcado en el dateo).
+  const codigo = conConvenio ? p.codigoDescuentoFinal : p.codigoDescuento
 
   const continuidadAplica = conConvenio
   const continuidadTexto = !continuidadAplica
@@ -847,7 +842,10 @@ export function armarDesglose(p: {
         : p.origenDescuento === 'CAJA'
           ? 'Puesto en caja (el dateo no traía descuento)'
           : 'Pre-marcado en el dateo',
-      esAvance: p.esAvance,
+      convenioSinComision: convenioSinComisionPorDescuento({
+        caso,
+        codigoDescuentoFinal: p.codigoDescuentoFinal,
+      }),
     },
     regla: resultado?.reglaAplicada ?? guardada?.reglaAplicada ?? null,
     explicacion: resultado
@@ -891,9 +889,7 @@ function desgloseDe(
     continuidadEstado: extra.continuidadEstado,
     codigoDescuento: ctx.descuento.codigoDescuentoActivo,
     origenDescuento: ctx.descuento.descuentoOrigenCaja ? 'CAJA' : 'DATEO',
-    // Caso 1 nunca tiene avance (construirComisionRTM lo guarda en false).
-    esAvance: ctx.caso === 'SIN_CONVENIO' ? false : ctx.descuento.esAvance,
-    marcaAvanceDateo: Boolean(ctx.dateo.esAvance),
+    codigoDescuentoFinal: ctx.descuento.codigoDescuentoFinal,
     cfgValues: ctx.cfgValues,
     recValues: ctx.recValues,
     resultado: extra.resultado,

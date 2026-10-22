@@ -2,7 +2,8 @@ import { test } from '@japa/runner'
 import Database from '@adonisjs/lucid/services/db'
 import {
   calcularComision,
-  esAvanceEfectivo,
+  convenioSinComisionPorDescuento,
+  esDescuentoFinalAvance,
   resolveConfigComision,
   resolveConfigRecurrencia,
   type CasoComision,
@@ -15,9 +16,10 @@ import { armarDesglose } from '#services/comision_ticket_service'
 // Lo que promete el diálogo (desglose: montos, regla, explicación y avisos)
 // contra lo que paga calcularComision() con la configuración vigente de la
 // BD, para los 3 casos, escenarios, continuidad, vehículos, los 7 descuentos
-// del catálogo más "sin descuento", origen (dateo o caja) y marca de avance
-// del dateo (solo informativa: manda el descuento final, esAvanceEfectivo).
-// Solo lee.
+// del catálogo más "sin descuento", origen (dateo o caja) y descuento
+// quitado en caja (pre-marcado en el dateo, factura sin descuento). Regla:
+// con convenio, cualquier descuento final deja al convenio en $0
+// (convenioSinComisionPorDescuento). Solo lee.
 
 const SIN_FILA = 999999999 // asesor sin fila propia → configuración Global
 
@@ -64,18 +66,25 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                 for (const origen of (codigo
                   ? ['DATEO', 'CAJA']
                   : [null]) as (OrigenDescuento | null)[])
-                  for (const marca of caso === 'SIN_CONVENIO' ? [false] : [false, true]) {
+                  for (const quitado of origen === 'DATEO' ? [false, true] : [false]) {
                     combinaciones++
-                    const esAvance = esAvanceEfectivo({ caso, codigoDescuento: codigo })
-                    const donde = `${caso}/${convenioId}/${tv}/${escenario}/${continuidad}/${codigo}/${origen}/marca=${marca}`
+                    const codigoFinal = quitado ? null : codigo
+                    const enCero = convenioSinComisionPorDescuento({
+                      caso,
+                      codigoDescuentoFinal: codigoFinal,
+                    })
+                    const esAvance = esDescuentoFinalAvance({
+                      caso,
+                      codigoDescuentoFinal: codigoFinal,
+                    })
+                    const donde = `${caso}/${convenioId}/${tv}/${escenario}/${continuidad}/${codigo}/${origen}/quitado=${quitado}`
                     const r = calcularComision({
                       caso,
                       escenario,
                       tuvoContinuidad: continuidad !== 'ROTA',
-                      esAvance,
                       montoAvance: esAvance ? 10000 : 0,
                       codigoDescuento: codigo,
-                      origenDescuento: origen,
+                      codigoDescuentoFinal: codigoFinal,
                       cfgValues,
                       recValues,
                     })
@@ -86,8 +95,7 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                       continuidadEstado: caso === 'SIN_CONVENIO' ? null : continuidad,
                       codigoDescuento: codigo,
                       origenDescuento: origen,
-                      esAvance,
-                      marcaAvanceDateo: marca,
+                      codigoDescuentoFinal: codigoFinal,
                       cfgValues,
                       recValues,
                       resultado: r,
@@ -127,49 +135,59 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
                     assert.notInclude(d.explicacion, 'valor básico', donde)
                     if (caso === 'SIN_CONVENIO' && escenario === 'NUEVO' && codigo)
                       assert.include(d.explicacion, 'valor de recurrencia', donde)
-                    if (caso === 'CONVENIO_SELF' && usados.length === 0)
-                      assert.include(d.explicacion, 'queda en $0', donde)
-                    if (caso === 'CONVENIO_COMERCIAL') {
-                      const convenioPorRegla = !r.camposUsados.includes('valorIncentivoCaso3')
-                      if (convenioPorRegla)
-                        assert.include(d.explicacion, 'convenio queda en $0', donde)
-                      else assert.notInclude(d.explicacion, 'queda en $0', donde)
-                    }
-                    if (caso !== 'CONVENIO_COMERCIAL' && usados.length)
-                      assert.notInclude(d.explicacion, 'queda en $0', donde)
+                    if (enCero)
+                      assert.include(
+                        d.explicacion,
+                        caso === 'CONVENIO_SELF'
+                          ? 'cualquier descuento deja en cero la comisión del asesor convenio'
+                          : 'cualquier descuento deja en cero la comisión del convenio',
+                        donde
+                      )
+                    else assert.notInclude(d.explicacion, 'en cero', donde)
 
-                    // 3b. Avance (dateo o caja, cualquier escenario): Caso 3 convenio $0 y
-                    // el comercial conserva su valor; Caso 2 en $0; Caso 1 lo ignora.
-                    if (codigo === 'AVANCE') {
-                      if (caso === 'CONVENIO_COMERCIAL') {
-                        assert.equal(r.montoConvenio, 0, donde)
-                        assert.equal(r.montoAsesor, cfgValues.valorDateoNuevo, donde)
-                        assert.include(d.explicacion, 'Avance', donde)
-                      } else if (caso === 'CONVENIO_SELF') {
-                        assert.equal(r.montoAsesor, 0, donde)
-                        assert.include(d.explicacion, 'Avance', donde)
-                      } else {
-                        assert.isFalse(esAvance, donde)
-                        assert.notInclude(r.reglaAplicada, 'Avance', donde)
-                      }
-                      assert.equal(d.descuento.esAvance, caso !== 'SIN_CONVENIO', donde)
-                    } else {
-                      // La marca sola ya no hace avance.
-                      assert.isFalse(esAvance, donde)
-                      assert.notInclude(r.reglaAplicada, '+ Avance', donde)
-                    }
-
-                    // 4. Avisos: cada valor usado en 0 trae CONFIG_EN_CERO; avance heredado.
-                    const enCero = usados.filter((v) => v.valor === 0).length
+                    // 3b. Regla del descuento: con convenio y descuento final (los 7,
+                    // cualquier escenario y origen) el convenio queda en $0 y el
+                    // comercial conserva su valor; quitado en caja o Caso 1, no cambia.
+                    assert.equal(enCero, caso !== 'SIN_CONVENIO' && !!codigo && !quitado, donde)
+                    assert.equal(d.descuento.convenioSinComision, enCero, donde)
                     assert.equal(
-                      d.alertas.filter((a) => a.codigo === 'CONFIG_EN_CERO').length,
-                      enCero,
+                      d.descuento.codigo,
+                      caso === 'SIN_CONVENIO' ? codigo : codigoFinal,
                       donde
                     )
-                    const heredado = caso !== 'SIN_CONVENIO' && marca && !esAvance
+                    if (caso === 'CONVENIO_COMERCIAL') {
+                      assert.equal(r.montoAsesor, cfgValues.valorDateoNuevo, donde)
+                      assert.equal(
+                        r.montoConvenio,
+                        enCero ? 0 : cfgValues.valorIncentivoCaso3,
+                        donde
+                      )
+                    } else if (caso === 'CONVENIO_SELF') {
+                      if (enCero) assert.equal(r.montoAsesor, 0, donde)
+                      else
+                        assert.equal(
+                          r.montoAsesor,
+                          escenario === 'NUEVO' || continuidad !== 'ROTA'
+                            ? cfgValues.valorIncentivo
+                            : recValues.valorRecurrente,
+                          donde
+                        )
+                    } else {
+                      assert.equal(
+                        r.montoAsesor,
+                        escenario === 'NUEVO' && !codigo
+                          ? cfgValues.valorNuevoDirecto
+                          : recValues.valorRecurrente,
+                        donde
+                      )
+                    }
+                    assert.equal(r.descuentoMontoAplicado, esAvance ? 10000 : null, donde)
+
+                    // 4. Avisos: cada valor usado en 0 trae CONFIG_EN_CERO.
+                    const enCeroConfig = usados.filter((v) => v.valor === 0).length
                     assert.equal(
-                      d.alertas.some((a) => a.codigo === 'AVANCE_HEREDADO'),
-                      heredado,
+                      d.alertas.filter((a) => a.codigo === 'CONFIG_EN_CERO').length,
+                      enCeroConfig,
                       donde
                     )
                     assert.isTrue(d.estimado, donde)
@@ -192,10 +210,9 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
       caso: 'CONVENIO_COMERCIAL',
       escenario: 'NUEVO',
       tuvoContinuidad: true,
-      esAvance: false,
       montoAvance: 0,
       codigoDescuento: null,
-      origenDescuento: null,
+      codigoDescuentoFinal: null,
       cfgValues,
       recValues,
     })
@@ -206,8 +223,7 @@ test.group('Desglose de comisión = calcularComision (configuración vigente)', 
       continuidadEstado: 'CONTINUA',
       codigoDescuento: null,
       origenDescuento: null,
-      esAvance: false,
-      marcaAvanceDateo: false,
+      codigoDescuentoFinal: null,
       cfgValues,
       recValues,
       resultado: r,

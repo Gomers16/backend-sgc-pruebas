@@ -28,7 +28,6 @@ import {
   inferTipoVehiculoComision,
   decidirCasoComision,
   type EscenarioCliente,
-  type OrigenDescuento,
 } from '#services/comision_calculo_service'
 import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
 import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
@@ -974,28 +973,21 @@ export default class FacturacionTicketsController {
    * ══════════════════════════════════════════════════════════
    * CON CONVENIO — Asesor CONVENIO datea él mismo
    * ══════════════════════════════════════════════════════════
-   *   🆕 Nuevo       → incentivo ($14.000)
-   *   🆕 Nuevo + INFORMATIVO_POLICIA (caja) → convenio $0
-   *   🆕 Nuevo + INFORMATIVO_EMPLEADO (caja) → convenio $0
-   *   🔄 Recurrente  + dató la última visita → incentivo
-   *   🔄 Recurrente  + NO dató la última visita → valor_dateo_recurrencia
-   *   💛 Recuperación → valor_dateo_recuperacion
+   *   🆕 Nuevo       → incentivo
+   *   🔄 Recurrente / 💛 Recuperación → incentivo (continuidad) o valor_dateo_recurrencia (rota)
    *
    * ══════════════════════════════════════════════════════════
    * CON CONVENIO — COMERCIAL datea
    * ══════════════════════════════════════════════════════════
-   *   🆕 Nuevo       → comercial: valor_dateo ($8.600) + convenio: incentivo ($14.000)
-   *   🆕 Nuevo + INFORMATIVO_POLICIA (caja) → comercial: $4.300 | convenio: $0
-   *   🆕 Nuevo + INFORMATIVO_EMPLEADO (caja) → comercial: $4.300 | convenio: $0
-   *   🔄 Recurrente  → comercial: valor_dateo_recurrencia + convenio: incentivo_global
-   *   💛 Recuperación → comercial: valor_dateo_recuperacion + convenio: incentivo_global
+   *   Cualquier escenario → comercial: valor_dateo + convenio: incentivo por tipo
    *
    * ══════════════════════════════════════════════════════════
-   * 🆕 AVANCE (cualquier caso con convenio)
+   * DESCUENTO EN LA FACTURA (cualquier caso con convenio)
    * ══════════════════════════════════════════════════════════
-   *   → montoConvenio = '0' (incentivo ya se aplicó como descuento en factura)
-   *   → montoAsesor   = intacto (el comercial sí cobra su dateo)
-   *   → esAvance = true en la comisión (trazabilidad contable)
+   *   Cualquier descuento final de la factura (convenioSinComisionPorDescuento):
+   *   → comisión del convenio = $0 (en el Caso 2, la del asesor convenio)
+   *   → montoAsesor del comercial intacto (Caso 3)
+   *   → Avance: además guarda el monto de avance y esAvance = true (trazabilidad)
    */
   public async confirmar({ params, request, response, auth }: HttpContext) {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
@@ -1328,7 +1320,7 @@ export default class FacturacionTicketsController {
     })
 
     const descuento = await resolverDescuentoComision(ticket, dateo, tipoVehiculoComision, caso)
-    const { descuentoOrigenCaja, esAvance, montoAvance } = descuento
+    const { esAvance, montoAvance } = descuento
 
     console.log(`🆕 esAvance: ${esAvance} | montoAvance: $${montoAvance}`)
     // ══════════════════════════════════════════════════════════
@@ -1359,7 +1351,6 @@ export default class FacturacionTicketsController {
       : esClienteRecurrente
         ? 'RECURRENTE'
         : 'RECUPERACION'
-    const origenDescuento: OrigenDescuento = descuentoOrigenCaja ? 'CAJA' : 'DATEO'
 
     // Persistir el resultado en el turno para que la pestaña Continuidad lo
     // pueda mostrar sin recalcular (ver app/services/continuidad_service.ts).
@@ -1414,7 +1405,6 @@ export default class FacturacionTicketsController {
         escenario,
         tuvoContinuidad,
         descuento,
-        origenDescuento,
         cfgValues,
         recValues,
         asesorConvenioIdReal,

@@ -229,7 +229,7 @@ test.group('Comisiones: desglose del motor = previsualización = guardado = GET'
     assert.notInclude(d.explicacion, 'valor básico de dateo')
   }).timeout(60000)
 
-  test('Caso 3: informativo especial en caja → convenio $0; mismo valor en las 3 lecturas', async ({
+  test('Caso 3: descuento en caja → convenio $0; mismo valor en las 3 lecturas', async ({
     assert,
     client,
   }) => {
@@ -246,7 +246,8 @@ test.group('Comisiones: desglose del motor = previsualización = guardado = GET'
     assert.equal(conv.id, convenio.id)
     assert.equal(conv.cobraAsesorConvenio.id, convenioAsesor.id)
     assert.equal(conv.despues, 0)
-    assert.include(d.explicacion, 'convenio queda en $0')
+    assert.include(d.explicacion, 'cualquier descuento deja en cero la comisión del convenio')
+    assert.isTrue(d.descuento.convenioSinComision)
     assert.equal(d.continuidad.aplica, true)
     assert.isNotNull(d.continuidad.estado)
   }).timeout(60000)
@@ -277,7 +278,7 @@ test.group('Comisiones: desglose del motor = previsualización = guardado = GET'
       bodyDescuento(DESCUENTO.OBSEQUIO, 0, 'C2')
     )
     assert.equal(d.beneficiarios[0].despues, 0)
-    assert.include(d.regla, 'INFORMATIVO_OBSEQUIO aplicado en caja')
+    assert.include(d.regla, 'descuento INFORMATIVO_OBSEQUIO → $0')
     assert.deepEqual(
       d.configuracion.filter((v: any) => v.usado),
       [],

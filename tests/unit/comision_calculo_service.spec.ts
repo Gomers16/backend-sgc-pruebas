@@ -1,10 +1,12 @@
 import { test } from '@japa/runner'
 import {
   calcularComision,
+  convenioSinComisionPorDescuento,
   decidirCasoComision,
-  esAvanceEfectivo,
+  esDescuentoFinalAvance,
   type ConfigComisionResuelta,
   type ConfigRecurrenciaResuelta,
+  type ParametrosCalculoComision,
 } from '#services/comision_calculo_service'
 
 // Fixtures fijos, calcados de los valores reales de la fila de config global
@@ -26,20 +28,40 @@ const recValues: ConfigRecurrenciaResuelta = {
   valorRecuperacion: 8600,
 }
 
+const CODIGOS = [
+  'INFORMATIVO',
+  'AVANCE',
+  'INFORMATIVO_EMPLEADO',
+  'INFORMATIVO_POLICIA',
+  'AVANCE_PROPIETARIO',
+  'INFORMATIVO_OBSEQUIO',
+  'INFORMATIVO_SOAT_RTM',
+]
+const ESCENARIOS = ['NUEVO', 'RECURRENTE', 'RECUPERACION'] as const
+
+/** calcularComision con el descuento final = el activo (lo normal al confirmar). */
+const calc = (
+  p: Pick<ParametrosCalculoComision, 'caso' | 'escenario'> &
+    Partial<Omit<ParametrosCalculoComision, 'caso' | 'escenario'>>
+) =>
+  calcularComision({
+    tuvoContinuidad: false,
+    montoAvance: 0,
+    codigoDescuento: null,
+    codigoDescuentoFinal: p.codigoDescuento ?? null,
+    cfgValues,
+    recValues,
+    ...p,
+  })
+
 test.group('comision_calculo_service · calcularComision · Caso 1 (SIN_CONVENIO)', () => {
   test('Nuevo + informativo → paga valor_dateo_recurrencia (CAMBIO 1, antes era $0)', ({
     assert,
   }) => {
-    const r = calcularComision({
+    const r = calc({
       caso: 'SIN_CONVENIO',
       escenario: 'NUEVO',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
       codigoDescuento: 'INFORMATIVO_POLICIA',
-      origenDescuento: 'DATEO',
-      cfgValues,
-      recValues,
     })
     assert.equal(r.monto, 4320)
     assert.equal(r.montoAsesor, 4320)
@@ -51,172 +73,101 @@ test.group('comision_calculo_service · calcularComision · Caso 1 (SIN_CONVENIO
   test('Nuevo sin informativo → sigue pagando valor_nuevo_directo (sin regresión)', ({
     assert,
   }) => {
-    const r = calcularComision({
-      caso: 'SIN_CONVENIO',
-      escenario: 'NUEVO',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
+    const r = calc({ caso: 'SIN_CONVENIO', escenario: 'NUEVO' })
     assert.equal(r.montoAsesor, 17280)
     assert.equal(r.montoConvenio, 0)
   })
 
   test('Recurrente → sin cambios (sin regresión)', ({ assert }) => {
-    const r = calcularComision({
-      caso: 'SIN_CONVENIO',
-      escenario: 'RECURRENTE',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
+    const r = calc({ caso: 'SIN_CONVENIO', escenario: 'RECURRENTE' })
     assert.equal(r.montoAsesor, 4320)
     assert.equal(r.montoConvenio, 0)
   })
+
+  test('el descuento no deja nada en $0 en el Caso 1 (7 descuentos, 3 escenarios)', ({
+    assert,
+  }) => {
+    for (const escenario of ESCENARIOS) {
+      for (const codigoDescuento of CODIGOS) {
+        const r = calc({ caso: 'SIN_CONVENIO', escenario, codigoDescuento })
+        assert.equal(r.montoAsesor, 4320, `${escenario}/${codigoDescuento}`)
+        assert.isNull(r.descuentoMontoAplicado)
+      }
+    }
+  })
 })
 
-test.group(
-  'comision_calculo_service · calcularComision · Caso 2 (CONVENIO_SELF) — regresión',
-  () => {
-    test('Avance → sigue en $0/$0', ({ assert }) => {
-      const r = calcularComision({
-        caso: 'CONVENIO_SELF',
-        escenario: 'NUEVO',
-        tuvoContinuidad: false,
-        esAvance: true,
-        montoAvance: 6000,
-        codigoDescuento: null,
-        origenDescuento: null,
-        cfgValues,
-        recValues,
-      })
-      assert.equal(r.montoAsesor, 0)
-      assert.equal(r.montoConvenio, 0)
-      assert.equal(r.descuentoMontoAplicado, 6000)
-    })
+test.group('comision_calculo_service · calcularComision · Caso 2 (CONVENIO_SELF)', () => {
+  test('Nuevo sin descuento → sigue pagando valorIncentivo', ({ assert }) => {
+    const r = calc({ caso: 'CONVENIO_SELF', escenario: 'NUEVO' })
+    assert.equal(r.montoAsesor, 15000)
+    assert.equal(r.montoConvenio, 0)
+  })
 
-    test('Nuevo → sigue pagando valorIncentivo', ({ assert }) => {
-      const r = calcularComision({
-        caso: 'CONVENIO_SELF',
-        escenario: 'NUEVO',
-        tuvoContinuidad: false,
-        esAvance: false,
-        montoAvance: 0,
-        codigoDescuento: null,
-        origenDescuento: null,
-        cfgValues,
-        recValues,
-      })
-      assert.equal(r.montoAsesor, 15000)
-      assert.equal(r.montoConvenio, 0)
+  test('cualquier descuento final → $0 en todos los escenarios, con y sin continuidad', ({
+    assert,
+  }) => {
+    for (const escenario of ESCENARIOS) {
+      for (const tuvoContinuidad of [true, false]) {
+        for (const codigoDescuento of CODIGOS) {
+          const r = calc({ caso: 'CONVENIO_SELF', escenario, tuvoContinuidad, codigoDescuento })
+          const k = `${escenario}/${tuvoContinuidad}/${codigoDescuento}`
+          assert.equal(r.monto, 0, k)
+          assert.equal(r.montoAsesor, 0, k)
+          assert.equal(r.montoConvenio, 0, k)
+          assert.deepEqual(r.camposUsados, [], k)
+        }
+      }
+    }
+  })
+
+  test('Avance guarda su monto; los demás descuentos no', ({ assert }) => {
+    const avance = calc({
+      caso: 'CONVENIO_SELF',
+      escenario: 'NUEVO',
+      montoAvance: 6000,
+      codigoDescuento: 'AVANCE',
     })
-  }
-)
+    assert.equal(avance.descuentoMontoAplicado, 6000)
+    const otro = calc({
+      caso: 'CONVENIO_SELF',
+      escenario: 'NUEVO',
+      montoAvance: 6000,
+      codigoDescuento: 'AVANCE_PROPIETARIO',
+    })
+    assert.isNull(otro.descuentoMontoAplicado)
+  })
+})
 
 test.group('comision_calculo_service · calcularComision · Caso 3 (CONVENIO_COMERCIAL)', () => {
-  test('Nuevo + normal → montoAsesor=$8,640, montoConvenio sin cambios', ({ assert }) => {
-    const r = calcularComision({
-      caso: 'CONVENIO_COMERCIAL',
-      escenario: 'NUEVO',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
-    assert.equal(r.montoAsesor, 8640)
-    assert.equal(r.montoConvenio, 20000)
+  test('sin descuento → comercial $8.640 y convenio $20.000 en los 3 escenarios', ({ assert }) => {
+    for (const escenario of ESCENARIOS) {
+      const r = calc({ caso: 'CONVENIO_COMERCIAL', escenario, tuvoContinuidad: true })
+      assert.equal(r.montoAsesor, 8640, escenario)
+      assert.equal(r.montoConvenio, 20000, escenario)
+    }
   })
 
-  test('Nuevo + avance → montoAsesor=$8,640, montoConvenio=$0 sin cambios', ({ assert }) => {
-    const r = calcularComision({
-      caso: 'CONVENIO_COMERCIAL',
-      escenario: 'NUEVO',
-      tuvoContinuidad: false,
-      esAvance: true,
-      montoAvance: 6000,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
-    assert.equal(r.montoAsesor, 8640)
-    assert.equal(r.montoConvenio, 0)
+  test('cualquier descuento final → convenio $0 y el comercial conserva su valor', ({ assert }) => {
+    for (const escenario of ESCENARIOS) {
+      for (const codigoDescuento of CODIGOS) {
+        const r = calc({ caso: 'CONVENIO_COMERCIAL', escenario, codigoDescuento })
+        const k = `${escenario}/${codigoDescuento}`
+        assert.equal(r.montoAsesor, 8640, k)
+        assert.equal(r.montoConvenio, 0, k)
+        assert.deepEqual(r.camposUsados, ['valorDateoNuevo'], k)
+      }
+    }
   })
 
-  test('Recurrente + normal → montoAsesor=$8,640, montoConvenio sin cambios', ({ assert }) => {
-    const r = calcularComision({
-      caso: 'CONVENIO_COMERCIAL',
-      escenario: 'RECURRENTE',
-      tuvoContinuidad: true,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
-    assert.equal(r.montoAsesor, 8640)
-    assert.equal(r.montoConvenio, 20000)
-  })
-
-  test('Recurrente + avance → montoAsesor=$8,640, montoConvenio=$0 sin cambios', ({ assert }) => {
-    const r = calcularComision({
-      caso: 'CONVENIO_COMERCIAL',
-      escenario: 'RECURRENTE',
-      tuvoContinuidad: true,
-      esAvance: true,
-      montoAvance: 6000,
-      codigoDescuento: null,
-      origenDescuento: null,
-      cfgValues,
-      recValues,
-    })
-    assert.equal(r.montoAsesor, 8640)
-    assert.equal(r.montoConvenio, 0)
-  })
-
-  test('Nuevo + descuento especial en caja → montoAsesor=$8,640 (CAMBIO 2, antes era $4,320)', ({
+  test('descuento quitado en caja (dateo pre-marcado, factura sin descuento) → convenio cobra', ({
     assert,
   }) => {
-    const r = calcularComision({
+    const r = calc({
       caso: 'CONVENIO_COMERCIAL',
       escenario: 'NUEVO',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: 'INFORMATIVO_POLICIA',
-      origenDescuento: 'CAJA',
-      cfgValues,
-      recValues,
-    })
-    assert.equal(r.montoAsesor, 8640)
-    assert.equal(r.montoConvenio, 0)
-  })
-
-  test('Recuperación + normal → montoAsesor=$8,640 (misma fórmula que Recurrente, sin rama especial de caja)', ({
-    assert,
-  }) => {
-    const r = calcularComision({
-      caso: 'CONVENIO_COMERCIAL',
-      escenario: 'RECUPERACION',
-      tuvoContinuidad: false,
-      esAvance: false,
-      montoAvance: 0,
-      codigoDescuento: 'INFORMATIVO_POLICIA',
-      origenDescuento: 'CAJA',
-      cfgValues,
-      recValues,
+      codigoDescuento: 'AVANCE',
+      codigoDescuentoFinal: null,
     })
     assert.equal(r.montoAsesor, 8640)
     assert.equal(r.montoConvenio, 20000)
@@ -242,39 +193,39 @@ test.group('decidirCasoComision', () => {
   })
 })
 
-test.group('comision_calculo_service · esAvanceEfectivo (manda el descuento final)', () => {
-  test('AVANCE con convenio es avance; el Caso 1 nunca', ({ assert }) => {
-    assert.isTrue(esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: 'AVANCE' }))
-    assert.isTrue(esAvanceEfectivo({ caso: 'CONVENIO_SELF', codigoDescuento: 'AVANCE' }))
-    assert.isFalse(esAvanceEfectivo({ caso: 'SIN_CONVENIO', codigoDescuento: 'AVANCE' }))
-  })
-
-  test('otro descuento, sin descuento o AVANCE_PROPIETARIO no son avance', ({ assert }) => {
-    for (const codigo of [null, 'INFORMATIVO', 'AVANCE_PROPIETARIO', 'INFORMATIVO_POLICIA']) {
+test.group('comision_calculo_service · convenioSinComisionPorDescuento', () => {
+  test('con convenio, cualquier código final; sin descuento o en el Caso 1, nunca', ({
+    assert,
+  }) => {
+    for (const codigo of CODIGOS) {
+      assert.isTrue(
+        convenioSinComisionPorDescuento({
+          caso: 'CONVENIO_COMERCIAL',
+          codigoDescuentoFinal: codigo,
+        })
+      )
+      assert.isTrue(
+        convenioSinComisionPorDescuento({ caso: 'CONVENIO_SELF', codigoDescuentoFinal: codigo })
+      )
       assert.isFalse(
-        esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: codigo }),
-        String(codigo)
+        convenioSinComisionPorDescuento({ caso: 'SIN_CONVENIO', codigoDescuentoFinal: codigo })
       )
     }
+    assert.isFalse(
+      convenioSinComisionPorDescuento({ caso: 'CONVENIO_COMERCIAL', codigoDescuentoFinal: null })
+    )
   })
 
-  test('Caso 3 con Avance: convenio $0 en nuevo, recurrente y recuperación', ({ assert }) => {
-    for (const escenario of ['NUEVO', 'RECURRENTE', 'RECUPERACION'] as const) {
-      for (const origenDescuento of ['DATEO', 'CAJA'] as const) {
-        const r = calcularComision({
-          caso: 'CONVENIO_COMERCIAL',
-          escenario,
-          tuvoContinuidad: true,
-          esAvance: esAvanceEfectivo({ caso: 'CONVENIO_COMERCIAL', codigoDescuento: 'AVANCE' }),
-          montoAvance: 0,
-          codigoDescuento: 'AVANCE',
-          origenDescuento,
-          cfgValues,
-          recValues,
-        })
-        assert.equal(r.montoConvenio, 0, `${escenario}/${origenDescuento}`)
-        assert.equal(r.montoAsesor, cfgValues.valorDateoNuevo, `${escenario}/${origenDescuento}`)
-      }
-    }
+  test('esDescuentoFinalAvance: solo AVANCE con convenio (monto de avance y marca informativa)', ({
+    assert,
+  }) => {
+    assert.isTrue(esDescuentoFinalAvance({ caso: 'CONVENIO_SELF', codigoDescuentoFinal: 'AVANCE' }))
+    assert.isFalse(esDescuentoFinalAvance({ caso: 'SIN_CONVENIO', codigoDescuentoFinal: 'AVANCE' }))
+    assert.isFalse(
+      esDescuentoFinalAvance({
+        caso: 'CONVENIO_COMERCIAL',
+        codigoDescuentoFinal: 'AVANCE_PROPIETARIO',
+      })
+    )
   })
 })
