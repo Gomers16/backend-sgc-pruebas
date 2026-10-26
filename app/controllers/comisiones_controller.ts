@@ -37,6 +37,7 @@ import {
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
 import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
+import { resolverMetasAsesores } from '#services/meta_asesor_service'
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 /* ========= Helpers ========= */
@@ -642,7 +643,11 @@ export default class ComisionesController {
     let year: number
     let month: number
 
-    if (mes && /^\d{4}-\d{2}$/.test(mes)) {
+    // Con mes, la meta sale de meta_comercial_asesor (asesor + mes + año, sin
+    // respaldo a meta_rtm). Sin mes, la respuesta queda como antes.
+    const porMes = !!mes && /^\d{4}-\d{2}$/.test(mes)
+
+    if (porMes) {
       const [y, m] = mes.split('-').map(Number)
       year = y
       month = m
@@ -680,12 +685,17 @@ export default class ComisionesController {
       if (c.asesorId !== null) cfgByAsesor.set(c.asesorId, c)
     }
 
+    const metasDelMes = porMes
+      ? await resolverMetasAsesores(asesorId ? [asesorId] : null, month, year)
+      : null
+
     const allIds = new Set<number>()
     if (asesorId) {
       allIds.add(asesorId)
     } else {
       countsByAsesor.forEach((_v, id) => allIds.add(id))
       cfgByAsesor.forEach((_v, id) => allIds.add(id))
+      metasDelMes?.forEach((_v, id) => allIds.add(id))
     }
 
     const asesorIds = Array.from(allIds)
@@ -711,6 +721,7 @@ export default class ComisionesController {
       const totalFacturacionVehiculos = counts.rtm_vehiculos * valorRtmVehiculo
       const totalFacturacionGlobal = totalFacturacionMotos + totalFacturacionVehiculos
       const info = asesoresMap.get(id)
+      const metaMes = metasDelMes?.get(id) ?? null
 
       return {
         asesor_id: id,
@@ -720,7 +731,9 @@ export default class ComisionesController {
         rtm_vehiculos: counts.rtm_vehiculos,
         total_rtm_motos: counts.rtm_motos,
         total_rtm_vehiculos: counts.rtm_vehiculos,
-        meta_global_rtm: metaRtm,
+        ...(metasDelMes
+          ? { meta_global_rtm: metaMes?.metaPesos ?? null, meta_fuente: metaMes?.fuente ?? null }
+          : { meta_global_rtm: metaRtm }),
         porcentaje_comision_meta: pctMeta,
         valor_rtm_moto: valorRtmMoto,
         valor_rtm_vehiculo: valorRtmVehiculo,
@@ -1832,7 +1845,20 @@ export default class ComisionesController {
     q.orderBy('asesor_id', 'asc').orderBy('tipo_vehiculo', 'asc')
 
     const rows = await q
-    return response.ok({ data: rows.map((c) => mapMetaToDto(c)) })
+
+    // Solo lectura: meta en pesos del mes en curso (Meta Comercial por Asesor).
+    const hoy = DateTime.now().setZone('America/Bogota')
+    const metaMesLabel = hoy.toFormat('yyyy-MM')
+    const ids = [...new Set(rows.map((c) => c.asesorId).filter((id): id is number => id !== null))]
+    const metasDelMes = await resolverMetasAsesores(ids, hoy.month, hoy.year)
+
+    return response.ok({
+      data: rows.map((c) => ({
+        ...mapMetaToDto(c),
+        meta_mes_pesos: c.asesorId !== null ? (metasDelMes.get(c.asesorId)?.metaPesos ?? null) : null,
+        meta_mes_label: metaMesLabel,
+      })),
+    })
   }
 
   public async metasUpsert({ request, response }: HttpContext) {
