@@ -2750,6 +2750,12 @@ router
           )
           return new ReportesAdministrativosController().superInformePdf(ctx)
         })
+        router.get('/super-informe/resumen-contable', async (ctx) => {
+          const { default: ReportesAdministrativosController } = await import(
+            '#controllers/reportes_administrativos_controller'
+          )
+          return new ReportesAdministrativosController().superInformeResumenContable(ctx)
+        })
         router.get('/super-informe/reconciliacion-rtm', async (ctx) => {
           const { default: ReportesAdministrativosController } = await import(
             '#controllers/reportes_administrativos_controller'

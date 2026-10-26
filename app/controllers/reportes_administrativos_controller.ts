@@ -38,6 +38,7 @@ import {
   construirExcelReporteSegundaVez,
   type FiltrosReporteSegundaVez,
 } from '#services/reporte_segunda_vez_service'
+import { obtenerResumenContable, textoRechazo, type ResumenContableRango } from '#services/resumen_contable_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -814,9 +815,10 @@ async function siDibujarTabla(
   doc: any,
   headers: { label: string; property: string; width: number; align?: 'left' | 'right' | 'center' }[],
   filas: Record<string, string | number>[],
-  filaTotalIndex: number | null = null,
+  filaTotalIndex: number | number[] | null = null,
   filasInformativas: number[] = []
 ) {
+  const filasNegrita = filaTotalIndex === null ? [] : ([] as number[]).concat(filaTotalIndex)
   // pdfkit-table solo lee headerColor/headerOpacity de CADA objeto de
   // columna (dh.headerColor dentro de document.js), no de la opción global
   // `headerColor` pasada a .table() — por eso el color de marca no se
@@ -832,7 +834,7 @@ async function siDibujarTabla(
     {
       prepareHeader: () => doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff'),
       prepareRow: (_row: any, _col: number, indexRow: number) => {
-        const esTotal = filaTotalIndex !== null && indexRow === filaTotalIndex
+        const esTotal = filasNegrita.includes(indexRow)
         const esInformativa = filasInformativas.includes(indexRow)
         doc
           .font(esTotal ? 'Helvetica-Bold' : esInformativa ? 'Helvetica-Oblique' : 'Helvetica')
@@ -947,7 +949,7 @@ function siDibujarAvisoCanal(doc: any, aviso: { aplica: boolean; mensaje: string
 }
 
 /**
- * Construye el PDF completo del Súper Informe: portada + 7 secciones (una
+ * Construye el PDF completo del Súper Informe: portada + 8 secciones (una
  * por página), reutilizando los datos ya calculados/verificados por los
  * compute*() de cada reporte — este builder solo dibuja, no vuelve a
  * calcular nada.
@@ -957,7 +959,8 @@ type SuperInformeDatos = {
   fechaFin: string
   generadoPor: string
   // Orden nuevo del Súper Informe: Meta Mensual, Meta Comercial, Ingresos
-  // por Canal, Servicios, Retención, Descuentos, Producción por Líder.
+  // por Canal, Servicios, Retención, Descuentos, Producción por Líder,
+  // Resumen contable (8, incluye segundas veces).
   metaMensual: Awaited<ReturnType<ReportesAdministrativosController['computeMetaMensualSuperInforme']>>
   metaComercial: Awaited<ReturnType<ReportesAdministrativosController['computeMetaComercialSuperInforme']>>
   ingresosCanal: Awaited<ReturnType<ReportesAdministrativosController['computeIngresosPorCanal']>>
@@ -973,10 +976,11 @@ type SuperInformeDatos = {
   reconciliacionRtm: Awaited<
     ReturnType<ReportesAdministrativosController['computeReconciliacionFacturacionRtm']>
   >
+  resumenContable: ResumenContableRango
 }
 
 /**
- * Dibuja la portada + las 7 secciones (todo EXCEPTO el pie de página) sobre
+ * Dibuja la portada + las 8 secciones (todo EXCEPTO el pie de página) sobre
  * un `doc` ya creado. Se usa dos veces desde construirSuperInformePdf():
  * una pasada "sonda" (para saber cuántas páginas físicas va a ocupar,
  * incluyendo el desborde automático de las tablas largas) y una pasada real
@@ -1610,6 +1614,70 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
       { width: SI_ANCHO_UTIL }
     )
   doc.fillColor('#000000')
+
+  // ===== 8. Resumen contable RTM y servicios =====
+  doc.addPage()
+  const rc = datos.resumenContable
+  siDibujarTituloSeccion(
+    doc,
+    8,
+    'Resumen contable RTM y servicios',
+    'Turnos del rango por servicio y tipo de vehículo (mismo criterio que Estadísticas de Turnos del Día): sin cancelados, inactivos ni placas TST; RTM separado en primera y segunda vez. Fuente: turnos_rtms.'
+  )
+  const filasRc = rc.filas.map((f) => ({
+    servicio: f.etiqueta,
+    motos: formatNumPdf(f.motos),
+    livianos: formatNumPdf(f.livianos),
+    otros: formatNumPdf(f.otros),
+    total: formatNumPdf(f.total),
+  }))
+  await siDibujarTabla(
+    doc,
+    [
+      { label: 'Servicio', property: 'servicio', width: 192 },
+      { label: 'Motos', property: 'motos', width: 80, align: 'right' },
+      { label: 'Livianos', property: 'livianos', width: 80, align: 'right' },
+      { label: 'Otros', property: 'otros', width: 80, align: 'right' },
+      { label: 'Total', property: 'total', width: 80, align: 'right' },
+    ],
+    filasRc,
+    // Subtotal RTM y TOTAL GENERAL en negrita.
+    rc.filas.flatMap((f, i) => (f.tipo === 'detalle' ? [] : [i]))
+  )
+  doc.moveDown(0.6)
+  siDibujarSubtitulo(doc, '% rechazo RTM')
+  siDibujarKpis(doc, [
+    { label: 'Primera vez', value: textoRechazo(rc.rechazo.primera_vez) },
+    { label: 'Segunda vez', value: textoRechazo(rc.rechazo.segunda_vez) },
+  ])
+  doc
+    .font('Helvetica')
+    .fontSize(8)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      `Sin resultado: ${formatNumPdf(rc.rechazo.primera_vez.sin_resultado)} (primera vez) · ${formatNumPdf(rc.rechazo.segunda_vez.sin_resultado)} (segunda vez). No entran al %.`,
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.moveDown(0.6)
+  doc
+    .font('Helvetica-Oblique')
+    .fontSize(7)
+    .fillColor(SI_COLOR_GRIS)
+    .text(
+      `${formatNumPdf(rc.sin_finalizar)} turnos aún sin finalizar (estado activo) están incluidos en esta tabla.`,
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+    .text(
+      'Esta sección incluye las segundas veces; por eso puede diferir de otras secciones, que las excluyen.',
+      SI_MARGEN_X,
+      doc.y,
+      { width: SI_ANCHO_UTIL }
+    )
+  doc.fillColor('#000000')
 }
 
 /**
@@ -1873,6 +1941,17 @@ export default class ReportesAdministrativosController {
       fecha_fin: fechaFin,
       por_sede: porSede,
     }
+  }
+
+  /**
+   * GET /reportes-admin/super-informe/resumen-contable?fecha_inicio=&fecha_fin=
+   * Sección 8 del Súper Informe (vista previa). Cálculo en
+   * resumen_contable_service.ts; incluye segundas veces y turnos activos.
+   */
+  public async superInformeResumenContable({ request, response }: HttpContext) {
+    const { fechaInicio, fechaFin, error } = parseRangoFechas(request)
+    if (error) return response.badRequest({ message: error })
+    return await obtenerResumenContable(fechaInicio, fechaFin)
   }
 
   /**
@@ -7233,9 +7312,10 @@ export default class ReportesAdministrativosController {
 
   /**
    * GET /reportes-admin/super-informe/pdf?fecha_inicio=&fecha_fin=
-   * Súper Informe consolidado: portada + 7 secciones (Meta Mensual, Meta
+   * Súper Informe consolidado: portada + 8 secciones (Meta Mensual, Meta
    * Comercial por Asesor, Ingresos por Canal, Servicios (RTM), Retención
-   * de Clientes, Descuentos, Producción por Líder). Reutiliza exactamente
+   * de Clientes, Descuentos, Producción por Líder, Resumen contable RTM y
+   * servicios). Reutiliza exactamente
    * los mismos compute*() ya verificados contra cada reporte individual —
    * no recalcula nada por su cuenta (salvo el rango anterior de Ingresos
    * por Canal, usado solo para el comparativo).
@@ -7258,6 +7338,7 @@ export default class ReportesAdministrativosController {
       descuentosAutorizador,
       produccionLider,
       reconciliacionRtm,
+      resumenContable,
     ] = await Promise.all([
       this.computeMetaMensualSuperInforme(fechaInicio, fechaFin),
       this.computeMetaComercialSuperInforme(fechaInicio, fechaFin),
@@ -7270,6 +7351,7 @@ export default class ReportesAdministrativosController {
       this.computeDescuentosPorAutorizador(fechaInicio, fechaFin),
       this.computeProduccionPorLider(fechaInicio, fechaFin),
       this.computeReconciliacionFacturacionRtm(fechaInicio, fechaFin),
+      obtenerResumenContable(fechaInicio, fechaFin),
     ])
 
     const generadoPor = auth.user ? `${auth.user.nombres} ${auth.user.apellidos}` : 'Usuario del sistema'
@@ -7289,6 +7371,7 @@ export default class ReportesAdministrativosController {
       descuentosAutorizador,
       produccionLider,
       reconciliacionRtm,
+      resumenContable,
     })
 
     const fileName = `Super_Informe_${fechaInicio}_${fechaFin}.pdf`
