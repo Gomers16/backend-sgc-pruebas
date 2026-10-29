@@ -32,7 +32,7 @@ function ttlPostConsumoDias(): number {
 // TTL global de siempre (365 días); PREVENTIVA/PERITAJE se liberan mucho
 // antes (60 días) — su ciclo de recompra real es más corto y bloquearlos
 // casi un año generaba falsos "dateo activo" (ver caso WTP333/PREVENTIVA).
-function ttlPostConsumoDiasPorServicio(codigoServicio: string | null): number {
+export function ttlPostConsumoDiasPorServicio(codigoServicio: string | null): number {
   if (codigoServicio === 'PREV' || codigoServicio === 'PERI') {
     return Number(process.env.TTL_POST_CONSUMO_DIAS_PREV_PERI ?? 60)
   }

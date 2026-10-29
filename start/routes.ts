@@ -853,6 +853,19 @@ router
       const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
       return new VehiculosController().destroy(ctx)
     })
+    /* =========================== TELEMERCADEO ========================== */
+    router
+      .get('/telemercadeo/cola', async (ctx) => {
+        const { default: TelemercadeoController } = await import(
+          '#controllers/telemercadeo_controller'
+        )
+        return new TelemercadeoController().cola(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'COMERCIAL'] }),
+      ])
+
     /* ========================= AGENTES CAPTACIÓN ======================= */
 
     router
