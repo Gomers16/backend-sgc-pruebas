@@ -3001,6 +3001,28 @@ router
       .where('id', /^[0-9]+$/)
       .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
 
+    // Corrección del convenio de un ticket YA APROBADO (solo comisión PENDIENTE).
+    router
+      .patch('/tickets-excepcion-dateo/:id/convenio', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().corregirConvenio(ctx)
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
+    // Vista previa de la corrección (mismo cálculo, sin guardar).
+    router
+      .post('/tickets-excepcion-dateo/:id/convenio/simular', async (ctx) => {
+        const { default: TicketsExcepcionDateoController } = await import(
+          '#controllers/tickets_excepcion_dateo_controller'
+        )
+        return new TicketsExcepcionDateoController().corregirConvenio(ctx, { simular: true })
+      })
+      .where('id', /^[0-9]+$/)
+      .use([middleware.auth(), middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] })])
+
     /* ============== FIN TICKETS INTERNOS ============== */
   })
   .prefix('/api')

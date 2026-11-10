@@ -10,6 +10,7 @@ import {
   observacionMencionaConvenio,
   convenioAsignadoAlAsesor,
 } from '#services/convenio_ticket_service'
+import { comisionDelTicketExcepcion } from '#services/comision_ticket_excepcion_service'
 import ExcelJS from 'exceljs'
 import {
   aplicarFiltrosTickets,
@@ -257,6 +258,12 @@ export default class TicketsController {
       out.convenio_asignado =
         detalle && detalle.convenioId !== null && detalle.canal !== 'ASESOR_CONVENIO'
           ? await convenioAsignadoAlAsesor(detalle.comercialId, detalle.convenioId)
+          : null
+      // Corrección posterior del convenio: solo con la comisión PENDIENTE y
+      // fuera de liquidaciones (o sin comisión todavía). null = sin dateo.
+      out.comision_ticket =
+        detalle && ticket.estado === 'APROBADO'
+          ? await comisionDelTicketExcepcion(detalle.turnoId)
           : null
     }
 

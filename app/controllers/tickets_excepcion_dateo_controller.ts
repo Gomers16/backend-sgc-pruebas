@@ -12,7 +12,6 @@ import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import Comision from '#models/comision'
 import FacturacionTicket from '#models/facturacion_ticket'
-import Descuento from '#models/descuento'
 
 import {
   dentroVentanaDateoTurno,
@@ -27,17 +26,11 @@ import {
   leerDecisionConvenioCrear,
   convenioAsignadoAlAsesor,
 } from '#services/convenio_ticket_service'
-import { evaluarContinuidad } from '#services/continuidad_service'
+import { decidirCasoComision, type CasoComision } from '#services/comision_calculo_service'
 import {
-  resolveConfigComision,
-  resolveConfigRecurrencia,
-  calcularComision,
-  inferTipoVehiculoComision,
-  decidirCasoComision,
-  esDescuentoFinalAvance,
-  type CasoComision,
-  type EscenarioCliente,
-} from '#services/comision_calculo_service'
+  calcularComisionTicketExcepcion,
+  aplicarComisionTicketExcepcion,
+} from '#services/comision_ticket_excepcion_service'
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 
 function readOptionalNumber(input: unknown): number | null {
@@ -273,22 +266,6 @@ export default class TicketsExcepcionDateoController {
       })
     }
 
-    const decisionConvenio = leerDecisionConvenioCrear({
-      convenioId: readOptionalNumber(payload.convenio_id),
-      sinConvenio: payload.sin_convenio,
-      esAsesorConvenio: (comercial.tipo || '').toUpperCase() === 'ASESOR_CONVENIO',
-    })
-    if (!decisionConvenio.ok) {
-      return response.badRequest({ code: decisionConvenio.code, message: decisionConvenio.message })
-    }
-    const convenioId = decisionConvenio.convenioId
-    if (convenioId !== null) {
-      const convenio = await Convenio.find(convenioId)
-      if (!convenio || !convenio.activo) {
-        return response.badRequest({ message: 'convenio_id no existe o está inactivo' })
-      }
-    }
-
     const hoyISO = DateTime.local().setZone('America/Bogota').toISODate()!
 
     // Todo lo que depende del turno corre con el turno bloqueado (FOR
@@ -305,6 +282,29 @@ export default class TicketsExcepcionDateoController {
       if (esTurnoSegundaVez(turno)) {
         await trx.rollback()
         return response.conflict(conflictoTurnoSegundaVez('dateo ni ticket de excepción de dateo'))
+      }
+
+      // Convenio: después de la segunda vez (esa respuesta manda) y antes del
+      // resto de validaciones del turno.
+      const decisionConvenio = leerDecisionConvenioCrear({
+        convenioId: readOptionalNumber(payload.convenio_id),
+        sinConvenio: payload.sin_convenio,
+        esAsesorConvenio: (comercial.tipo || '').toUpperCase() === 'ASESOR_CONVENIO',
+      })
+      if (!decisionConvenio.ok) {
+        await trx.rollback()
+        return response.badRequest({
+          code: decisionConvenio.code,
+          message: decisionConvenio.message,
+        })
+      }
+      const convenioId = decisionConvenio.convenioId
+      if (convenioId !== null) {
+        const convenio = await Convenio.find(convenioId, { client: trx })
+        if (!convenio || !convenio.activo) {
+          await trx.rollback()
+          return response.badRequest({ message: 'convenio_id no existe o está inactivo' })
+        }
       }
       if (turno.fecha.setZone('America/Bogota').toISODate() !== hoyISO) {
         await trx.rollback()
@@ -689,75 +689,14 @@ export default class TicketsExcepcionDateoController {
       }
       const decision = resDecision.decision
 
-      // Escenario — turno.esRecurrente/esRecuperacion ya vienen calculados
-      // desde la creación del turno (historial del cliente).
-      const esClienteRecurrente = Boolean(turno.esRecurrente)
-      const esClienteRecuperacion = Boolean(turno.esRecuperacion)
-      const escenario: EscenarioCliente = esClienteRecurrente
-        ? 'RECURRENTE'
-        : esClienteRecuperacion
-          ? 'RECUPERACION'
-          : 'NUEVO'
-
-      const tipoVehiculoComision = inferTipoVehiculoComision({ turnoTipo: turno.tipoVehiculo })
-
-      const estadoContinuidad = await evaluarContinuidad({
-        placa: turno.placa,
-        asesorConvenioId: asesorConvenioIdReal,
-        convenioId: dateo.convenioId,
-        excluirTurnoId: turno.id,
-      })
-      const tuvoContinuidad = estadoContinuidad !== 'ROTA'
-
-      const cfgValues = await resolveConfigComision({
-        asesorId: dateo.agenteId,
-        asesorConvenioId: asesorConvenioIdReal,
-        tipoVehiculo: tipoVehiculoComision,
-      })
-      const recValues = await resolveConfigRecurrencia(dateo.agenteId, tipoVehiculoComision)
-
-      // Descuento y avance — mismo criterio que applyCommissionHook(): manda
-      // el descuento de caja si lo hay; si no, el pre-marcado en el dateo.
-      const descuentoIdActivo = facturacionConfirmada?.descuentoId ?? dateo.descuentoId ?? null
-      const descuentoActivo = descuentoIdActivo
-        ? await Descuento.query({ client: trx })
-            .where('id', descuentoIdActivo)
-            .where('activo', true)
-            .first()
-        : null
-      const codigoDescuento = descuentoActivo?.codigo ?? null
-      // Descuento final: el de la factura confirmada; sin factura todavía,
-      // el del intento (applyCommissionHook lo recalcula al confirmar). Con
-      // convenio, cualquier descuento final deja al convenio en $0; Avance
-      // solo decide el monto de avance. La marca es_avance es informativa.
-      const codigoDescuentoFinal = facturacionConfirmada
-        ? facturacionConfirmada.descuentoId
-          ? codigoDescuento
-          : null
-        : codigoDescuento
-      const esAvance = esDescuentoFinalAvance({ caso, codigoDescuentoFinal })
-      let montoAvance = 0
-      if (esAvance && descuentoActivo) {
-        const montoExplicito = Number(facturacionConfirmada?.descuentoMontoAplicado ?? 0)
-        montoAvance =
-          montoExplicito > 0
-            ? montoExplicito
-            : Number(
-                tipoVehiculoComision === 'MOTO'
-                  ? ((descuentoActivo as any).valorMoto ?? 0)
-                  : ((descuentoActivo as any).valorCarro ?? 0)
-              )
-      }
-
-      const resultadoComision = calcularComision({
+      // Cálculo compartido con corregirConvenio() (comision_ticket_excepcion_service).
+      const calculo = await calcularComisionTicketExcepcion({
+        trx,
+        turno,
+        dateo,
         caso,
-        escenario,
-        tuvoContinuidad,
-        montoAvance,
-        codigoDescuento,
-        codigoDescuentoFinal,
-        cfgValues,
-        recValues,
+        asesorConvenioIdReal,
+        facturacionConfirmada: facturacionConfirmada ?? null,
       })
 
       let comisionCreada: Comision | null = null
@@ -765,58 +704,28 @@ export default class TicketsExcepcionDateoController {
         dateo.resultado = 'EXITOSO'
         await dateo.useTransaction(trx).save()
 
-        let comisionAsesorId: number | null
-        let comisionConvenioId: number | null
-        let comisionAsesorSecundarioId: number | null
-        if (caso === 'SIN_CONVENIO') {
-          comisionAsesorId = dateo.agenteId
-          comisionConvenioId = null
-          comisionAsesorSecundarioId = null
-        } else if (caso === 'CONVENIO_SELF') {
-          comisionAsesorId = asesorConvenioIdReal ?? dateo.agenteId
-          comisionConvenioId = dateo.convenioId
-          comisionAsesorSecundarioId = null
-        } else {
-          comisionAsesorId = dateo.agenteId
-          comisionConvenioId = dateo.convenioId
-          comisionAsesorSecundarioId = asesorConvenioIdReal
-        }
-
         const c = new Comision()
         c.useTransaction(trx)
         c.esConfig = false
         c.captacionDateoId = dateo.id
-        c.asesorId = comisionAsesorId
-        c.convenioId = comisionConvenioId
-        c.asesorSecundarioId = comisionAsesorSecundarioId
         c.tipoServicio = 'RTM'
         c.estado = 'PENDIENTE'
         c.fechaCalculo = DateTime.now()
         c.calculadoPor = auth.user!.id
         c.porcentaje = '0'
-        c.base = String(resultadoComision.base)
-        c.monto = String(resultadoComision.monto)
-        c.montoAsesor = String(resultadoComision.montoAsesor)
-        c.montoConvenio = String(resultadoComision.montoConvenio)
-        c.valorNuevoDirecto = String(resultadoComision.valorNuevoDirectoFinal)
-        c.reglaAplicada = resultadoComision.reglaAplicada
-        c.esAvance = esAvance
-        c.descuentoCodigoAplicado = codigoDescuento
-        c.descuentoObservacionCaja = facturacionConfirmada.descuentoObservacion ?? null
-        if (resultadoComision.descuentoMontoAplicado !== null) {
-          c.descuentoMontoAplicado = resultadoComision.descuentoMontoAplicado
+        const foto = aplicarComisionTicketExcepcion(c, {
+          calculo,
+          dateo,
+          asesorConvenioIdReal,
+          facturacionConfirmada,
+          decision,
+        })
+        // Foto del valor calculado para el "dejado de pagar" exacto (solo
+        // si hubo algún "sin comisión").
+        if (foto.montoAsesorCalculado !== null) {
+          detalle.montoAsesorCalculado = foto.montoAsesorCalculado
+          detalle.montoConvenioCalculado = foto.montoConvenioCalculado
         }
-        // "Sin comisión" (dentro o fuera de ventana): se calcula la comisión
-        // normal con el motor de siempre y se fuerza a 0 recién acá, justo
-        // antes de guardar, solo la parte que gerencia decidió.
-        // `monto` queda con el valor del motor: es lo que se dejó de pagar.
-        if (decision.asesor === false || decision.convenio === false) {
-          // Foto del valor calculado para el "dejado de pagar" exacto.
-          detalle.montoAsesorCalculado = c.montoAsesor
-          detalle.montoConvenioCalculado = c.montoConvenio
-        }
-        if (decision.asesor === false) c.montoAsesor = '0'
-        if (decision.convenio === false) c.montoConvenio = '0'
         await c.save()
         comisionCreada = c
       }
@@ -895,6 +804,319 @@ export default class TicketsExcepcionDateoController {
       })
     } catch (error) {
       await trx.rollback()
+      throw error
+    }
+  }
+
+  /**
+   * PATCH /tickets-excepcion-dateo/:id/convenio — corrige el convenio de un
+   * ticket YA APROBADO (SUPER_ADMIN/GERENCIA).
+   * POST /tickets-excepcion-dateo/:id/convenio/simular — mismo cálculo dentro
+   * de una transacción que se deshace (vista previa de montos; motivo opcional).
+   * Body: {
+   *   convenio_id: number | null — obligatorio (null = sin convenio directo);
+   *   motivo: string — obligatorio al corregir;
+   *   con_comision_asesor?, con_comision_convenio?: boolean — si no vienen,
+   *       se usa la decisión guardada al aprobar; Caso 1 → 3 fuera de ventana
+   *       exige con_comision_convenio (dentro de ventana, el convenio cobra).
+   * }
+   * Reglas:
+   *  - Solo si la comisión RTM del dateo está PENDIENTE y fuera de toda
+   *    liquidación; APROBADA/PAGADA → 409 COMISION_NO_EDITABLE sin cambios
+   *    (se corrige con un ajuste aparte). Sin comisión todavía: se corrigen
+   *    dateo y ticket; applyCommissionHook() la calcula al confirmar la factura.
+   *  - El asesor convenio (Caso 2) siempre queda con su convenio → 409.
+   *  - Recalcula con el motor compartido con aprobar()
+   *    (comision_ticket_excepcion_service) en la misma fila de comisión: no
+   *    cambia id, estado, fecha_calculo ni calculado_por. Respeta Cobra/No
+   *    cobra; la regla "convenio en $0 por descuento final" es la del motor
+   *    y solo se informa (convenio_en_cero_por_descuento).
+   *  - Deja CONVENIO_CORREGIDO con momento POST_APROBACION, montos antes y
+   *    después y motivo. convenio_id_original no cambia.
+   */
+  public async corregirConvenio(ctx: HttpContext, opciones: { simular?: boolean } = {}) {
+    const { params, request, response, auth } = ctx
+    const simular = opciones.simular === true
+
+    if (!Object.prototype.hasOwnProperty.call(request.all(), 'convenio_id')) {
+      return response.badRequest({ message: 'convenio_id es requerido (null = sin convenio)' })
+    }
+    const convenioNuevoId = readOptionalNumber(request.input('convenio_id'))
+    const motivo = String(request.input('motivo') ?? '').trim()
+    if (!simular && !motivo) return response.badRequest({ message: 'motivo es requerido' })
+    const flagBody = (clave: string): boolean | undefined | 'invalido' => {
+      const v = request.input(clave)
+      if (v === undefined || v === null) return undefined
+      return typeof v === 'boolean' ? v : 'invalido'
+    }
+    const asesorBody = flagBody('con_comision_asesor')
+    const convenioBody = flagBody('con_comision_convenio')
+    if (asesorBody === 'invalido' || convenioBody === 'invalido') {
+      return response.badRequest({
+        code: 'COMBINACION_COMISION_INVALIDA',
+        message: 'con_comision_asesor y con_comision_convenio deben ser true/false',
+      })
+    }
+
+    const trx = await Database.transaction()
+    const cortar = async (status: number, body: Record<string, unknown>) => {
+      await trx.rollback()
+      return response.status(status).send(body)
+    }
+    try {
+      const ticket = await Ticket.query({ client: trx }).where('id', params.id).forUpdate().first()
+      if (!ticket) return cortar(404, { message: 'Ticket no encontrado' })
+      if (ticket.estado !== 'APROBADO') {
+        return cortar(409, {
+          code: 'TICKET_NO_APROBADO',
+          message: 'Solo se corrige el convenio de un ticket APROBADO (pendiente: al aprobar).',
+          estado: ticket.estado,
+        })
+      }
+      const detalle = await TicketDetalleExcepcionDateo.query({ client: trx })
+        .where('ticket_id', ticket.id)
+        .first()
+      if (!detalle) return cortar(404, { message: 'Detalle del ticket no encontrado' })
+      if (detalle.canal === 'ASESOR_CONVENIO') {
+        return cortar(409, {
+          code: 'CONVENIO_ASESOR_CONVENIO',
+          message: 'El asesor convenio siempre queda con su propio convenio.',
+        })
+      }
+      const convenioAnteriorId = detalle.convenioId ?? null
+      if (convenioAnteriorId === convenioNuevoId) {
+        return cortar(400, {
+          code: 'CONVENIO_SIN_CAMBIO',
+          message: 'El ticket ya tiene ese convenio.',
+        })
+      }
+      if (convenioNuevoId !== null) {
+        const conv = await Convenio.find(convenioNuevoId, { client: trx })
+        if (!conv || !conv.activo) {
+          return cortar(400, { message: 'convenio_id no existe o está inactivo' })
+        }
+      }
+
+      const turno = await TurnoRtm.query({ client: trx }).where('id', detalle.turnoId).first()
+      if (!turno) return cortar(404, { message: 'Turno del ticket no encontrado' })
+      const dateo = turno.captacionDateoId
+        ? await CaptacionDateo.query({ client: trx })
+            .where('id', turno.captacionDateoId)
+            .forUpdate()
+            .first()
+        : null
+      if (!dateo) {
+        return cortar(409, {
+          code: 'TICKET_SIN_DATEO',
+          message: 'El turno del ticket no tiene dateo vinculado: no hay qué corregir.',
+        })
+      }
+
+      // Comisión: solo PENDIENTE y fuera de liquidaciones.
+      const comisiones = await Comision.query({ client: trx })
+        .where('captacion_dateo_id', dateo.id)
+        .where('tipo_servicio', 'RTM')
+        .whereNot('estado', 'ANULADA')
+        .forUpdate()
+      const noEditable = comisiones.find((c) => c.estado !== 'PENDIENTE')
+      if (noEditable) {
+        return cortar(409, {
+          code: 'COMISION_NO_EDITABLE',
+          message: `La comisión está ${noEditable.estado}: el convenio no se corrige aquí, requiere un ajuste aparte.`,
+          comision_id: noEditable.id,
+          estado: noEditable.estado,
+        })
+      }
+      if (comisiones.length > 1) {
+        return cortar(409, {
+          code: 'COMISION_NO_EDITABLE',
+          message: 'El dateo tiene más de una comisión RTM: revísalo antes de corregir.',
+        })
+      }
+      const comision = comisiones[0] ?? null
+      if (comision) {
+        const enLiquidacion = await trx
+          .from('liquidacion_detalle')
+          .where('comision_id', comision.id)
+          .first()
+        if (enLiquidacion) {
+          return cortar(409, {
+            code: 'COMISION_NO_EDITABLE',
+            message: 'La comisión ya está en una liquidación: requiere un ajuste aparte.',
+            comision_id: comision.id,
+            estado: comision.estado,
+          })
+        }
+      }
+
+      // Mismo intento del dateo con el convenio nuevo (regla de store();
+      // gerencia puede usar un convenio no asignado, queda registrado).
+      const res = await resolverIntentoDateo({
+        agenteId: dateo.agenteId,
+        canal: dateo.canal,
+        convenioId: convenioNuevoId,
+        descuentoId: dateo.descuentoId,
+        servicioId: dateo.servicioId ?? turno.servicioId,
+        esAvance: Boolean(dateo.esAvance),
+        comprobanteAvanceUrl: dateo.comprobanteAvanceUrl,
+        permitirConvenioNoAsignado: true,
+      })
+      if (!res.ok) {
+        return cortar(res.status, { code: 'INTENTO_DATEO_INVALIDO', message: res.message })
+      }
+
+      const convenioAnterior = convenioAnteriorId
+        ? await Convenio.find(convenioAnteriorId, { client: trx })
+        : null
+      const casoAnterior = decidirCasoComision({
+        convenioId: dateo.convenioId,
+        agenteId: dateo.agenteId,
+        canal: dateo.canal,
+        asesorConvenioIdDelConvenio: convenioAnterior?.asesorConvenioId ?? null,
+      })
+      const asesorConvenioIdReal = res.intento.convenio?.asesorConvenioId ?? null
+      const casoNuevo = decidirCasoComision({
+        convenioId: res.intento.convenioId,
+        agenteId: dateo.agenteId,
+        canal: res.intento.canal,
+        asesorConvenioIdDelConvenio: asesorConvenioIdReal,
+      })
+
+      // Decisión: la del body o la guardada al aprobar, validada para el caso nuevo.
+      const dentroVentana = Boolean(detalle.dentroVentana)
+      const guardado = (v: unknown) => (v === null || v === undefined ? undefined : Boolean(v))
+      const conAsesor = asesorBody ?? guardado(detalle.conComisionAsesor)
+      let conConvenio =
+        convenioBody ??
+        (casoNuevo === 'SIN_CONVENIO' ? undefined : guardado(detalle.conComisionConvenio))
+      if (
+        conConvenio === undefined &&
+        dentroVentana &&
+        casoNuevo === 'CONVENIO_COMERCIAL' &&
+        conAsesor !== undefined
+      ) {
+        // Dentro de ventana el convenio que aparece cobra, salvo que gerencia diga otra cosa.
+        conConvenio = true
+      }
+      const resDecision = resolverDecisionComision({
+        dentroVentana,
+        caso: casoNuevo,
+        conComisionAsesor: conAsesor,
+        conComisionConvenio: conConvenio,
+        conComision: undefined,
+      })
+      if (!resDecision.ok) {
+        return cortar(400, {
+          code: 'COMBINACION_COMISION_INVALIDA',
+          message: resDecision.message,
+          caso: casoNuevo,
+        })
+      }
+      const decision = resDecision.decision
+
+      const montosDe = (c: Comision | null) =>
+        c
+          ? {
+              asesor_id: c.asesorId,
+              convenio_id: c.convenioId,
+              asesor_secundario_id: c.asesorSecundarioId,
+              monto: Number(c.monto ?? 0),
+              monto_asesor: Number(c.montoAsesor ?? 0),
+              monto_convenio: Number(c.montoConvenio ?? 0),
+              regla_aplicada: c.reglaAplicada,
+            }
+          : null
+      const montosAntes = montosDe(comision)
+
+      dateo.useTransaction(trx)
+      dateo.convenioId = res.intento.convenioId
+      dateo.canal = res.intento.canal as any
+      dateo.asesorConvenioId = res.intento.asesorConvenioId
+      await dateo.save()
+
+      let convenioEnCeroPorDescuento: boolean | null = null
+      if (comision) {
+        const facturacionConfirmada = await FacturacionTicket.query({ client: trx })
+          .where('turno_id', turno.id)
+          .where('estado', 'CONFIRMADA')
+          .first()
+        if (!facturacionConfirmada) {
+          return cortar(409, {
+            code: 'COMISION_NO_EDITABLE',
+            message:
+              'La comisión no tiene una factura CONFIRMADA del turno: revísala antes de corregir.',
+            comision_id: comision.id,
+          })
+        }
+        const calculo = await calcularComisionTicketExcepcion({
+          trx,
+          turno,
+          dateo,
+          caso: casoNuevo,
+          asesorConvenioIdReal,
+          facturacionConfirmada,
+        })
+        comision.useTransaction(trx)
+        const foto = aplicarComisionTicketExcepcion(comision, {
+          calculo,
+          dateo,
+          asesorConvenioIdReal,
+          facturacionConfirmada,
+          decision,
+        })
+        await comision.save()
+        detalle.montoAsesorCalculado = foto.montoAsesorCalculado
+        detalle.montoConvenioCalculado = foto.montoConvenioCalculado
+        convenioEnCeroPorDescuento = calculo.convenioEnCeroPorDescuento
+        // La continuidad guardada al confirmar era la del convenio anterior.
+        if (turno.estadoContinuidad !== null) {
+          turno.useTransaction(trx)
+          turno.estadoContinuidad = calculo.estadoContinuidad
+          await turno.save()
+        }
+      }
+
+      detalle.useTransaction(trx)
+      detalle.canal = res.intento.canal
+      detalle.convenioId = res.intento.convenioId
+      detalle.sinConvenioExplicito = res.intento.convenioId === null
+      detalle.conComisionAsesor = decision.asesor
+      detalle.conComisionConvenio = decision.convenio
+      // Transición: producción local (misma BD) todavía lee con_comision.
+      detalle.conComision = decision.asesor
+      await detalle.save()
+
+      const montosDespues = montosDe(comision)
+      const datos = {
+        momento: 'POST_APROBACION',
+        convenio_anterior_id: convenioAnteriorId,
+        convenio_nuevo_id: res.intento.convenioId,
+        caso_anterior: casoAnterior,
+        caso_nuevo: casoNuevo,
+        con_comision_asesor: decision.asesor,
+        con_comision_convenio: decision.convenio,
+        comision_id: comision?.id ?? null,
+        montos_antes: montosAntes,
+        montos_despues: montosDespues,
+        convenio_no_asignado: res.intento.convenioNoAsignado,
+        convenio_en_cero_por_descuento: convenioEnCeroPorDescuento,
+        motivo: motivo || null,
+      }
+      await registrarEventoTicket(trx, {
+        ticketId: ticket.id,
+        tipo: 'CONVENIO_CORREGIDO',
+        usuarioId: auth.user!.id,
+        datos,
+      })
+
+      if (simular) {
+        await trx.rollback()
+        return response.ok({ ...datos, simulado: true })
+      }
+      await trx.commit()
+      return response.ok({ ...datos, simulado: false })
+    } catch (error) {
+      if (!trx.isCompleted) await trx.rollback()
       throw error
     }
   }
