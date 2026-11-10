@@ -48,6 +48,12 @@ const P = {
   APROBAR_NO_ASIG: 'TKCV10',
   AVISO: 'TKCV11',
   RECHAZO: 'TKCV12',
+  TELE_COMERCIAL_NO_ASIG: 'TKCV13',
+  TELE_ASIG: 'TKCV14',
+  TELE_ADMIN_NO_ASIG: 'TKCV15',
+  TELE_SIN: 'TKCV16',
+  TELE_CORRIGE: 'TKCV17',
+  TELE_DATEO: 'TKCV18',
 } as const
 
 test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
@@ -64,6 +70,9 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
   let convenioAsesor: Convenio
   let convenioNoAsignado: Convenio
   let asignacion: AsesorConvenioAsignacion
+  // Telemercadeo: agente ASESOR_TELEMERCADEO con usuario COMERCIAL.
+  let tele: AgenteCaptacion
+  let asignacionTele: AsesorConvenioAsignacion
   let sufijo: string
   let imagenPath: string
   let numero = 0
@@ -146,7 +155,7 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
       .headers(bearer(quien))
       .json({
         turno_id: turnoId,
-        ...(quien === 'COMERCIAL' ? {} : { comercial_id: comercial.id }),
+        ...(quien === 'COMERCIAL' || quien === 'TELE' ? {} : { comercial_id: comercial.id }),
         observacion: 'Prueba convenio obligatorio',
         ...(await evidencias(client)),
         ...body,
@@ -212,6 +221,19 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
       fechaFin: null,
     } as any)
 
+    const usuarioTele = await crearUsuario('TELE', ROL.COMERCIAL)
+    tele = await AgenteCaptacion.create({
+      tipo: 'ASESOR_TELEMERCADEO',
+      nombre: `TEST TKCV TELE ${sufijo}`,
+      usuarioId: usuarioTele.id,
+    } as any)
+    asignacionTele = await AsesorConvenioAsignacion.create({
+      asesorId: tele.id,
+      convenioId: convenioAsignado.id,
+      activo: true,
+      fechaFin: null,
+    } as any)
+
     imagenPath = app.tmpPath(`tst_tk_conv_${Date.now()}.png`)
     await fs.mkdir(path.dirname(imagenPath), { recursive: true })
     await fs.writeFile(imagenPath, PNG_1X1)
@@ -242,10 +264,12 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
     }
     if (imagenPath) await fs.unlink(imagenPath).catch(() => {})
     await asignacion.delete()
+    await asignacionTele.delete()
     await convenioAsignado.delete()
     await convenioNoAsignado.delete()
     await convenioAsesor.delete()
     await comercial.delete()
+    await tele.delete()
     await asesorConvenio.delete()
     for (const u of usuarios) await u.delete()
   })
@@ -514,5 +538,127 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
       .headers(bearer('ADMIN'))
     assert.lengthOf(rLim.body(), 1)
     assert.equal(rLim.body()[0].id, convenioAsignado.id)
+  })
+
+  /* ═══════════ Canal TELE (telemercadeo): mismo criterio que el comercial ═══════════ */
+
+  test('TELE: COMERCIAL de telemercadeo con convenio no asignado → 403; asignado → 201 sin marca', async ({
+    client,
+    assert,
+  }) => {
+    const t1 = await turnoDirecto(P.TELE_COMERCIAL_NO_ASIG)
+    const rNo = await crear(
+      client,
+      t1.id,
+      { canal: 'TELE', convenio_id: convenioNoAsignado.id },
+      'TELE'
+    )
+    rNo.assertStatus(403)
+    assert.equal(rNo.body().code, 'INTENTO_DATEO_INVALIDO')
+
+    const t2 = await turnoDirecto(P.TELE_ASIG)
+    const rSi = await crear(
+      client,
+      t2.id,
+      { canal: 'TELE', convenio_id: convenioAsignado.id },
+      'TELE'
+    )
+    rSi.assertStatus(201)
+    const ticketId = rSi.body().ticket.id as number
+    assert.equal(rSi.body().detalle.canal, 'TELE')
+    assert.equal(rSi.body().detalle.comercialId, tele.id)
+    const [ev] = await eventos(ticketId, 'CREADO')
+    assert.isFalse(datosDe(ev).convenio_no_asignado)
+    const rGet = await client.get(`/api/tickets/${ticketId}`).headers(bearer('GERENCIA'))
+    assert.isTrue(rGet.body().convenio_asignado)
+  })
+
+  test('TELE: SUPER_ADMIN con convenio no asignado → 201 y la marca coincide en CREADO, APROBADO y GET', async ({
+    client,
+    assert,
+  }) => {
+    const turno = await turnoDirecto(P.TELE_ADMIN_NO_ASIG)
+    const r = await crear(client, turno.id, {
+      comercial_id: tele.id,
+      canal: 'TELE',
+      convenio_id: convenioNoAsignado.id,
+    })
+    r.assertStatus(201)
+    const ticketId = r.body().ticket.id as number
+    const [creado] = await eventos(ticketId, 'CREADO')
+    assert.isTrue(datosDe(creado).convenio_no_asignado)
+
+    const rGet = await client.get(`/api/tickets/${ticketId}`).headers(bearer('GERENCIA'))
+    assert.isFalse(rGet.body().convenio_asignado)
+    assert.equal(rGet.body().caso_comision, 'CONVENIO_COMERCIAL')
+
+    const rAp = await aprobar(client, ticketId, {
+      con_comision_asesor: true,
+      con_comision_convenio: true,
+    })
+    rAp.assertStatus(200)
+    assert.isTrue(rAp.body().convenioNoAsignado)
+    const [aprobado] = await eventos(ticketId, 'APROBADO')
+    assert.isTrue(datosDe(aprobado).convenio_no_asignado)
+  })
+
+  test('TELE: un asesor de telemercadeo no queda bloqueado: "Sin convenio (directo)" → 201', async ({
+    client,
+    assert,
+  }) => {
+    const turno = await turnoDirecto(P.TELE_SIN)
+    const rNada = await crear(client, turno.id, { canal: 'TELE' }, 'TELE')
+    rNada.assertStatus(400)
+    assert.equal(rNada.body().code, 'CONVENIO_NO_DECIDIDO')
+    const r = await crear(client, turno.id, { canal: 'TELE', sin_convenio: true }, 'TELE')
+    r.assertStatus(201)
+    assert.isNull(r.body().detalle.convenioId)
+  })
+
+  test('TELE: corregir después de aprobar a un convenio no asignado queda marcado', async ({
+    client,
+    assert,
+  }) => {
+    const turno = await turnoDirecto(P.TELE_CORRIGE)
+    const r = await crear(client, turno.id, { canal: 'TELE', sin_convenio: true }, 'TELE')
+    const ticketId = r.body().ticket.id as number
+    const rAp = await aprobar(client, ticketId, { con_comision_asesor: true })
+    rAp.assertStatus(200)
+
+    const rCorr = await client
+      .patch(`/api/tickets-excepcion-dateo/${ticketId}/convenio`)
+      .headers(bearer('GERENCIA'))
+      .json({
+        convenio_id: convenioNoAsignado.id,
+        con_comision_convenio: true,
+        motivo: 'telemercadeo',
+      })
+    rCorr.assertStatus(200)
+    assert.isTrue(rCorr.body().convenio_no_asignado)
+    const [ev] = await eventos(ticketId, 'CONVENIO_CORREGIDO')
+    assert.isTrue(datosDe(ev).convenio_no_asignado)
+  })
+
+  test('TELE: el dateo de telemercadeo también exige convenio asignado (store())', async ({
+    client,
+    assert,
+  }) => {
+    const base = {
+      canal: 'TELE',
+      origen: 'UI',
+      servicio_id: SERVICIO_RTM_ID,
+      agente_id: tele.id,
+      placa: P.TELE_DATEO,
+    }
+    const rNo = await client
+      .post('/api/captacion-dateos')
+      .headers(bearer('ADMIN'))
+      .json({ ...base, convenio_id: convenioNoAsignado.id })
+    rNo.assertStatus(403)
+    const rSi = await client
+      .post('/api/captacion-dateos')
+      .headers(bearer('ADMIN'))
+      .json({ ...base, convenio_id: convenioAsignado.id })
+    assert.include([200, 201], rSi.status())
   })
 })

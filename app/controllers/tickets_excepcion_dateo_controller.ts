@@ -24,7 +24,7 @@ import { resolverDecisionComision } from '#services/decision_comision_ticket_ser
 import { registrarEventoTicket } from '#services/ticket_eventos_service'
 import {
   leerDecisionConvenioCrear,
-  convenioAsignadoAlAsesor,
+  convenioNoAsignadoAlComercial,
 } from '#services/convenio_ticket_service'
 import { decidirCasoComision, type CasoComision } from '#services/comision_calculo_service'
 import {
@@ -386,6 +386,12 @@ export default class TicketsExcepcionDateoController {
           message: 'comprobante_avance_url no es una imagen subida al sistema',
         })
       }
+      const convenioNoAsignadoCrear = await convenioNoAsignadoAlComercial({
+        canal: intento.canal,
+        comercialId: comercial.id,
+        convenioId: intento.convenioId,
+        client: trx,
+      })
       const telefono =
         String(payload.telefono ?? '')
           .replace(/\D/g, '')
@@ -452,7 +458,7 @@ export default class TicketsExcepcionDateoController {
           convenio_id: intento.convenioId,
           canal: intento.canal,
           sin_convenio: intento.convenioId === null,
-          convenio_no_asignado: intento.convenioNoAsignado,
+          convenio_no_asignado: convenioNoAsignadoCrear,
         },
       })
 
@@ -630,10 +636,12 @@ export default class TicketsExcepcionDateoController {
         })
       }
 
-      const convenioNoAsignado =
-        canal === 'ASESOR_COMERCIAL' &&
-        convenioId !== null &&
-        !(await convenioAsignadoAlAsesor(comercial.id, convenioId, trx))
+      const convenioNoAsignado = await convenioNoAsignadoAlComercial({
+        canal,
+        comercialId: comercial.id,
+        convenioId,
+        client: trx,
+      })
 
       const convenio = convenioId ? await Convenio.find(convenioId, { client: trx }) : null
 
@@ -1087,6 +1095,12 @@ export default class TicketsExcepcionDateoController {
       await detalle.save()
 
       const montosDespues = montosDe(comision)
+      const convenioNoAsignado = await convenioNoAsignadoAlComercial({
+        canal: res.intento.canal,
+        comercialId: detalle.comercialId,
+        convenioId: res.intento.convenioId,
+        client: trx,
+      })
       const datos = {
         momento: 'POST_APROBACION',
         convenio_anterior_id: convenioAnteriorId,
@@ -1098,7 +1112,7 @@ export default class TicketsExcepcionDateoController {
         comision_id: comision?.id ?? null,
         montos_antes: montosAntes,
         montos_despues: montosDespues,
-        convenio_no_asignado: res.intento.convenioNoAsignado,
+        convenio_no_asignado: convenioNoAsignado,
         convenio_en_cero_por_descuento: convenioEnCeroPorDescuento,
         motivo: motivo || null,
       }

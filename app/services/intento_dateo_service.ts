@@ -57,7 +57,7 @@ export interface IntentoDateo {
   codigoServicio: string
   esAvance: boolean
   comprobanteAvanceUrl: string | null
-  /** true = comercial con un convenio que no tiene asignado (solo con permitirConvenioNoAsignado). */
+  /** true = comercial/telemercadeo con un convenio que no tiene asignado (solo con permitirConvenioNoAsignado). */
   convenioNoAsignado: boolean
 }
 
@@ -187,7 +187,9 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
     convenioId = convenioDelAsesor.id
     convenio = convenioDelAsesor
     asesorConvenioId = agente.id
-  } else if (agente && canal === 'ASESOR_COMERCIAL' && convenioId !== null) {
+  } else if (agente && (canal === 'ASESOR_COMERCIAL' || canal === 'TELE') && convenioId !== null) {
+    // Comercial o telemercadeo: solo convenios asignados al agente (mismo
+    // criterio que DateoCreate.vue, que solo ofrece los asignados).
     const asignacion = await AsesorConvenioAsignacion.query()
       .where('asesor_id', agente.id)
       .where('convenio_id', convenioId)
@@ -199,7 +201,7 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
     } else if (!asignacion) {
       return falla(
         403,
-        'Este asesor comercial no tiene asignado el convenio seleccionado. No puede datear para él.'
+        'Este asesor no tiene asignado el convenio seleccionado. No puede datear para él.'
       )
     }
   }

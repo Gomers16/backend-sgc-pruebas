@@ -70,3 +70,18 @@ export async function convenioAsignadoAlAsesor(
     .first()
   return !!fila
 }
+
+/**
+ * "Convenio no asignado" de un ticket: el mismo criterio en crear(),
+ * aprobar(), corregirConvenio() y GET /tickets/:id (convenio_asignado):
+ * cualquier canal salvo asesor convenio (que siempre usa el suyo).
+ */
+export async function convenioNoAsignadoAlComercial(p: {
+  canal: string | null
+  comercialId: number
+  convenioId: number | null
+  client?: TransactionClientContract
+}): Promise<boolean> {
+  if (p.convenioId === null || p.canal === 'ASESOR_CONVENIO') return false
+  return !(await convenioAsignadoAlAsesor(p.comercialId, p.convenioId, p.client))
+}
