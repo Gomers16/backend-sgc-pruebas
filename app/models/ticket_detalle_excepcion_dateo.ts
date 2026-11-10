@@ -91,6 +91,15 @@ export default class TicketDetalleExcepcionDateo extends BaseModel {
   declare convenioIdOriginal: number | null
 
   /**
+   * Decisión explícita del convenio (migración 1801000000000): true = sin
+   * convenio elegido al crear o confirmado al aprobar; false = con convenio;
+   * null = ticket anterior a la regla o creado por producción local (nadie
+   * decidió). TINYINT(1): leer con Boolean() después de descartar null.
+   */
+  @column({ columnName: 'sin_convenio_explicito' })
+  declare sinConvenioExplicito: boolean | null
+
+  /**
    * Solo relevante fuera de ventana — dentro de ventana la comisión siempre
    * es completa y esta columna queda null. Se llena al aprobar (PATCH
    * /tickets-excepcion-dateo/:id/aprobar).

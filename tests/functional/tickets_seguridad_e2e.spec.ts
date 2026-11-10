@@ -117,6 +117,7 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
         comercial_id: comercialId,
         observacion: 'Prueba Fase 1 tickets',
         ...(await evidencias(client)),
+        ...((extra as any).convenio_id ? {} : { sin_convenio: true }),
         ...extra,
       })
   }
@@ -291,6 +292,7 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
       turno_id: turno.id,
       comercial_id: agenteA.id,
       observacion: 'crear concurrente',
+      sin_convenio: true,
       ...ev,
     })
     const [r1, r2] = await Promise.all([

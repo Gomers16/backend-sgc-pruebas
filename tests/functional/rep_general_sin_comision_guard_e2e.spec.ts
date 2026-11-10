@@ -139,6 +139,7 @@ test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep G
       .json({
         turno_id: turnoId,
         comercial_id: agenteTest.id,
+        sin_convenio: true,
         observacion: `Prueba E2E guard rep general: Caso 1, con_comision=${conComision}`,
         evidencia_chat_url: ev.chat,
         evidencia_grupo_whatsapp_url: ev.whatsapp,

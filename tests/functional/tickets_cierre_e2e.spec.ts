@@ -152,6 +152,7 @@ test.group('Tickets · Fase 7 cierre', (group) => {
           evidencia_chat_url: await subir(client),
           evidencia_grupo_whatsapp_url: await subir(client),
           evidencia_bloqueo_url: await subir(client),
+          ...(o.intento?.convenio_id ? {} : { sin_convenio: true }),
           ...o.intento,
         }),
       201

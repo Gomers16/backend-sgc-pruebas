@@ -23,6 +23,10 @@ import { esEvidenciaValida } from '#services/ticket_acceso_service'
 import { resolverIntentoDateo } from '#services/intento_dateo_service'
 import { resolverDecisionComision } from '#services/decision_comision_ticket_service'
 import { registrarEventoTicket } from '#services/ticket_eventos_service'
+import {
+  leerDecisionConvenioCrear,
+  convenioAsignadoAlAsesor,
+} from '#services/convenio_ticket_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
 import {
   resolveConfigComision,
@@ -182,7 +186,12 @@ export default class TicketsExcepcionDateoController {
    *         evidencia_calamidad_url?,
    *         // intento de dateo (lo que store() rechazó con REQUIERE_TICKET_DATEO)
    *         canal?, convenio_id?, servicio_id?, descuento_id?, es_avance?,
-   *         comprobante_avance_url?, telefono? }
+   *         comprobante_avance_url?, telefono?,
+   *         sin_convenio? }
+   * Convenio obligatorio de decidir: convenio_id o sin_convenio=true (uno de
+   * los dos, 400 CONVENIO_NO_DECIDIDO). El asesor convenio no elige: queda
+   * con el suyo. SUPER_ADMIN/GERENCIA pueden poner un convenio activo que el
+   * comercial no tiene asignado (queda convenio_no_asignado en el evento).
    * El intento se valida con resolverIntentoDateo(), la misma regla de
    * store(): p. ej. un asesor convenio queda con su convenio aunque no venga.
    * El comercial se resuelve del usuario autenticado (mismo patrón que
@@ -201,6 +210,7 @@ export default class TicketsExcepcionDateoController {
       'es_avance',
       'comprobante_avance_url',
       'telefono',
+      'sin_convenio',
       'observacion',
       'evidencia_chat_url',
       'evidencia_grupo_whatsapp_url',
@@ -263,7 +273,15 @@ export default class TicketsExcepcionDateoController {
       })
     }
 
-    const convenioId = readOptionalNumber(payload.convenio_id)
+    const decisionConvenio = leerDecisionConvenioCrear({
+      convenioId: readOptionalNumber(payload.convenio_id),
+      sinConvenio: payload.sin_convenio,
+      esAsesorConvenio: (comercial.tipo || '').toUpperCase() === 'ASESOR_CONVENIO',
+    })
+    if (!decisionConvenio.ok) {
+      return response.badRequest({ code: decisionConvenio.code, message: decisionConvenio.message })
+    }
+    const convenioId = decisionConvenio.convenioId
     if (convenioId !== null) {
       const convenio = await Convenio.find(convenioId)
       if (!convenio || !convenio.activo) {
@@ -345,6 +363,7 @@ export default class TicketsExcepcionDateoController {
         servicioId: readOptionalNumber(payload.servicio_id) ?? turno.servicioId,
         esAvance: payload.es_avance === true || payload.es_avance === 'true',
         comprobanteAvanceUrl: (payload.comprobante_avance_url as string | undefined) || null,
+        permitirConvenioNoAsignado: esRespaldoPrivilegiado,
       })
       if (!resIntento.ok) {
         await trx.rollback()
@@ -401,6 +420,7 @@ export default class TicketsExcepcionDateoController {
           comercialId: comercial.id,
           convenioId: intento.convenioId,
           convenioIdOriginal: intento.convenioId,
+          sinConvenioExplicito: intento.convenioId === null,
           canal: intento.canal,
           servicioId: intento.servicioIdEfectivo,
           descuentoId: intento.descuentoId,
@@ -431,6 +451,8 @@ export default class TicketsExcepcionDateoController {
           comercial_id: comercial.id,
           convenio_id: intento.convenioId,
           canal: intento.canal,
+          sin_convenio: intento.convenioId === null,
+          convenio_no_asignado: intento.convenioNoAsignado,
         },
       })
 
@@ -453,7 +475,14 @@ export default class TicketsExcepcionDateoController {
    *       se sigue aceptando como flag del asesor (frontend anterior).
    *   convenio_id?: number | null — opcional: gerencia corrige el convenio
    *                            del intento (null = sin convenio). El original
-   *                            queda en convenio_id_original.
+   *                            queda en convenio_id_original. Puede ser
+   *                            un convenio activo no asignado al comercial
+   *                            (queda convenio_no_asignado en el evento).
+   *   confirmar_sin_convenio?: boolean — obligatorio (409
+   *       CONFIRMAR_SIN_CONVENIO) si el ticket queda sin convenio y nadie lo
+   *       decidió al crear (sin_convenio_explicito distinto de true: tickets
+   *       anteriores o de producción local). Corregir a convenio_id null
+   *       también cuenta como decisión.
    * }
    *
    * El dateo se crea con el intento guardado en el ticket (canal, convenio,
@@ -570,6 +599,8 @@ export default class TicketsExcepcionDateoController {
           servicioId: detalle.servicioId ?? turno.servicioId,
           esAvance: esAvanceGuardado,
           comprobanteAvanceUrl: detalle.comprobanteAvanceUrl,
+          // Solo SUPER_ADMIN/GERENCIA llegan acá (ruta).
+          permitirConvenioNoAsignado: true,
         })
         if (!res.ok) {
           await trx.rollback()
@@ -581,6 +612,28 @@ export default class TicketsExcepcionDateoController {
         convenioId = res.intento.convenioId
         asesorConvenioIdDateo = res.intento.asesorConvenioId
       }
+
+      // Sin convenio: alguien tuvo que decidirlo (al crear o ahora).
+      const sinConvenioAlCrear =
+        detalle.sinConvenioExplicito === null ? null : Boolean(detalle.sinConvenioExplicito)
+      const sinConvenioConfirmado =
+        convenioId === null &&
+        sinConvenioAlCrear !== true &&
+        ((corrigeConvenio && convenioIdCorregido === null) ||
+          request.input('confirmar_sin_convenio') === true)
+      if (convenioId === null && sinConvenioAlCrear !== true && !sinConvenioConfirmado) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'CONFIRMAR_SIN_CONVENIO',
+          message:
+            'Nadie decidió el convenio de este ticket: elige el convenio o confirma que es sin convenio (directo).',
+        })
+      }
+
+      const convenioNoAsignado =
+        canal === 'ASESOR_COMERCIAL' &&
+        convenioId !== null &&
+        !(await convenioAsignadoAlAsesor(comercial.id, convenioId, trx))
 
       const convenio = convenioId ? await Convenio.find(convenioId, { client: trx }) : null
 
@@ -783,6 +836,7 @@ export default class TicketsExcepcionDateoController {
       }
       detalle.canal = canal
       detalle.convenioId = convenioId
+      detalle.sinConvenioExplicito = convenioId === null
       detalle.aprobadoPorId = auth.user!.id
       detalle.aprobadoAt = DateTime.now()
       await detalle.save()
@@ -802,6 +856,7 @@ export default class TicketsExcepcionDateoController {
           datos: {
             convenio_anterior_id: detalle.convenioIdOriginal,
             convenio_nuevo_id: convenioId,
+            convenio_no_asignado: convenioNoAsignado,
           },
         })
       }
@@ -816,6 +871,9 @@ export default class TicketsExcepcionDateoController {
           con_comision_convenio: decision.convenio,
           comision_id: comisionCreada?.id ?? null,
           dateo_id: dateo.id,
+          convenio_id: convenioId,
+          sin_convenio_confirmado: sinConvenioConfirmado,
+          convenio_no_asignado: convenioNoAsignado,
         },
       })
 
@@ -832,6 +890,8 @@ export default class TicketsExcepcionDateoController {
         conComisionAsesor: decision.asesor,
         conComisionConvenio: decision.convenio,
         convenioCorregido,
+        convenioNoAsignado,
+        sinConvenioConfirmado,
       })
     } catch (error) {
       await trx.rollback()

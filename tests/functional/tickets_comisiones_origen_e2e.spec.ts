@@ -147,7 +147,7 @@ test.group('Tickets · comisiones con ticket de origen y bloqueo del $0', (group
           evidencia_grupo_whatsapp_url: await subir(client),
           evidencia_bloqueo_url: await subir(client),
           canal: 'ASESOR_COMERCIAL',
-          ...(o.convenio ? { convenio_id: convenio.id } : {}),
+          ...(o.convenio ? { convenio_id: convenio.id } : { sin_convenio: true }),
         }),
       201
     )

@@ -164,6 +164,7 @@ test.group('Tickets · decisión de comisión dentro de ventana', (group) => {
           evidencia_chat_url: await subir(client),
           evidencia_grupo_whatsapp_url: await subir(client),
           evidencia_bloqueo_url: await subir(client),
+          ...(intento.convenio_id ? {} : { sin_convenio: true }),
           ...intento,
         }),
       201

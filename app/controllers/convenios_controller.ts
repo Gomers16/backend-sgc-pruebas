@@ -479,10 +479,17 @@ export default class ConveniosController {
   }
 
   /**
-   * GET /convenios/asignados?asesor_id=3
-   * Devuelve SOLO los convenios activos asignados a un asesor comercial.
+   * GET /convenios/asignados?asesor_id=3&q=&limit=&incluir_no_asignados=
+   * Convenios activos asignados a un asesor comercial (asignación vigente).
+   *  - q: busca en nombre o establecimiento (en el servidor: hay asesores con
+   *    cientos de convenios).
+   *  - limit: máximo de filas (1..200); sin limit, todas.
+   *  - incluir_no_asignados=1: solo SUPER_ADMIN/GERENCIA (403 si no) —
+   *    todos los convenios activos, primero los asignados; `asignado` dice cuál.
+   * Respuesta: [{ id, nombre, establecimiento, asignado }] ordenada por nombre
+   * (los asignados primero con incluir_no_asignados).
    */
-  public async asignadosPorAsesor({ request, response }: HttpContext) {
+  public async asignadosPorAsesor({ request, response, auth }: HttpContext) {
     const raw = request.input('asesor_id') ?? request.input('asesorId')
     const asesorId = Number(raw)
 
@@ -490,23 +497,56 @@ export default class ConveniosController {
       return response.badRequest({ message: 'asesor_id inválido' })
     }
 
-    const asignaciones = await AsesorConvenioAsignacion.query()
+    const incluirNoAsignados = ['1', 'true'].includes(
+      String(request.input('incluir_no_asignados') ?? '').toLowerCase()
+    )
+    if (incluirNoAsignados) {
+      await auth.user!.load('rol')
+      const rol = (auth.user!.rol?.nombre ?? '').toUpperCase()
+      if (!['SUPER_ADMIN', 'GERENCIA'].includes(rol)) {
+        return response.forbidden({
+          message: 'Solo SUPER_ADMIN/GERENCIA pueden ver convenios no asignados al asesor',
+        })
+      }
+    }
+
+    const texto = String(request.input('q') ?? '').trim()
+    const limitPedido = Math.trunc(Number(request.input('limit')))
+    const limit =
+      Number.isFinite(limitPedido) && limitPedido > 0 ? Math.min(limitPedido, 200) : null
+
+    const filasAsignadas = await Database.from('asesor_convenio_asignaciones')
       .where('asesor_id', asesorId)
       .where('activo', true)
       .whereNull('fecha_fin')
-      .preload('convenio', (q) =>
-        q.select(['id', 'nombre', 'establecimiento']).where('activo', true)
-      )
+      .select('convenio_id')
+    const asignados = new Set(filasAsignadas.map((r: any) => Number(r.convenio_id)))
 
-    const convenios = asignaciones
-      .map((a) => a.convenio)
-      .filter((c) => c !== null && c !== undefined) as Convenio[]
+    if (!incluirNoAsignados && asignados.size === 0) return response.ok([])
 
+    const query = Database.from('convenios as c')
+      .where('c.activo', true)
+      .select('c.id', 'c.nombre', 'c.establecimiento')
+    if (!incluirNoAsignados) query.whereIn('c.id', [...asignados])
+    if (texto) {
+      const like = `%${texto.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
+      query.where((qb) => {
+        qb.where('c.nombre', 'like', like).orWhere('c.establecimiento', 'like', like)
+      })
+    }
+    if (incluirNoAsignados && asignados.size > 0) {
+      query.orderByRaw(`CASE WHEN c.id IN (${[...asignados].join(',')}) THEN 0 ELSE 1 END`)
+    }
+    query.orderBy('c.nombre', 'asc').orderBy('c.id', 'asc')
+    if (limit !== null) query.limit(limit)
+
+    const rows = await query
     return response.ok(
-      convenios.map((c) => ({
-        id: c.id,
+      rows.map((c: any) => ({
+        id: Number(c.id),
         nombre: c.nombre,
         establecimiento: c.establecimiento ?? null,
+        asignado: asignados.has(Number(c.id)),
       }))
     )
   }

@@ -542,6 +542,7 @@ test.group('Segunda vez · flujo B1', (group) => {
       evidencia_grupo_whatsapp_url: 'x',
       evidencia_bloqueo_url: 'x',
       comercial_id: agente?.id,
+      sin_convenio: true,
     })
     excepcion.assertStatus(409)
     excepcion.assertBodyContains({ code: 'TURNO_SEGUNDA_VEZ' })

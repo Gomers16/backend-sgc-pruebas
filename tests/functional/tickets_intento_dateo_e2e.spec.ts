@@ -138,6 +138,7 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
         observacion: 'Prueba Fase 3 tickets',
         canal: intento?.canal,
         convenio_id: intento?.convenio_id,
+        sin_convenio: intento?.convenio_id ? undefined : true,
         servicio_id: intento?.servicio_id,
         descuento_id: intento?.descuento_id,
         es_avance: intento?.es_avance,
@@ -372,11 +373,7 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
     rTicket.assertStatus(201)
     const ticketId = rTicket.body().ticket.id as number
 
-    // Convenio no asignado al comercial → mismo 403 que store().
-    const rMal = await aprobar(client, ticketId, { convenio_id: convenioNoAsignado.id })
-    rMal.assertStatus(403)
-    assert.equal(rMal.body().code, 'INTENTO_DATEO_INVALIDO')
-
+    // Convenio no asignado: gerencia sí puede (tickets_convenio_obligatorio_e2e).
     await facturacionConfirmada(turno.id, P.CORRIGE)
     const rAprobar = await aprobar(client, ticketId, { convenio_id: null })
     rAprobar.assertStatus(200)
@@ -390,17 +387,16 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
     assert.isNull(dateo.convenioId)
   })
 
-  test('crear() valida el intento: convenio no asignado al comercial → 403', async ({
-    client,
-    assert,
-  }) => {
+  test('crear() valida el intento: convenio inexistente → 400', async ({ client, assert }) => {
+    // El 403 por convenio no asignado (solo COMERCIAL) está en
+    // tickets_convenio_obligatorio_e2e: SUPER_ADMIN/GERENCIA sí pueden.
     const turno = await turnoDirecto(P.NO_ASIGNADO)
     const r = await crearTicket(client, turno.id, comercial.id, {
       canal: 'ASESOR_COMERCIAL',
-      convenio_id: convenioNoAsignado.id,
+      convenio_id: 999999999,
     })
-    r.assertStatus(403)
-    assert.equal(r.body().code, 'INTENTO_DATEO_INVALIDO')
+    r.assertStatus(400)
+    assert.match(String(r.body().message), /convenio_id/)
   })
 
   test('camino diferido: dateo de asesor convenio sin convenio se paga como Caso 2 al confirmar Facturación', async ({

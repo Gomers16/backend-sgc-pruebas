@@ -31,6 +31,12 @@ export interface EntradaIntentoDateo {
   servicioId: number | null
   esAvance: boolean
   comprobanteAvanceUrl: string | null
+  /**
+   * SUPER_ADMIN/GERENCIA (tickets de Excepción de Dateo): un comercial puede
+   * quedar con un convenio activo que no tiene asignado; el intento sale con
+   * convenioNoAsignado = true para registrarlo. Default false (regla de store()).
+   */
+  permitirConvenioNoAsignado?: boolean
 }
 
 export interface IntentoDateo {
@@ -51,6 +57,8 @@ export interface IntentoDateo {
   codigoServicio: string
   esAvance: boolean
   comprobanteAvanceUrl: string | null
+  /** true = comercial con un convenio que no tiene asignado (solo con permitirConvenioNoAsignado). */
+  convenioNoAsignado: boolean
 }
 
 export type ResultadoIntentoDateo =
@@ -160,6 +168,7 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
   }
 
   let asesorConvenioId: number | null = null
+  let convenioNoAsignado = false
   if (agente && agente.tipo === 'ASESOR_CONVENIO') {
     canal = 'ASESOR_CONVENIO'
     const convenioDelAsesor = await buscarConvenioDelAsesorConvenio(agente)
@@ -185,7 +194,9 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
       .where('activo', true)
       .whereNull('fecha_fin')
       .first()
-    if (!asignacion) {
+    if (!asignacion && e.permitirConvenioNoAsignado) {
+      convenioNoAsignado = true
+    } else if (!asignacion) {
       return falla(
         403,
         'Este asesor comercial no tiene asignado el convenio seleccionado. No puede datear para él.'
@@ -210,6 +221,7 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
       codigoServicio,
       esAvance: e.esAvance,
       comprobanteAvanceUrl: e.esAvance ? e.comprobanteAvanceUrl : null,
+      convenioNoAsignado,
     },
   }
 }
