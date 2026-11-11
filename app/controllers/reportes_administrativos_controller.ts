@@ -39,6 +39,11 @@ import {
   type FiltrosReporteSegundaVez,
 } from '#services/reporte_segunda_vez_service'
 import { obtenerResumenContable, textoRechazo, type ResumenContableRango } from '#services/resumen_contable_service'
+import {
+  mesesEnRango,
+  resolverMetaAsesoresPeriodo,
+  resolverMetasAsesores,
+} from '#services/meta_asesor_service'
 
 /**
  * `facturacion_tickets` no tiene columna `fecha`; el filtro de rango se
@@ -395,18 +400,6 @@ async function calcularMetaMensualVentana(
     proyeccion: { livianos: proyeccionLivianos, motos: proyeccionMotos, total: proyeccionTotal },
     pct_proyeccion_sobre_meta_mes: calcularPct(proyeccionTotal, metaTotal),
   }
-}
-
-/** Lista de {mes, anio} (orden cronológico) tocados por [fechaInicio, fechaFin]. */
-function mesesEnRango(fechaInicio: string, fechaFin: string): { mes: number; anio: number }[] {
-  const meses: { mes: number; anio: number }[] = []
-  let cursor = DateTime.fromISO(fechaInicio).startOf('month')
-  const finMes = DateTime.fromISO(fechaFin).startOf('month')
-  while (cursor <= finMes) {
-    meses.push({ mes: cursor.month, anio: cursor.year })
-    cursor = cursor.plus({ months: 1 })
-  }
-  return meses
 }
 
 /**
@@ -810,6 +803,31 @@ function siDibujarSubtitulo(doc: any, texto: string) {
   doc.moveDown(0.3)
 }
 
+/**
+ * Meta ($) de un asesor en el Súper Informe: "Sin meta" si no hay fila en
+ * meta_comercial_asesor en ningún mes del periodo; "Incompleta" si falta la
+ * fila de algún mes (no se suma parcialmente).
+ */
+function textoMetaPesos(
+  a: { meta_pesos: number | null; tiene_meta: boolean },
+  formato: (n: number) => string
+): string {
+  if (a.meta_pesos !== null) return formato(a.meta_pesos)
+  return a.tiene_meta ? 'Incompleta' : 'Sin meta'
+}
+
+/**
+ * Meta (Veh): "Sin meta" solo si no hay fila; "—" si hay fila pero sin
+ * meta_vehiculos (campo opcional) o el periodo está incompleto.
+ */
+function textoMetaVehiculos(
+  a: { meta_vehiculos: number | null; tiene_meta: boolean },
+  formato: (n: number) => string
+): string {
+  if (a.meta_vehiculos !== null) return formato(a.meta_vehiculos)
+  return a.tiene_meta ? '—' : 'Sin meta'
+}
+
 /** Dibuja una tabla con el estilo estándar (encabezado blanco sobre color de marca, totales en negrita). */
 async function siDibujarTabla(
   doc: any,
@@ -1143,21 +1161,31 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
   // ===== 2b. Unidades e Ingreso RTM Generado por Asesor (Tabla B) =====
   doc.moveDown(0.8)
   siDibujarSubtitulo(doc, 'Unidades e Ingreso RTM Generado por Asesor')
+  // Meta (Veh) / Faltante (Veh) solo si algún asesor del periodo tiene meta en
+  // unidades; si no, se ocultan y la columna Asesor toma ese ancho.
+  const columnasMetaVeh: Parameters<typeof siDibujarTabla>[1] = mc.hay_meta_vehiculos
+    ? [
+        { label: 'Meta (Veh)', property: 'metaVeh', width: 55, align: 'right' },
+        { label: 'Motos', property: 'motos', width: 45, align: 'right' },
+        { label: 'Vehículos', property: 'vehiculos', width: 50, align: 'right' },
+        { label: 'Faltante (Veh)', property: 'faltanteVeh', width: 55, align: 'right' },
+      ]
+    : [
+        { label: 'Motos', property: 'motos', width: 45, align: 'right' },
+        { label: 'Vehículos', property: 'vehiculos', width: 50, align: 'right' },
+      ]
   await siDibujarTabla(
     doc,
     [
-      { label: 'Asesor', property: 'asesor', width: 80 },
-      { label: 'Meta (Veh)', property: 'metaVeh', width: 55, align: 'right' },
-      { label: 'Motos', property: 'motos', width: 45, align: 'right' },
-      { label: 'Vehículos', property: 'vehiculos', width: 50, align: 'right' },
-      { label: 'Faltante (Veh)', property: 'faltanteVeh', width: 55, align: 'right' },
+      { label: 'Asesor', property: 'asesor', width: mc.hay_meta_vehiculos ? 80 : 190 },
+      ...columnasMetaVeh,
       { label: 'Costo Base Moto', property: 'costoBaseMoto', width: 72, align: 'right' },
       { label: 'Costo Base Vehículo', property: 'costoBaseVehiculo', width: 72, align: 'right' },
       { label: 'Ingreso RTM Generado', property: 'ingreso', width: 83, align: 'right' },
     ],
     mc.asesores.map((a) => ({
       asesor: a.asesor_nombre,
-      metaVeh: a.meta_vehiculos === null ? 'Sin meta' : formatNumPdf(a.meta_vehiculos),
+      metaVeh: textoMetaVehiculos(a, formatNumPdf),
       motos: formatNumPdf(a.logrado_motos),
       vehiculos: formatNumPdf(a.logrado_vehiculos),
       faltanteVeh: a.faltante_vehiculos === null ? '—' : formatNumPdf(a.faltante_vehiculos),
@@ -1195,7 +1223,7 @@ async function dibujarContenidoSuperInforme(doc: any, datos: SuperInformeDatos, 
     mc.asesores.map((a) => ({
       asesor: a.asesor_nombre,
       ingreso: formatPesoPdf(a.ingreso_rtm_generado),
-      meta: a.meta_pesos === null ? 'Sin meta' : formatPesoPdf(a.meta_pesos),
+      meta: textoMetaPesos(a, formatPesoPdf),
       pctAvance: a.pct_avance === null ? '—' : formatPctPdf(a.pct_avance),
       cumplio: a.cumplio === null ? '—' : a.cumplio ? 'Sí' : 'No',
       faltante: a.faltante === null ? '—' : formatPesoPdf(a.faltante),
@@ -5276,36 +5304,28 @@ export default class ReportesAdministrativosController {
       const asesor = await AgenteCaptacion.find(asesorId)
       if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
 
-      const row = (await Database.from('meta_comercial_asesor')
-        .where({ asesor_id: asesorId, mes, anio })
-        .select('meta_pesos', 'meta_vehiculos')
-        .first()) as { meta_pesos: string; meta_vehiculos: number | null } | null
+      const metasAsesor = await resolverMetasAsesores([asesorId], mes, anio)
+      const meta = metasAsesor.get(asesorId) ?? null
 
       return response.ok({
         mes,
         anio,
         asesor_id: asesorId,
         asesor_nombre: asesor.nombre,
-        meta_pesos: row ? Number(row.meta_pesos) : null,
-        meta_vehiculos: row && row.meta_vehiculos !== null ? Number(row.meta_vehiculos) : null,
+        meta_pesos: meta ? meta.metaPesos : null,
+        meta_vehiculos: meta ? meta.metaVehiculos : null,
       })
     }
 
-    const rows = (await Database.from('meta_comercial_asesor')
-      .where({ mes, anio })
-      .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
-      asesor_id: number
-      meta_pesos: string
-      meta_vehiculos: number | null
-    }[]
+    const metas = await resolverMetasAsesores(null, mes, anio)
 
     return response.ok({
       mes,
       anio,
-      metas: rows.map((r) => ({
-        asesor_id: Number(r.asesor_id),
-        meta_pesos: Number(r.meta_pesos),
-        meta_vehiculos: r.meta_vehiculos === null ? null : Number(r.meta_vehiculos),
+      metas: [...metas.entries()].map(([id, m]) => ({
+        asesor_id: id,
+        meta_pesos: m.metaPesos,
+        meta_vehiculos: m.metaVehiculos,
       })),
     })
   }
@@ -5399,19 +5419,10 @@ export default class ReportesAdministrativosController {
 
     const esReal = esFuenteRealComercial(mes, anio)
 
-    const metaRows = (await Database.from('meta_comercial_asesor')
-      .where({ mes, anio })
-      .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
-      asesor_id: number
-      meta_pesos: string
-      meta_vehiculos: number | null
-    }[]
-
-    const metaMap = new Map(metaRows.map((r) => [Number(r.asesor_id), Number(r.meta_pesos)]))
-    const metaVehiculosMap = new Map(
-      metaRows.map((r) => [Number(r.asesor_id), r.meta_vehiculos === null ? null : Number(r.meta_vehiculos)])
-    )
-    const idsConMeta = metaRows.map((r) => Number(r.asesor_id))
+    const metasDelMes = await resolverMetasAsesores(null, mes, anio)
+    const metaMap = new Map([...metasDelMes].map(([id, m]) => [id, m.metaPesos]))
+    const metaVehiculosMap = new Map([...metasDelMes].map(([id, m]) => [id, m.metaVehiculos]))
+    const idsConMeta = [...metasDelMes.keys()]
 
     let idsConDatos: number[] = []
     if (esReal) {
@@ -5852,6 +5863,10 @@ export default class ReportesAdministrativosController {
     type Acum = {
       metaPesos: number | null
       metaVehiculos: number | null
+      // Hay fila en meta_comercial_asesor en al menos un mes del rango.
+      tieneMeta: boolean
+      // Todos los meses del rango tienen fila.
+      metaCompleta: boolean
       // Antes "cantidadVehiculos" (un solo número, moto+vehículo sumados) —
       // ahora separado en las 2 categorías, pedido explícito para la tabla
       // "Unidades (vehículos)" y para "Ingreso RTM Generado".
@@ -5878,6 +5893,8 @@ export default class ReportesAdministrativosController {
         acumPorAsesor.set(id, {
           metaPesos: null,
           metaVehiculos: null,
+          tieneMeta: false,
+          metaCompleta: false,
           logradoMotos: 0,
           logradoVehiculos: 0,
           pesosConvenio: 0,
@@ -5896,6 +5913,18 @@ export default class ReportesAdministrativosController {
     let esEstimadoAlgunMes = false
 
     if (idsPermitidos.length > 0) {
+      // ── Meta del periodo (solo asesores comerciales) — servicio compartido:
+      // si falta la fila de algún mes del rango, la meta queda en null
+      // (completa=false), nunca suma parcial.
+      const metasPeriodo = await resolverMetaAsesoresPeriodo(idsPermitidos, fechaInicio, fechaFin)
+      for (const [id, m] of metasPeriodo) {
+        const acc = asegurar(id)
+        acc.metaPesos = m.metaPesos
+        acc.metaVehiculos = m.metaVehiculos
+        acc.tieneMeta = true
+        acc.metaCompleta = m.completa
+      }
+
       for (const { mes, anio } of meses) {
         const inicioMes = DateTime.fromObject({ year: anio, month: mes, day: 1 }).toISODate() as string
         const finMes = (
@@ -5905,23 +5934,6 @@ export default class ReportesAdministrativosController {
         const ventanaFin = fechaFin < finMes ? fechaFin : finMes
         const esReal = esFuenteRealComercial(mes, anio)
         if (!esReal) esRealTodosLosMeses = false
-
-        // ── Meta del mes (solo asesores comerciales) ──
-        const metaRows = (await Database.from('meta_comercial_asesor')
-          .where({ mes, anio })
-          .whereIn('asesor_id', idsPermitidos)
-          .select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
-          asesor_id: number
-          meta_pesos: string
-          meta_vehiculos: number | null
-        }[]
-        for (const r of metaRows) {
-          const acc = asegurar(Number(r.asesor_id))
-          acc.metaPesos = (acc.metaPesos ?? 0) + Number(r.meta_pesos)
-          if (r.meta_vehiculos !== null) {
-            acc.metaVehiculos = (acc.metaVehiculos ?? 0) + Number(r.meta_vehiculos)
-          }
-        }
 
         if (esReal) {
           // ── Vehículos logrados (real) — MISMA fuente y MISMO criterio que
@@ -6238,6 +6250,8 @@ export default class ReportesAdministrativosController {
           pesos_comercial: acc.pesosComercial,
           pesos_total: pesosTotal,
           meta_pesos: acc.metaPesos,
+          tiene_meta: acc.tieneMeta,
+          meta_completa: acc.metaCompleta,
           pct_avance: pctAvance,
           cumplio: pctAvance !== null ? pctAvance >= 100 : null,
           faltante: acc.metaPesos !== null ? Math.max(acc.metaPesos - acc.ingresoRtmGenerado, 0) : null,
@@ -6325,6 +6339,9 @@ export default class ReportesAdministrativosController {
         pct_proyeccion: pctProyeccionTotal,
       },
       asesores: asesoresOut,
+      // Si ningún asesor tiene meta en unidades, el front y el PDF ocultan
+      // las columnas Meta (Veh) / Faltante (Veh).
+      hay_meta_vehiculos: asesoresOut.some((a) => a.meta_vehiculos !== null),
       // Universo AMPLIADO (Comercial + Convenio) — no confundir con
       // `asesores` arriba, que solo cubre ASESOR_COMERCIAL.
       descuentosPorAsesor,
@@ -7303,11 +7320,11 @@ export default class ReportesAdministrativosController {
     mes: number,
     anio: number
   ): Promise<number | null> {
-    const query = Database.from('meta_comercial_asesor').where({ mes, anio })
-    if (asesorId) query.andWhere('asesor_id', asesorId)
-    const rows = (await query.select('meta_pesos')) as { meta_pesos: string }[]
-    if (rows.length === 0) return null
-    return rows.reduce((acc, r) => acc + Number(r.meta_pesos), 0)
+    const metas = await resolverMetasAsesores(asesorId ? [asesorId] : null, mes, anio)
+    if (metas.size === 0) return null
+    let total = 0
+    for (const m of metas.values()) total += m.metaPesos
+    return total
   }
 
   /**
