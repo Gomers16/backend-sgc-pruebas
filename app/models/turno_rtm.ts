@@ -254,6 +254,19 @@ export default class TurnoRtm extends BaseModel {
   @column({ columnName: 'segunda_vez_excepcion_motivo' })
   declare segundaVezExcepcionMotivo: string | null
 
+  // ── WINDOW_BLOCK_CONFIRMABLE (turno creado antes de la ventana previa al
+  // vencimiento, con confirmación del operador). Pese al nombre "ventana_rtm",
+  // cubre cualquier servicio con vigencia (RTM y SOAT). NULL = sin confirmación.
+  @column({ columnName: 'ventana_rtm_confirmada_por_id' })
+  declare ventanaRtmConfirmadaPorId: number | null
+
+  @column.dateTime({ columnName: 'ventana_rtm_confirmada_at' })
+  declare ventanaRtmConfirmadaAt: DateTime | null
+
+  /** Días que faltaban para vencer la RTM anterior, desde la fecha del turno. */
+  @column({ columnName: 'ventana_rtm_dias_antes_vencimiento' })
+  declare ventanaRtmDiasAntesVencimiento: number | null
+
   // ── Timestamps
   @column.dateTime({ autoCreate: true, columnName: 'created_at' })
   declare createdAt: DateTime

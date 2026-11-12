@@ -211,11 +211,11 @@ test.group('Segunda vez · flujo B1', (group) => {
   })
 
   // ───────────────────────── Día 1 ─────────────────────────
-  test('Día 1: 409 SEGUNDA_VEZ_DISPONIBLE y con confirmación 201 como segunda vez, sin dateo ni WINDOW_BLOCK', async ({
+  test('Día 1: 409 SEGUNDA_VEZ_DISPONIBLE y con confirmación 201 como segunda vez, sin dateo ni WINDOW_BLOCK_CONFIRMABLE', async ({
     client,
     assert,
   }) => {
-    // RTM APROBADA hace 5 meses: un turno normal sí daría WINDOW_BLOCK.
+    // RTM APROBADA hace 5 meses: un turno normal sí daría WINDOW_BLOCK_CONFIRMABLE.
     await turnoDirecto(P.DIA1, {
       fecha: ahora().minus({ months: 5 }),
       estado: 'finalizado',
@@ -395,7 +395,7 @@ test.group('Segunda vez · flujo B1', (group) => {
   })
 
   // ───────────────────────── Doble rechazo ─────────────────────────
-  test('Doble rechazo: el siguiente turno es normal (paga) y no hay WINDOW_BLOCK', async ({
+  test('Doble rechazo: el siguiente turno es normal (paga) y no hay WINDOW_BLOCK_CONFIRMABLE', async ({
     client,
     assert,
   }) => {

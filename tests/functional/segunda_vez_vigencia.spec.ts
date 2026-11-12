@@ -5,7 +5,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Database from '@adonisjs/lucid/services/db'
 
 // "Segunda vez" — Entrega A: un RTM certificado RECHAZADO no da vigencia,
-// así que no dispara WINDOW_BLOCK (crear turno) ni RTM_VIGENTE /
+// así que no dispara WINDOW_BLOCK / WINDOW_BLOCK_CONFIRMABLE (crear turno) ni RTM_VIGENTE /
 // RTM_VIGENTE_EXCEPCION_DISPONIBLE (crear dateo). APROBADA y NULL (histórico)
 // siguen bloqueando como antes. Escribe en la BD compartida: placas
 // TST940–TST945, limpieza completa al final.
@@ -131,24 +131,28 @@ test.group('Segunda vez · vigencia: RECHAZADO no bloquea', (group) => {
   }) => {
     const res = await crearTurno(client, PLACAS.TURNO_RECHAZADO)
     console.log('--- turno RECHAZADO ---', res.status(), JSON.stringify(res.body()).slice(0, 300))
-    assert.notEqual(res.body()?.code, 'WINDOW_BLOCK')
+    assert.notInclude(['WINDOW_BLOCK', 'WINDOW_BLOCK_CONFIRMABLE'], res.body()?.code)
     res.assertStatus(201)
     const creado = await TurnoRtm.findOrFail(res.body().id)
     assert.isFalse(Boolean(creado.esSegundaVez))
   })
 
-  test('RTM APROBADO finalizado SÍ dispara WINDOW_BLOCK (regresión)', async ({ client }) => {
+  // Desde 2026-11-12 el bloqueo de RTM es confirmable (WINDOW_BLOCK_CONFIRMABLE);
+  // ver window_block_confirmable.spec.ts para el flujo completo.
+  test('RTM APROBADO finalizado SÍ dispara WINDOW_BLOCK_CONFIRMABLE (regresión)', async ({
+    client,
+  }) => {
     const res = await crearTurno(client, PLACAS.TURNO_APROBADO)
     res.assertStatus(409)
-    res.assertBodyContains({ code: 'WINDOW_BLOCK' })
+    res.assertBodyContains({ code: 'WINDOW_BLOCK_CONFIRMABLE' })
   })
 
-  test('RTM con resultado NULL (histórico) SÍ dispara WINDOW_BLOCK (regresión)', async ({
+  test('RTM con resultado NULL (histórico) SÍ dispara WINDOW_BLOCK_CONFIRMABLE (regresión)', async ({
     client,
   }) => {
     const res = await crearTurno(client, PLACAS.TURNO_NULL)
     res.assertStatus(409)
-    res.assertBodyContains({ code: 'WINDOW_BLOCK' })
+    res.assertBodyContains({ code: 'WINDOW_BLOCK_CONFIRMABLE' })
   })
 
   // ── Crear dateo (RTM_VIGENTE)

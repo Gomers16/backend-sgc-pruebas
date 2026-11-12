@@ -139,6 +139,32 @@ export function dateoAplicaAServicio(
 }
 
 /**
+ * ¿El dateo ya fue consumido por OTRO turno que sigue vivo (no cancelado)?
+ *
+ * buildReserva() da por vigente un dateo consumido durante el TTL post-consumo
+ * (365 días RTM/SOAT) — eso es la exclusividad del dateo frente a otros
+ * asesores, no permiso para re-vincularlo. Sin este chequeo, el segundo turno
+ * de la misma placa dentro del año (WINDOW_BLOCK_CONFIRMABLE) heredaba el
+ * dateo del primero: le cambiaba consumido_turno_id y generaba una segunda
+ * comisión. Un turno cancelado no cuenta (cancelar no libera el dateo, y un
+ * turno cancelado y recreado debe poder volver a vincularlo).
+ */
+export async function dateoConsumidoPorOtroTurno(
+  dateo: { consumidoTurnoId: number | null },
+  trx?: TransactionClientContract
+): Promise<boolean> {
+  if (!dateo.consumidoTurnoId) return false
+  const { default: Database } = await import('@adonisjs/lucid/services/db')
+  const fila = await (trx ?? Database)
+    .from('turnos_rtms')
+    .where('id', dateo.consumidoTurnoId)
+    .whereNot('estado', 'cancelado')
+    .select('id')
+    .first()
+  return !!fila
+}
+
+/**
  * Al finalizar un turno de un servicio NO RTM (PREV, PERI…), su dateo pasa a
  * EXITOSO — siempre que sea del mismo servicio del turno (dateoAplicaAServicio)
  * y no lo esté ya. RTM no: su dateo se cierra al confirmar Facturación

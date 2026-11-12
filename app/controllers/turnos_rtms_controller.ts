@@ -18,6 +18,7 @@ import {
   buildReserva,
   cerrarDateosViejosPorPlacaTelefono,
   dateoAplicaAServicio,
+  dateoConsumidoPorOtroTurno,
   marcarDateoExitosoAlFinalizarNoRtm,
 } from '#services/reserva_dateo_service'
 import { evaluarContinuidad } from '#services/continuidad_service'
@@ -658,6 +659,13 @@ export default class TurnosRtmController {
         .first()
 
       // Una segunda vez no pasa por el bloqueo de vigencia.
+      // Cualquier servicio con vigencia (bloqueoMesesPorServicio > 0: hoy RTM
+      // y SOAT): antes de la ventana previa al vencimiento es una advertencia
+      // confirmable (409 WINDOW_BLOCK_CONFIRMABLE → el operador confirma y se
+      // reenvía con confirmar_ventana_vigencia: true, o el alias
+      // confirmar_ventana_rtm). Se registra en ventana_rtm_confirmada_*, que
+      // pese al nombre cubre cualquier servicio.
+      let ventanaRtmConfirmada: { diasAntesDelVencimiento: number } | null = null
       if (lastFinalizado && !esSV) {
         const meses = bloqueoMesesPorServicio((servicio as any).codigoServicio)
         if (meses > 0) {
@@ -665,18 +673,34 @@ export default class TurnosRtmController {
           const DIAS_VENTANA_PRE = 16
           const vencimiento = ultimaFecha.plus({ months: meses }).startOf('day')
           const nextAllowed = vencimiento.minus({ days: DIAS_VENTANA_PRE })
-          if (fechaGuardar.startOf('day') < nextAllowed) {
-            await trx.rollback()
-            return response.conflict({
-              code: 'WINDOW_BLOCK',
-              message: `No es posible crear un nuevo turno de ${servicio.codigoServicio} aún. Válido nuevamente desde ${nextAllowed.toISODate()}.`,
-              servicio: servicio.codigoServicio,
-              lastFinalizedOn: ultimaFecha.toISODate(),
-              nextAllowedDate: nextAllowed.toISODate(),
-              vencimientoDate: vencimiento.toISODate(),
-              monthsBlocked: meses,
-              diasVentana: DIAS_VENTANA_PRE,
-            })
+          const antesDeVentana = fechaGuardar.startOf('day') < nextAllowed
+
+          if (antesDeVentana) {
+            const diasAntesDelVencimiento = Math.round(
+              vencimiento.diff(fechaGuardar.startOf('day'), 'days').days
+            )
+            const flagConfirmado = (v: unknown) => v === true || v === 'true'
+            const confirmarVentana =
+              flagConfirmado(request.input('confirmar_ventana_vigencia')) ||
+              flagConfirmado(request.input('confirmar_ventana_rtm'))
+            if (!confirmarVentana) {
+              await trx.rollback()
+              const codigo = (servicio.codigoServicio ?? '').toUpperCase()
+              const anterior = codigo === 'RTM' ? 'La RTM anterior' : `El ${codigo} anterior`
+              return response.conflict({
+                code: 'WINDOW_BLOCK_CONFIRMABLE',
+                message: `${anterior} de ${placa} vence el ${vencimiento.toISODate()} (faltan ${diasAntesDelVencimiento} días). ¿Crear el turno de todas formas?`,
+                placa,
+                servicio: servicio.codigoServicio,
+                lastFinalizedOn: ultimaFecha.toISODate(),
+                nextAllowedDate: nextAllowed.toISODate(),
+                vencimientoDate: vencimiento.toISODate(),
+                monthsBlocked: meses,
+                diasVentana: DIAS_VENTANA_PRE,
+                diasAntesDelVencimiento,
+              })
+            }
+            ventanaRtmConfirmada = { diasAntesDelVencimiento }
           }
         }
       }
@@ -981,6 +1005,26 @@ export default class TurnosRtmController {
       // captacionDateoId, esAvanceHeredado) — compartida también por el
       // reintento (Capa 1) y la red de seguridad final (Capa 2) para no
       // triplicar esta lógica.
+      // Un dateo vigente por TTL post-consumo pero ya consumido por OTRO turno
+      // no cancelado (p. ej. el turno del año pasado, ahora que
+      // WINDOW_BLOCK_CONFIRMABLE deja crear el segundo turno RTM/SOAT dentro
+      // del año) no se re-vincula: se trata como no vinculable y se sigue con
+      // el siguiente candidato. Aplica a las 3 capas (explícito/fallback,
+      // Capa 1 y Capa 2).
+      const esVinculable = async (d: CaptacionDateo, vigente: boolean) => {
+        if (!vigente) return false
+        if (await dateoConsumidoPorOtroTurno(d, trx)) {
+          console.log('🔒 [DATEO-YA-CONSUMIDO] Dateo consumido por otro turno, no se re-vincula:', {
+            dateoId: d.id,
+            consumidoTurnoId: d.consumidoTurnoId,
+            placa,
+            servicioId: servicio.id,
+          })
+          return false
+        }
+        return true
+      }
+
       const vincularDateoVigente = (d: CaptacionDateo) => {
         dateo = d
         dateoObservacion = d.observacion || null
@@ -1002,7 +1046,7 @@ export default class TurnosRtmController {
 
       if (dateo) {
         const r = await buildReserva(dateo)
-        if (r.vigente) {
+        if (await esVinculable(dateo, r.vigente)) {
           vincularDateoVigente(dateo)
           console.log(`🆕 esAvance heredado del dateo ${dateo.id}: ${esAvanceHeredado}`)
         } else {
@@ -1028,7 +1072,7 @@ export default class TurnosRtmController {
 
           if (dateoRetry) {
             const rRetry = await buildReserva(dateoRetry)
-            if (rRetry.vigente) {
+            if (await esVinculable(dateoRetry, rRetry.vigente)) {
               vincularDateoVigente(dateoRetry)
               console.log('🆕 [RETRY] Dateo descartado por no vigente — se vinculó otro dateo vigente en el reintento:', {
                 dateoDescartadoId,
@@ -1119,7 +1163,7 @@ export default class TurnosRtmController {
 
         if (dateoUltimoIntento) {
           const rUltimoIntento = await buildReserva(dateoUltimoIntento)
-          if (rUltimoIntento.vigente) {
+          if (await esVinculable(dateoUltimoIntento, rUltimoIntento.vigente)) {
             vincularDateoVigente(dateoUltimoIntento)
             console.log('🆕 [RED-SEGURIDAD] captacionDateoId seguía null justo antes de crear el turno — se vinculó en el último intento:', {
               rawDateoIdOriginal: raw.dateoId,
@@ -1167,6 +1211,13 @@ export default class TurnosRtmController {
         segundaVezExcepcion: modoSegundaVez?.excepcion ?? null,
         segundaVezExcepcionPorId: modoSegundaVez?.excepcion ? modoSegundaVez.excepcionPorId : null,
         segundaVezExcepcionMotivo: modoSegundaVez?.excepcion ? modoSegundaVez.motivo : null,
+        // WINDOW_BLOCK_CONFIRMABLE: quién confirmó (usuario autenticado; si
+        // no hay sesión, el usuarioId del body), cuándo y cuántos días faltaban.
+        ventanaRtmConfirmadaPorId: ventanaRtmConfirmada
+          ? (auth.user?.id ?? usuarioCreador.id)
+          : null,
+        ventanaRtmConfirmadaAt: ventanaRtmConfirmada ? nowBog : null,
+        ventanaRtmDiasAntesVencimiento: ventanaRtmConfirmada?.diasAntesDelVencimiento ?? null,
       }
 
       if (canalAtribucion && !esSV) {

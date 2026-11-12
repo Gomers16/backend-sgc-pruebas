@@ -1398,6 +1398,34 @@ export default class FacturacionTicketsController {
         return
       }
 
+      // Respaldo de la regla de store() (dateoConsumidoPorOtroTurno): si este
+      // dateo ya está vinculado a OTRO turno no cancelado y ya tiene una
+      // comisión RTM no anulada, es el mismo dateo pagado dos veces (p. ej. un
+      // segundo turno dentro del año que heredó el dateo del primero, o un
+      // dateo_id puesto a mano en el ticket). Sin importar el día. Un turno
+      // cancelado no cuenta, y un dateo nuevo no tiene comisión previa.
+      const turnoDelTicketId = ticket.turnoId ?? turnoActual?.id ?? null
+      const otroTurnoConDateoQuery = trx
+        .from('turnos_rtms')
+        .where('captacion_dateo_id', dateo.id)
+        .whereNot('estado', 'cancelado')
+      if (turnoDelTicketId) otroTurnoConDateoQuery.whereNot('id', turnoDelTicketId)
+      const otroTurnoConDateo = await otroTurnoConDateoQuery.select('id').first()
+      if (otroTurnoConDateo) {
+        const comisionDeOtroTurno = await Comision.query({ client: trx })
+          .where('captacion_dateo_id', dateo.id)
+          .where('tipo_servicio', 'RTM')
+          .whereNot('estado', 'ANULADA')
+          .first()
+        if (comisionDeOtroTurno) {
+          console.log(
+            `⚠️ [COMISION-DATEO-OTRO-TURNO] Dateo ${dateo.id} ya tiene comisión ${comisionDeOtroTurno.id} del turno ${otroTurnoConDateo.id}; no se crea otra para el turno ${turnoDelTicketId}`
+          )
+          await trx.rollback()
+          return
+        }
+      }
+
       const c = construirComisionRTM({
         caso,
         dateo,
