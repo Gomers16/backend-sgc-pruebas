@@ -4123,9 +4123,22 @@ export default class ReportesAdministrativosController {
     const COLUMNAS_RESUMEN: Record<string, string[]> = {
       comerciales: ['Asesor', 'Turnos', 'Monto', 'Estados'],
       asesores_convenio: [
-        'Asesor', 'Convenio', 'Cédula convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados',
+        'Asesor',
+        'Convenio',
+        'Cédula convenio',
+        'Turnos',
+        'Monto asesor',
+        'Monto convenio',
+        'Estados',
       ],
-      convenios: ['Convenio', 'Cédula convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'],
+      convenios: [
+        'Convenio',
+        'Cédula convenio',
+        'Asesor comercial',
+        'Turnos',
+        'Monto convenio',
+        'Estados',
+      ],
     }
     // Columna(s) 1-indexada(s) de dinero dentro de la fila RESUMEN, por sección.
     const COL_MONTO_RESUMEN: Record<string, number[]> = {
@@ -4153,13 +4166,25 @@ export default class ReportesAdministrativosController {
         const montoAsesor = placas.reduce((s: number, p: any) => s + (Number(p.monto_asesor) || 0), 0)
         const montoConvenio = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
         return [
-          grupo.nombre, placas[0]?.convenio_nombre ?? '—', cedulaGrupo(placas),
-          n, montoAsesor, montoConvenio, estados,
+          grupo.nombre,
+          placas[0]?.convenio_nombre ?? '—',
+          cedulaGrupo(placas),
+          n,
+          montoAsesor,
+          montoConvenio,
+          estados,
         ]
       }
       if (seccion === 'convenios') {
         const monto = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
-        return [grupo.nombre, cedulaGrupo(placas), placas[0]?.asesor_nombre ?? '—', n, monto, estados]
+        return [
+          grupo.nombre,
+          cedulaGrupo(placas),
+          placas[0]?.asesor_nombre ?? '—',
+          n,
+          monto,
+          estados,
+        ]
       }
       return [grupo.nombre]
     }
@@ -4223,7 +4248,8 @@ export default class ReportesAdministrativosController {
             filaResumen.getCell(col).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
           }
           for (const col of colMontoResumen) filaResumen.getCell(col).numFmt = MONEY_FMT
-          if (COL_CEDULA_RESUMEN[seccion]) filaResumen.getCell(COL_CEDULA_RESUMEN[seccion]).numFmt = '@'
+          if (COL_CEDULA_RESUMEN[seccion])
+            filaResumen.getCell(COL_CEDULA_RESUMEN[seccion]).numFmt = '@'
         } else {
           // canal / descuentos: sin tabla resumen propia (fuera de alcance
           // de este rediseño) — fila de grupo simple, como siempre.
@@ -4654,7 +4680,13 @@ export default class ReportesAdministrativosController {
     const workbook = new ExcelJS.Workbook()
     const ws = workbook.addWorksheet('Liquidación RTM')
     ws.columns = [
-      { width: 34 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 26 }, { width: 26 },
+      { width: 34 },
+      { width: 26 },
+      { width: 16 },
+      { width: 16 },
+      { width: 16 },
+      { width: 26 },
+      { width: 26 },
     ]
 
     const seccion = (titulo: string) => {
@@ -4703,7 +4735,15 @@ export default class ReportesAdministrativosController {
 
     seccion('Asesores Convenio')
     // "Cédula convenio" justo después de "Convenio", como texto (numFmt '@').
-    encabezadoFila(['Asesor', 'Convenio', 'Cédula convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'])
+    encabezadoFila([
+      'Asesor',
+      'Convenio',
+      'Cédula convenio',
+      'Turnos',
+      'Monto asesor',
+      'Monto convenio',
+      'Estados',
+    ])
     data.asesores_convenio.forEach((r) => {
       const fila = ws.addRow([
         r.asesor_nombre,
@@ -4719,7 +4759,14 @@ export default class ReportesAdministrativosController {
     ws.addRow([])
 
     seccion('Convenios')
-    encabezadoFila(['Convenio', 'Cédula convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'])
+    encabezadoFila([
+      'Convenio',
+      'Cédula convenio',
+      'Asesor comercial',
+      'Turnos',
+      'Monto convenio',
+      'Estados',
+    ])
     data.convenios.forEach((r) => {
       const fila = ws.addRow([
         r.convenio_nombre,
