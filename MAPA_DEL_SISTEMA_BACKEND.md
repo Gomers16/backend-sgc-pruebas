@@ -662,6 +662,17 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - Los detalles de Ingresos y Retención usan la misma base que su resumen (turno finalizado, sin placas TST, misma clasificación NUEVO/RECURRENTE/RECUPERACION).
 - **Sin cambios**: comisiones, metas, reporte de Asesores y Convenios siguen leyendo `captacion_canal` / el dateo.
 
+### Cédula del convenio en los Excel de liquidación (2026-11-17)
+
+Columna **"Cédula convenio"**, justo después de "Convenio", en:
+- **Liquidación RTM** (`GET /liquidacion-rtm/excel`) y **Trazabilidad RTM** (`GET /trazabilidad-rtm/excel`), ambos por `buildLiquidacionWorkbookBuffer()`: secciones Asesores Convenio (`Asesor, Convenio, Cédula convenio, Turnos, Monto asesor, Monto convenio, Estados`) y Convenios (`Convenio, Cédula convenio, Asesor comercial, Turnos, Monto convenio, Estados`).
+- **Exportar placas** (`POST /liquidacion-rtm/exportar-placas`, `buildPlacasExportWorkbookBuffer()`): solo en las tablas RESUMEN de Asesores Convenio y Convenios (`COLUMNAS_RESUMEN`, `COL_MONTO_RESUMEN` pasa a `[5, 6]` y `[5]`, `COL_CEDULA_RESUMEN`). El detalle de placas no cambia.
+
+- **Fuente:** `convenios.doc_numero`, siempre por `comisiones.convenio_id` (en `buildDesgloseComisiones()` —select y groupBy de Asesores Convenio y Convenios— y en `resolvePlacasPorComisionIds()`, campo `convenio_doc_numero`). Nunca por nombre. Los JSON de `/liquidacion-rtm`, `/trazabilidad-rtm` y `/liquidacion-rtm/detalle-placas` traen también `convenio_doc_numero` (mismos roles; el front no lo usa).
+- **Regla "Pendiente"** (`formatearCedulaConvenio()`, exportada del controlador): `doc_numero` vacío o que cumple `^9999\d{6}$` (cédula inventada por el seeder, ver deuda técnica) → `"Pendiente"`. Las reales salen tal cual, como texto (`numFmt '@'`), sin perder ceros. Fila sin convenio → `"—"`.
+- Es la cédula **actual** del convenio: una liquidación vieja regenerada muestra la de hoy, no la del momento del pago (no hay copia histórica).
+- **Sin cambios:** Canal, Descuentos (su convenio sale de `facturacion_tickets.convenio_nombre`, texto, no confiable para cruzar), Comerciales, Historial de liquidaciones y el Excel del navegador (`ReporteComisiones.vue`).
+
 ### Reporte de segundas veces (C2)
 
 `GET /reportes-admin/segunda-vez` y `/segunda-vez/excel` (`reporte_segunda_vez_service.ts`: `calcularReporteSegundaVez()`, `construirExcelReporteSegundaVez()`): solo conteos por estado de ventana; roles SUPER_ADMIN, GERENCIA, CONTABILIDAD.
@@ -846,7 +857,15 @@ Unit: `segunda_vez_service.spec.ts`, `canal_reporte_service.spec.ts`. Functional
 
 **🆕 (2026-11-12)** `tests/functional/tickets_excepcion_turno_soat.spec.ts` — 1 test con `.fails()` (bug conocido, placa `TKS901`): describe lo correcto (`aprobar()` sobre un turno SOAT facturado no debe crear comisión). Hoy crea una comisión `tipo_servicio = 'RTM'` ($17.280 al asesor). Cuando se arregle, Japa lo reportará y hay que quitar el `.fails()`.
 
+**🆕 (2026-11-17)** `tests/functional/reportes_por_canal.spec.ts`, grupo nuevo "Cédula convenio en Excel de liquidación" — 3 tests (placas `GZD901`–`GZD907`, convenios `TEST GZD CONVENIO REAL/INVENTADA/VACIA` con cédula `0012345678`, `9999999901` y vacía, día 2031-05-09; limpia en `group.teardown`): Liquidación RTM y Trazabilidad RTM Excel (la cédula en Asesores Convenio y Convenios: real tal cual y como texto, las otras dos "Pendiente"; headers de Canal y Comerciales intactos; montos en su nueva columna), y Exportar placas (cédula en los resúmenes, `$#,##0` en las columnas de dinero corridas, headers de Canal, Descuentos, Comerciales y del detalle de placas sin cambios).
+
 ## Archivos sin Uso / Deuda Técnica Conocida
+
+### Pendientes conocidos — Cédula del convenio (2026-11-17)
+
+- **Cédulas inventadas por el seeder**: `database/seeders/convenios_excel_seeder.ts` asigna `9999000001…` (contador `dummyCCCounter`) cuando la CC del Excel de origen falta o ya existe, y lo anota en `contratos.funciones_cargo` ("⚠️ ACTUALIZAR CÉDULA"). El seeder se corrió dos veces el 2026-07-10 (11:44 y 13:43): el segundo lote (595 convenios, nombres repetidos del primero) quedó con cédula inventada. En la BD local al 2026-11-17: 740 cédulas `9999…` (210 de los 446 convenios con `estado='ACTIVO'`), 2 vacías, 5 de 11 dígitos (probable error de digitación, sin corregir). Los Excel de liquidación las muestran como "Pendiente". Sin limpiar: decidir con negocio qué convenios duplicados quedan y cargar las cédulas reales.
+- **`agentes_captacions.doc_numero`** vacío en todos los asesores (los de convenio se crearon sin documento); la cédula del titular está solo en `convenios` (y en `contratos.identificacion` cuando hay contrato).
+- **`GET /comisiones`** (rol COMERCIAL incluido) hace `preload('convenio')` completo, así que el documento del convenio ya viaja en ese JSON. Anterior a este cambio; sin revisar.
 
 Referencia rápida de cosas que YA SABEMOS que no hay que confiar en ellas, para no perder tiempo redescubriéndolas.
 

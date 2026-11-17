@@ -677,3 +677,406 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     assert.equal(fila.total_bruto, 180_000)
   })
 })
+
+// "Cédula convenio" en los Excel de liquidación (Liquidación RTM, Trazabilidad
+// RTM y Exportar placas). Sale de convenios.doc_numero por c.convenio_id;
+// "Pendiente" si está vacía o es inventada por el seeder (9999 + 6 dígitos).
+// Siembra 3 convenios (cédula real con cero adelante, inventada y vacía), un
+// asesor convenio y un comercial con una comisión PAGADA por convenio en un
+// día aislado (2031), más una comisión de comercial sin convenio. Placas
+// GZD9xx. Limpieza completa.
+test.group('Cédula convenio en Excel de liquidación', (group) => {
+  group.each.timeout(60_000)
+
+  const DIA_CED = '2031-05-09'
+  const CED_REAL = '0012345678'
+  const CED_INVENTADA = '9999999901'
+  const MONEY_FMT = '$#,##0'
+  const CLAVES = ['REAL', 'INVENTADA', 'VACIA'] as const
+  type Clave = (typeof CLAVES)[number]
+  const ESPERADA_K: Record<Clave, string> = {
+    REAL: CED_REAL,
+    INVENTADA: 'Pendiente',
+    VACIA: 'Pendiente',
+  }
+
+  let admin: Usuario
+  let token = ''
+  let agenteConvenio: AgenteCaptacion
+  let agenteComercial: AgenteCaptacion
+  const conv = {} as Record<Clave, number>
+  // Comisiones por sección y convenio, para el body de exportar-placas.
+  const comAc = {} as Record<Clave, number>
+  const comCv = {} as Record<Clave, number>
+  let comComercialSinConv = 0
+  const convenioIds: number[] = []
+  const comisionIds: number[] = []
+  const dateoIds: number[] = []
+  const placas: string[] = []
+  let numero = 0
+
+  const auth = () => ({ Authorization: `Bearer ${token}` })
+  const base = () => `http://${process.env.HOST}:${process.env.PORT}/api/reportes-admin`
+
+  /** Turno + dateo consumido + comisión PAGADA (lo mínimo que exige resolvePlacasPorComisionIds). */
+  async function comision(
+    asesorId: number,
+    convenioId: number | null,
+    montoAsesor: number,
+    montoConvenio: number
+  ) {
+    numero++
+    const placa = `GZD9${String(numero).padStart(2, '0')}`
+    placas.push(placa)
+    const t = await TurnoRtm.create({
+      sedeId: SEDE_ID,
+      funcionarioId: admin.id,
+      servicioId: SERVICIO_RTM,
+      fecha: DateTime.fromISO(`${DIA_CED}T09:00:00`, { zone: 'America/Bogota' }),
+      horaIngreso: '08:00',
+      horaSalida: '09:00:00',
+      tieneFacturacion: true,
+      turnoNumero: -(9600 + numero),
+      turnoNumeroServicio: -(9600 + numero),
+      turnoCodigo: `GZD-CED-${placa}-${Date.now()}`,
+      placa,
+      tipoVehiculo: 'Liviano Particular',
+      estado: 'finalizado',
+    } as any)
+    const [dateoId] = await Database.table('captacion_dateos').insert({
+      canal: 'ASESOR_CONVENIO',
+      origen: 'UI',
+      placa,
+      agente_id: asesorId,
+      convenio_id: convenioId,
+      servicio_id: SERVICIO_RTM,
+      resultado: 'EXITOSO',
+      consumido_turno_id: t.id,
+    })
+    dateoIds.push(dateoId)
+    const [id] = await Database.table('comisiones').insert({
+      captacion_dateo_id: dateoId,
+      asesor_id: asesorId,
+      convenio_id: convenioId,
+      tipo_servicio: 'RTM',
+      tipo_vehiculo: 'VEHICULO',
+      monto: montoAsesor + montoConvenio,
+      monto_asesor: montoAsesor,
+      monto_convenio: montoConvenio,
+      estado: 'PAGADA',
+      es_config: false,
+      fecha_calculo: `${DIA_CED} 10:00:00`,
+      created_at: `${DIA_CED} 10:00:00`,
+      updated_at: `${DIA_CED} 10:00:00`,
+    })
+    comisionIds.push(id)
+    return id
+  }
+
+  async function leerExcel(r: Response) {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load((await r.arrayBuffer()) as any)
+    return wb.worksheets[0]
+  }
+  const valores = (row: ExcelJS.Row) =>
+    (row.values as any[]).slice(1).map((v) => String(v ?? ''))
+  /** Fila (1-indexada) cuya primera celda es exactamente `texto`, a partir de `desde`. */
+  function filaCon(ws: ExcelJS.Worksheet, texto: string, desde = 1): number {
+    for (let i = desde; i <= ws.rowCount; i++) {
+      if (String(ws.getRow(i).getCell(1).value ?? '') === texto) return i
+    }
+    return -1
+  }
+  /** Header y filas de una sección del Excel de liquidación (hasta la línea en blanco). */
+  function filasSeccion(ws: ExcelJS.Worksheet, titulo: string) {
+    const t = filaCon(ws, titulo)
+    const header = valores(ws.getRow(t + 1))
+    const filas: ExcelJS.Row[] = []
+    for (let i = t + 2; i <= ws.rowCount; i++) {
+      const row = ws.getRow(i)
+      if (!row.getCell(1).value) break
+      filas.push(row)
+    }
+    return { header, filas }
+  }
+
+  group.setup(async () => {
+    const previos = await Database.from('convenios')
+      .whereIn('doc_numero', [CED_REAL, CED_INVENTADA])
+      .count('* as n')
+    if (Number(previos[0].n) > 0) throw new Error('Cédulas de prueba ya existen: no se siembra.')
+    const previosT = await Database.from('turnos_rtms').where('placa', 'like', 'GZD9%').count('* as n')
+    if (Number(previosT[0].n) > 0) throw new Error('Placas GZD9xx ya existen: no se siembra.')
+
+    admin = await Usuario.create({
+      nombres: 'TEST',
+      apellidos: 'CEDULA-CONVENIO',
+      correo: `test.cedula.convenio.${Date.now()}@test.local`,
+      password: 'Test1234!Aa',
+      rolId: ROL_SUPER_ADMIN,
+      sedeId: SEDE_ID,
+    } as any)
+    token = (await Usuario.accessTokens.create(admin)).value!.release()!
+    agenteConvenio = await AgenteCaptacion.create({
+      tipo: 'ASESOR_CONVENIO',
+      nombre: 'TEST GZD ASESOR CONVENIO',
+      activo: true,
+    } as any)
+    agenteComercial = await AgenteCaptacion.create({
+      tipo: 'ASESOR_COMERCIAL',
+      nombre: 'TEST GZD COMERCIAL',
+      activo: true,
+    } as any)
+
+    const docs: Record<Clave, string | null> = {
+      REAL: CED_REAL,
+      INVENTADA: CED_INVENTADA,
+      VACIA: null,
+    }
+    for (const k of CLAVES) {
+      const [id] = await Database.table('convenios').insert({
+        tipo: 'PERSONA',
+        nombre: `TEST GZD CONVENIO ${k}`,
+        doc_tipo: docs[k] ? 'CC' : null,
+        doc_numero: docs[k],
+        activo: true,
+        estado: 'ACTIVO',
+      })
+      conv[k] = id
+      convenioIds.push(id)
+    }
+
+    // Montos distintos por convenio para ubicar cada fila.
+    let m = 1
+    for (const k of CLAVES) {
+      comAc[k] = await comision(agenteConvenio.id, conv[k], 10_000 * m, 1_000 * m)
+      comCv[k] = await comision(agenteComercial.id, conv[k], 0, 2_000 * m)
+      m++
+    }
+    comComercialSinConv = await comision(agenteComercial.id, null, 7_000, 0)
+  })
+
+  group.teardown(async () => {
+    if (comisionIds.length) await Database.from('comisiones').whereIn('id', comisionIds).delete()
+    if (dateoIds.length) await Database.from('captacion_dateos').whereIn('id', dateoIds).delete()
+    if (placas.length) await Database.from('turnos_rtms').whereIn('placa', placas).delete()
+    if (convenioIds.length) await Database.from('convenios').whereIn('id', convenioIds).delete()
+    if (agenteConvenio) await agenteConvenio.delete()
+    if (agenteComercial) await agenteComercial.delete()
+    if (admin) await admin.delete()
+  })
+
+  for (const [nombre, ruta] of [
+    ['Liquidación RTM', 'liquidacion-rtm/excel'],
+    ['Trazabilidad RTM', 'trazabilidad-rtm/excel'],
+  ] as const) {
+    test(`${nombre} Excel: columna "Cédula convenio" en Asesores Convenio y Convenios`, async ({
+      assert,
+    }) => {
+      const qs = new URLSearchParams({ fecha_inicio: DIA_CED, fecha_fin: DIA_CED })
+      const r = await fetch(`${base()}/${ruta}?${qs}`, { headers: auth() })
+      assert.equal(r.status, 200)
+      const ws = await leerExcel(r)
+
+      // Secciones que no cambian: mismas columnas que antes.
+      assert.deepEqual(filasSeccion(ws, 'Por canal de captación').header, [
+        'Canal',
+        'Turnos',
+        'Monto',
+        '%',
+      ])
+      const com = filasSeccion(ws, 'Asesores Comerciales')
+      assert.deepEqual(com.header, ['Asesor', 'Turnos', 'Monto', 'Estados'])
+      const filaCom = com.filas.find((f) => f.getCell(1).value === 'TEST GZD COMERCIAL')
+      assert.exists(filaCom)
+      // 4 turnos: sus 3 comisiones con convenio (monto asesor 0) + la de sin convenio.
+      assert.deepEqual(valores(filaCom!), ['TEST GZD COMERCIAL', '4', '7000', 'PAGADA'])
+
+      // Asesores Convenio: la cédula va en la col. 3, los montos se corren a 5 y 6.
+      const ac = filasSeccion(ws, 'Asesores Convenio')
+      assert.deepEqual(ac.header, [
+        'Asesor',
+        'Convenio',
+        'Cédula convenio',
+        'Turnos',
+        'Monto asesor',
+        'Monto convenio',
+        'Estados',
+      ])
+      const filasAc = ac.filas.filter((f) => f.getCell(1).value === 'TEST GZD ASESOR CONVENIO')
+      assert.lengthOf(filasAc, 3)
+      let m = 1
+      for (const k of CLAVES) {
+        const f = filasAc.find((x) => x.getCell(2).value === `TEST GZD CONVENIO ${k}`)
+        assert.exists(f, k)
+        assert.strictEqual(f!.getCell(3).value, ESPERADA_K[k], k)
+        assert.equal(f!.getCell(3).numFmt, '@')
+        assert.equal(f!.getCell(4).value, 1)
+        assert.equal(f!.getCell(5).value, 10_000 * m)
+        assert.equal(f!.getCell(6).value, 1_000 * m)
+        assert.equal(f!.getCell(7).value, 'PAGADA')
+        m++
+      }
+
+      // Convenios: la cédula va en la col. 2, "Asesor comercial" pasa a la 3.
+      const cv = filasSeccion(ws, 'Convenios')
+      assert.deepEqual(cv.header, [
+        'Convenio',
+        'Cédula convenio',
+        'Asesor comercial',
+        'Turnos',
+        'Monto convenio',
+        'Estados',
+      ])
+      m = 1
+      for (const k of CLAVES) {
+        const f = cv.filas.find((x) => x.getCell(1).value === `TEST GZD CONVENIO ${k}`)
+        assert.exists(f, k)
+        assert.strictEqual(f!.getCell(2).value, ESPERADA_K[k], k)
+        assert.equal(f!.getCell(2).numFmt, '@')
+        assert.equal(f!.getCell(3).value, 'TEST GZD COMERCIAL')
+        assert.equal(f!.getCell(4).value, 1)
+        assert.equal(f!.getCell(5).value, 2_000 * m)
+        assert.equal(f!.getCell(6).value, 'PAGADA')
+        m++
+      }
+    })
+  }
+
+  test('Exportar placas: "Cédula convenio" en los resúmenes, demás columnas sin moverse', async ({
+    assert,
+  }) => {
+    const body = {
+      fecha_inicio: DIA_CED,
+      fecha_fin: DIA_CED,
+      secciones: {
+        // Canal y Descuentos sin placas ese día: solo se valida su header.
+        canal: [{ nombre: 'GRUPO CANAL', canal: 'FACHADA' }],
+        descuentos: [{ nombre: 'GRUPO DESCUENTO', codigo: 'GZD-NO-EXISTE' }],
+        comerciales: [{ nombre: 'GRUPO COMERCIAL', comision_ids: [comComercialSinConv] }],
+        asesoresConvenio: CLAVES.map((k) => ({ nombre: `AC ${k}`, comision_ids: [comAc[k]] })),
+        convenios: CLAVES.map((k) => ({
+          nombre: `TEST GZD CONVENIO ${k}`,
+          comision_ids: [comCv[k]],
+        })),
+      },
+    }
+    const r = await fetch(`${base()}/liquidacion-rtm/exportar-placas`, {
+      method: 'POST',
+      headers: { ...auth(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    assert.equal(r.status, 200)
+    const ws = await leerExcel(r)
+    const fila = (texto: string, desde: number) => {
+      const i = filaCon(ws, texto, desde)
+      assert.isAbove(i, 0, texto)
+      return ws.getRow(i)
+    }
+
+    // Canal / Descuentos / Comerciales: headers de detalle y resumen intactos.
+    const iCanal = filaCon(ws, 'POR CANAL DE CAPTACIÓN')
+    assert.deepEqual(valores(ws.getRow(iCanal + 2)), ['Placa', 'Vehículo', 'Fecha pago', 'Monto'])
+    const iDesc = filaCon(ws, 'DESCUENTOS APLICADOS')
+    assert.deepEqual(valores(ws.getRow(iDesc + 2)), [
+      'Placa',
+      'Vehículo',
+      'Convenio',
+      'Fecha',
+      'Monto descuento',
+      'Comisión asesor',
+      'Comisión convenio',
+      'Regla aplicada',
+      'Consecutivo del descuento',
+    ])
+    const iCom = filaCon(ws, 'ASESORES COMERCIALES')
+    assert.deepEqual(valores(ws.getRow(iCom + 1)), ['Asesor', 'Turnos', 'Monto', 'Estados'])
+    const resCom = ws.getRow(iCom + 2)
+    assert.deepEqual(valores(resCom), ['GRUPO COMERCIAL', '1', '7000', 'PAGADA'])
+    assert.equal(resCom.getCell(3).numFmt, MONEY_FMT)
+    assert.deepEqual(valores(ws.getRow(iCom + 3)), [
+      'Placa',
+      'Vehículo',
+      'Estado',
+      'Fecha',
+      'Clasificación',
+      'Convenio',
+      'Descuento',
+      'Valor a pagar',
+    ])
+    assert.equal(ws.getRow(iCom + 4).getCell(8).value, 7_000)
+    assert.equal(ws.getRow(iCom + 4).getCell(8).numFmt, MONEY_FMT)
+
+    // Asesores Convenio: resumen con la cédula en la col. 3, montos en 5 y 6.
+    const iAc = filaCon(ws, 'ASESORES CONVENIO')
+    assert.deepEqual(valores(ws.getRow(iAc + 1)), [
+      'Asesor',
+      'Convenio',
+      'Cédula convenio',
+      'Turnos',
+      'Monto asesor',
+      'Monto convenio',
+      'Estados',
+    ])
+    let m = 1
+    for (const k of CLAVES) {
+      const f = fila(`AC ${k}`, iAc)
+      assert.equal(f.getCell(2).value, `TEST GZD CONVENIO ${k}`)
+      assert.strictEqual(f.getCell(3).value, ESPERADA_K[k], k)
+      assert.equal(f.getCell(3).numFmt, '@')
+      assert.equal(f.getCell(4).value, 1)
+      assert.equal(f.getCell(5).value, 10_000 * m)
+      assert.equal(f.getCell(5).numFmt, MONEY_FMT)
+      assert.equal(f.getCell(6).value, 1_000 * m)
+      assert.equal(f.getCell(6).numFmt, MONEY_FMT)
+      assert.equal(f.getCell(7).value, 'PAGADA')
+      m++
+    }
+    // El detalle de placas de Asesores Convenio no cambia (10 columnas).
+    assert.deepEqual(valores(ws.getRow(filaCon(ws, 'AC REAL', iAc) + 1)), [
+      'Placa',
+      'Vehículo',
+      'Estado',
+      'Fecha',
+      'Clasificación',
+      'Continuidad',
+      'Medio de pago',
+      'Descuento',
+      'Valor a pagar (asesor)',
+      'Valor a pagar (convenio)',
+    ])
+
+    // Convenios: resumen con la cédula en la col. 2, monto en la 5.
+    const iCv = filaCon(ws, 'CONVENIOS')
+    assert.deepEqual(valores(ws.getRow(iCv + 1)), [
+      'Convenio',
+      'Cédula convenio',
+      'Asesor comercial',
+      'Turnos',
+      'Monto convenio',
+      'Estados',
+    ])
+    m = 1
+    for (const k of CLAVES) {
+      const f = fila(`TEST GZD CONVENIO ${k}`, iCv)
+      assert.strictEqual(f.getCell(2).value, ESPERADA_K[k], k)
+      assert.equal(f.getCell(2).numFmt, '@')
+      assert.equal(f.getCell(3).value, 'TEST GZD COMERCIAL')
+      assert.equal(f.getCell(4).value, 1)
+      assert.equal(f.getCell(5).value, 2_000 * m)
+      assert.equal(f.getCell(5).numFmt, MONEY_FMT)
+      assert.equal(f.getCell(6).value, 'PAGADA')
+      m++
+    }
+    assert.deepEqual(valores(ws.getRow(filaCon(ws, 'TEST GZD CONVENIO REAL', iCv) + 1)), [
+      'Placa',
+      'Vehículo',
+      'Estado',
+      'Fecha',
+      'Clasificación',
+      'Medio de pago',
+      'Descuento',
+      'Valor a pagar',
+    ])
+  })
+})

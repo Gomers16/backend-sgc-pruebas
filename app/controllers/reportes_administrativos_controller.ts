@@ -96,6 +96,20 @@ function parseIdList(raw: unknown): number[] {
     .map(Number)
 }
 
+/**
+ * Cédula del convenio (convenios.doc_numero) para los Excel de liquidación.
+ * "Pendiente" si está vacía o es una de las cédulas inventadas por
+ * convenios_excel_seeder.ts (9999 + 6 dígitos, asignadas cuando la CC del
+ * Excel de origen faltaba o estaba repetida). Las reales van tal cual, como
+ * texto (string con numFmt '@', nunca número) para no perder ceros ni pasar
+ * a notación científica.
+ */
+export function formatearCedulaConvenio(docNumero: string | null | undefined): string {
+  const doc = String(docNumero ?? '').trim()
+  if (!doc || /^9999\d{6}$/.test(doc)) return 'Pendiente'
+  return doc
+}
+
 /* ======================== META MENSUAL — HELPERS ======================== */
 
 /**
@@ -3366,20 +3380,26 @@ export default class ReportesAdministrativosController {
     qAsesoresConvenio.where('a.tipo', 'ASESOR_CONVENIO')
 
     const asesoresConvenioRows = (await qAsesoresConvenio
-      .select('a.id as asesor_id', 'a.nombre as asesor_nombre', 'conv.nombre as convenio_nombre')
+      .select(
+        'a.id as asesor_id',
+        'a.nombre as asesor_nombre',
+        'conv.nombre as convenio_nombre',
+        'conv.doc_numero as convenio_doc_numero'
+      )
       .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
       .select(...idsSelect)
       .count('* as cantidad_vehiculos')
       .sum('c.monto_asesor as total_asesor')
       .sum('c.monto_convenio as total_convenio')
       .sum('c.monto as total_comision')
-      .groupBy('a.id', 'a.nombre', 'conv.id', 'conv.nombre')
+      .groupBy('a.id', 'a.nombre', 'conv.id', 'conv.nombre', 'conv.doc_numero')
       .orderBy('total_comision', 'desc')) as any[]
 
     const asesoresConvenio = asesoresConvenioRows.map((r) => ({
       asesor_id: Number(r.asesor_id),
       asesor_nombre: r.asesor_nombre,
       convenio_nombre: r.convenio_nombre ?? null,
+      convenio_doc_numero: r.convenio_doc_numero ?? null,
       cantidad_vehiculos: Number(r.cantidad_vehiculos),
       total_asesor: Number(r.total_asesor) || 0,
       total_convenio: Number(r.total_convenio) || 0,
@@ -3406,18 +3426,20 @@ export default class ReportesAdministrativosController {
       .select(
         'conv.id as convenio_id',
         'conv.nombre as convenio_nombre',
+        'conv.doc_numero as convenio_doc_numero',
         'a.nombre as asesor_comercial_nombre'
       )
       .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
       .select(...idsSelect)
       .count('* as cantidad_vehiculos')
       .sum('c.monto_convenio as total_convenio')
-      .groupBy('conv.id', 'conv.nombre', 'a.id', 'a.nombre')
+      .groupBy('conv.id', 'conv.nombre', 'conv.doc_numero', 'a.id', 'a.nombre')
       .orderBy('total_convenio', 'desc')) as any[]
 
     const convenios = conveniosRows.map((r) => ({
       convenio_id: Number(r.convenio_id),
       convenio_nombre: r.convenio_nombre,
+      convenio_doc_numero: r.convenio_doc_numero ?? null,
       asesor_comercial_nombre: r.asesor_comercial_nombre,
       cantidad_vehiculos: Number(r.cantidad_vehiculos),
       total_convenio: Number(r.total_convenio) || 0,
@@ -3601,6 +3623,7 @@ export default class ReportesAdministrativosController {
         't.estado_continuidad',
         'a.nombre as asesor_nombre',
         'conv.nombre as convenio_nombre',
+        'conv.doc_numero as convenio_doc_numero',
         'conv.metodo_pago',
         'conv.numero_metodo_pago',
         'c.es_avance',
@@ -3634,6 +3657,7 @@ export default class ReportesAdministrativosController {
         estado_continuidad: r.estado_continuidad ?? null,
         asesor_nombre: r.asesor_nombre ?? null,
         convenio_nombre: r.convenio_nombre ?? null,
+        convenio_doc_numero: r.convenio_doc_numero ?? null,
         metodo_pago: r.metodo_pago ?? null,
         numero_metodo_pago: r.numero_metodo_pago ?? null,
         es_avance: Boolean(r.es_avance),
@@ -4094,17 +4118,29 @@ export default class ReportesAdministrativosController {
     // visualmente separadas (fila del acordeón + detalle expandido).
     // Calculada sobre las placas YA RESUELTAS para exportar (no reenviada
     // desde el frontend), así el número siempre cuadra con lo listado debajo.
+    // "Cédula convenio" va justo después de "Convenio" (sale de
+    // conv.doc_numero por c.convenio_id — ver formatearCedulaConvenio).
     const COLUMNAS_RESUMEN: Record<string, string[]> = {
       comerciales: ['Asesor', 'Turnos', 'Monto', 'Estados'],
-      asesores_convenio: ['Asesor', 'Convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'],
-      convenios: ['Convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'],
+      asesores_convenio: [
+        'Asesor', 'Convenio', 'Cédula convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados',
+      ],
+      convenios: ['Convenio', 'Cédula convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'],
     }
     // Columna(s) 1-indexada(s) de dinero dentro de la fila RESUMEN, por sección.
     const COL_MONTO_RESUMEN: Record<string, number[]> = {
       comerciales: [3],
-      asesores_convenio: [4, 5],
-      convenios: [4],
+      asesores_convenio: [5, 6],
+      convenios: [5],
     }
+    // Columna 1-indexada de la cédula en la fila RESUMEN (se fuerza a texto).
+    const COL_CEDULA_RESUMEN: Record<string, number> = {
+      asesores_convenio: 3,
+      convenios: 2,
+    }
+    // Sin placas o sin convenio en la comisión ⇒ no hay convenio del que dar cédula.
+    const cedulaGrupo = (placas: any[]): string =>
+      placas[0]?.con_convenio ? formatearCedulaConvenio(placas[0].convenio_doc_numero) : '—'
     const filaResumenValores = (seccion: string, grupo: { nombre: string; placas: any[] }): (string | number)[] => {
       const placas = grupo.placas
       const n = placas.length
@@ -4116,11 +4152,14 @@ export default class ReportesAdministrativosController {
       if (seccion === 'asesores_convenio') {
         const montoAsesor = placas.reduce((s: number, p: any) => s + (Number(p.monto_asesor) || 0), 0)
         const montoConvenio = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
-        return [grupo.nombre, placas[0]?.convenio_nombre ?? '—', n, montoAsesor, montoConvenio, estados]
+        return [
+          grupo.nombre, placas[0]?.convenio_nombre ?? '—', cedulaGrupo(placas),
+          n, montoAsesor, montoConvenio, estados,
+        ]
       }
       if (seccion === 'convenios') {
         const monto = placas.reduce((s: number, p: any) => s + (Number(p.monto_convenio) || 0), 0)
-        return [grupo.nombre, placas[0]?.asesor_nombre ?? '—', n, monto, estados]
+        return [grupo.nombre, cedulaGrupo(placas), placas[0]?.asesor_nombre ?? '—', n, monto, estados]
       }
       return [grupo.nombre]
     }
@@ -4184,6 +4223,7 @@ export default class ReportesAdministrativosController {
             filaResumen.getCell(col).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }
           }
           for (const col of colMontoResumen) filaResumen.getCell(col).numFmt = MONEY_FMT
+          if (COL_CEDULA_RESUMEN[seccion]) filaResumen.getCell(COL_CEDULA_RESUMEN[seccion]).numFmt = '@'
         } else {
           // canal / descuentos: sin tabla resumen propia (fuera de alcance
           // de este rediseño) — fila de grupo simple, como siempre.
@@ -4594,6 +4634,7 @@ export default class ReportesAdministrativosController {
       asesores_convenio: {
         asesor_nombre: string
         convenio_nombre: string | null
+        convenio_doc_numero: string | null
         cantidad_vehiculos: number
         total_asesor: number
         total_convenio: number
@@ -4601,6 +4642,7 @@ export default class ReportesAdministrativosController {
       }[]
       convenios: {
         convenio_nombre: string
+        convenio_doc_numero: string | null
         asesor_comercial_nombre: string
         cantidad_vehiculos: number
         total_convenio: number
@@ -4611,7 +4653,9 @@ export default class ReportesAdministrativosController {
   ) {
     const workbook = new ExcelJS.Workbook()
     const ws = workbook.addWorksheet('Liquidación RTM')
-    ws.columns = [{ width: 34 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 26 }]
+    ws.columns = [
+      { width: 34 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 26 }, { width: 26 },
+    ]
 
     const seccion = (titulo: string) => {
       ws.addRow([titulo]).font = { bold: true }
@@ -4658,24 +4702,35 @@ export default class ReportesAdministrativosController {
     ws.addRow([])
 
     seccion('Asesores Convenio')
-    encabezadoFila(['Asesor', 'Convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'])
-    data.asesores_convenio.forEach((r) =>
-      ws.addRow([
+    // "Cédula convenio" justo después de "Convenio", como texto (numFmt '@').
+    encabezadoFila(['Asesor', 'Convenio', 'Cédula convenio', 'Turnos', 'Monto asesor', 'Monto convenio', 'Estados'])
+    data.asesores_convenio.forEach((r) => {
+      const fila = ws.addRow([
         r.asesor_nombre,
         r.convenio_nombre ?? '—',
+        r.convenio_nombre ? formatearCedulaConvenio(r.convenio_doc_numero) : '—',
         r.cantidad_vehiculos,
         r.total_asesor,
         r.total_convenio,
         r.estados,
       ])
-    )
+      fila.getCell(3).numFmt = '@'
+    })
     ws.addRow([])
 
     seccion('Convenios')
-    encabezadoFila(['Convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'])
-    data.convenios.forEach((r) =>
-      ws.addRow([r.convenio_nombre, r.asesor_comercial_nombre, r.cantidad_vehiculos, r.total_convenio, r.estados])
-    )
+    encabezadoFila(['Convenio', 'Cédula convenio', 'Asesor comercial', 'Turnos', 'Monto convenio', 'Estados'])
+    data.convenios.forEach((r) => {
+      const fila = ws.addRow([
+        r.convenio_nombre,
+        formatearCedulaConvenio(r.convenio_doc_numero),
+        r.asesor_comercial_nombre,
+        r.cantidad_vehiculos,
+        r.total_convenio,
+        r.estados,
+      ])
+      fila.getCell(2).numFmt = '@'
+    })
 
     return await workbook.xlsx.writeBuffer()
   }
