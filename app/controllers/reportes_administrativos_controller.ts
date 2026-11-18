@@ -22,6 +22,7 @@ import {
 } from '#services/meta_comercial_rtm_service'
 import { excluirSegundaVez, excluirSegundaVezSql } from '#services/segunda_vez_service'
 import { sqlConsecutivoDescuentoDelTurno } from '#services/consecutivo_descuento_service'
+import { calcularPct, calcularSemaforo } from '#services/semaforo_service'
 import {
   COMERCIAL_POR_CONVENIO,
   armarFilasCanal,
@@ -290,25 +291,9 @@ async function obtenerConteoDiarioConFallback(
   return { dias, fuente }
 }
 
-/**
- * Semáforo genérico: >=100% verde, >=90% amarillo, resto rojo.
- * Umbral no especificado por el negocio — asunción documentada en el
- * resumen de implementación.
- *
- * `pct === null` significa "meta no configurada" (ver calcularPct) — se
- * retorna el estado neutro 'SIN_META' en vez de tratarlo como ROJO, para
- * no confundir "sin meta" con "va mal".
- */
-function calcularSemaforo(pct: number | null): 'VERDE' | 'AMARILLO' | 'ROJO' | 'SIN_META' {
-  if (pct === null) return 'SIN_META'
-  if (pct >= 100) return 'VERDE'
-  if (pct >= 90) return 'AMARILLO'
-  return 'ROJO'
-}
-
-export function calcularPct(avance: number, meta: number): number | null {
-  return meta > 0 ? Math.round((avance / meta) * 1000) / 10 : null
-}
+// Semáforo (>=100% verde, >=90% amarillo, resto rojo; null = SIN_META) y %:
+// movidos sin cambios a semaforo_service.ts (los comparte Telemercadeo).
+export { calcularPct }
 
 /**
  * Obtiene la fila de configuración de un mes/año, creándola con metas en 0
