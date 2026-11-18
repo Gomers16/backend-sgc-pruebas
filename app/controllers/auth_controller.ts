@@ -35,6 +35,7 @@ export default class AuthController {
       const userData = user.serialize()
       userData.profilePictureUrl = user.fotoPerfil
       userData.agenteId = user.agenteCaptacion?.id ?? null
+      userData.agenteTipo = user.agenteCaptacion?.tipo ?? null
 
       // 🔥 RESPUESTA CORRECTA
       return response.ok({
@@ -69,6 +70,7 @@ export default class AuthController {
 
       const userData = user.serialize()
       userData.agenteId = user.agenteCaptacion?.id ?? null
+      userData.agenteTipo = user.agenteCaptacion?.tipo ?? null
 
       return response.ok({
         user: userData,

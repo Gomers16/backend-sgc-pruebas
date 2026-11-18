@@ -18,6 +18,37 @@ function sanitizeSegments(seg: string[]) {
   return path.normalize(joined).replace(/^(\.\.(\/|\\|$))+/g, '')
 }
 
+/**
+ * Carpetas privadas: se suben por POST /api/media/upload (carpeta=...) pero
+ * GET/DELETE /api/uploads/* no las sirven ni las borran. Las evidencias de
+ * Telemercadeo se ven por GET /api/telemercadeo/gestiones/:id/evidencia.
+ */
+const CARPETAS_PRIVADAS = ['telemercadeo'] as const
+
+/**
+ * ¿La ruta absoluta cae dentro de una carpeta privada? Se compara la ruta ya
+ * resuelta (no el primer segmento), así que "dateos/../telemercadeo/x" o
+ * mayúsculas en Windows ("TELEMERCADEO") también quedan bloqueados.
+ */
+/**
+ * Segmentos con % o \ (barras codificadas, "..%2f…"): app.makePath() lanza
+ * ERR_INVALID_FILE_URL_PATH (500). Ningún archivo subido los usa (cuid + ext),
+ * así que se responde como inexistente antes de resolver la ruta.
+ */
+const tieneSegmentoCodificado = (parts: string[]) => parts.some((p) => /[%\\]/.test(p))
+
+function esRutaPrivada(abs: string): boolean {
+  const norm = (p: string) => {
+    const r = path.resolve(p)
+    return process.platform === 'win32' ? r.toLowerCase() : r
+  }
+  const destino = norm(abs)
+  return CARPETAS_PRIVADAS.some((c) => {
+    const raiz = norm(app.makePath('uploads', c))
+    return destino === raiz || destino.startsWith(raiz + path.sep)
+  })
+}
+
 export default class UploadsController {
   /**
    * POST /api/uploads/images
@@ -73,7 +104,17 @@ export default class UploadsController {
     // a Dateos, y no se toca para no invalidar URLs de imágenes ya guardadas
     // en la base — el ramal de imagen sigue exactamente igual que antes.
     const esVideo = (ALLOWED_VIDEO as readonly string[]).includes(ext)
-    const carpeta = esVideo ? 'turnero' : 'dateos'
+    // carpeta=telemercadeo: evidencia privada de una gestión (solo imágenes).
+    // Se devuelve `ruta` (no una URL pública): no la sirve GET /api/uploads/*.
+    const carpetaPedida = String(request.input('carpeta') ?? '').trim().toLowerCase()
+    const esPrivada = carpetaPedida === 'telemercadeo'
+    if (carpetaPedida && !esPrivada) {
+      return response.badRequest({ message: 'carpeta inválida' })
+    }
+    if (esPrivada && esVideo) {
+      return response.badRequest({ message: 'Las evidencias de Telemercadeo deben ser imágenes' })
+    }
+    const carpeta = esPrivada ? 'telemercadeo' : esVideo ? 'turnero' : 'dateos'
 
     const baseDir = app.makePath('uploads', carpeta, y, m)
     await fsp.mkdir(baseDir, { recursive: true })
@@ -84,6 +125,18 @@ export default class UploadsController {
     await fsp.copyFile(file.tmpPath, absPath)
 
     const stat = await fsp.stat(absPath)
+
+    if (esPrivada) {
+      return response.created({
+        id: filename,
+        url: null,
+        ruta: `${carpeta}/${y}/${m}/${filename}`,
+        mime: file.type || null,
+        size: stat.size,
+        hash: null,
+      })
+    }
+
     // URL relativa servida por GET /api/uploads/*
     const url = `/api/uploads/${carpeta}/${y}/${m}/${filename}`
 
@@ -106,8 +159,16 @@ export default class UploadsController {
           .split(/[\\/]+/)
           .filter(Boolean)
 
+    if (tieneSegmentoCodificado(parts)) {
+      return response.notFound({ message: 'Archivo no encontrado' })
+    }
     const safeRel = sanitizeSegments(parts)
     const abs = app.makePath('uploads', safeRel)
+
+    // Carpeta privada: mismo 404 que un archivo inexistente (no se revela que existe).
+    if (esRutaPrivada(abs)) {
+      return response.notFound({ message: 'Archivo no encontrado' })
+    }
 
     if (!fs.existsSync(abs)) {
       return response.notFound({
@@ -128,8 +189,15 @@ export default class UploadsController {
           .split(/[\\/]+/)
           .filter(Boolean)
 
+    if (tieneSegmentoCodificado(parts)) {
+      return response.notFound({ message: 'Archivo no encontrado' })
+    }
     const safeRel = sanitizeSegments(parts)
     const abs = app.makePath('uploads', safeRel)
+
+    if (esRutaPrivada(abs)) {
+      return response.forbidden({ message: 'No se puede borrar este archivo' })
+    }
 
     if (!fs.existsSync(abs)) {
       return response.notFound({ message: 'Archivo no encontrado', tried: safeRel, absPath: abs })

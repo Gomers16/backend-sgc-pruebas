@@ -22,13 +22,18 @@ import {
   ttlPostConsumoDiasPorServicio,
 } from '#services/reserva_dateo_service'
 import { excluirSegundaVezSql, whereTurnoDaVigencia } from '#services/segunda_vez_service'
+import {
+  MESES_VIGENCIA_RTM,
+  bloqueaDateoRtm,
+  diasVentanaPreRtm,
+  vigenciaRtm,
+} from '#services/ventana_rtm_service'
+import { seguimientoPorPlacas, type SeguimientoPlaca } from '#services/telemercadeo_gestion_service'
 
 const ZONA = 'America/Bogota'
 
-/** Vigencia del RTM (igual que captacion_dateos_controller.ts y WINDOW_BLOCK). */
-export const MESES_VIGENCIA_RTM = 12
-/** Ventana previa de referencia visual (DIAS_VENTANA_PRE de turnos_rtms_controller.ts). */
-export const DIAS_VENTANA_PREVIA = 16
+/** Vigencia del RTM: ver ventana_rtm_service.ts (misma regla que store() de dateos). */
+export { MESES_VIGENCIA_RTM }
 /** POR_VENCER: vencen en los próximos N días… */
 export const DIAS_POR_VENCER = 30
 /** …o vencieron hace a lo sumo N días. */
@@ -79,6 +84,14 @@ export interface FilaCola {
   vence_el: string | null
   puede_datear_desde: string | null
   dias_para_vencer: number | null
+  /**
+   * Solo CLIENTES: placas del cliente con RTM vigente (store() rechazaría
+   * hoy un dateo RTM con RTM_VIGENTE). No se excluyen: siguen siendo
+   * datables para SOAT, Preventiva o Peritaje.
+   */
+  rtm_vigentes: Array<{ placa: string; vence_el: string; puede_datear_desde: string }>
+  /** Seguimiento de Telemercadeo de la placa con la gestión más reciente (null si no hay). */
+  seguimiento: SeguimientoPlaca | null
 }
 
 export interface ParametrosCola {
@@ -88,6 +101,8 @@ export interface ParametrosCola {
   orden: OrdenClientes
   page: number
   perPage: number
+  /** Agente de Telemercadeo que consulta (para su límite de seguimientos); null = global. */
+  agenteId?: number | null
 }
 
 export interface ResultadoCola {
@@ -204,9 +219,7 @@ async function candidatosPorVencer(hoyISO: string, rtmId: number): Promise<FilaC
   const filas: FilaCola[] = []
   for (const r of rows) {
     const ultimaISO = aFechaISO(r.fecha)
-    const vence = DateTime.fromISO(ultimaISO, { zone: ZONA })
-      .plus({ months: MESES_VIGENCIA_RTM })
-      .startOf('day')
+    const { venceEl: vence, puedeDatearDesde } = vigenciaRtm(ultimaISO)
     const dias = Math.round(vence.diff(hoy.startOf('day'), 'days').days)
     if (dias > DIAS_POR_VENCER || dias < -DIAS_VENCIDAS_RECIENTES) continue
 
@@ -225,8 +238,10 @@ async function candidatosPorVencer(hoyISO: string, rtmId: number): Promise<FilaC
       meses_transcurridos: mesesEntre(ultimaISO, hoyISO),
       rango: dias < 0 ? 'VENCIDAS' : 'PROXIMAS',
       vence_el: vence.toISODate(),
-      puede_datear_desde: vence.minus({ days: DIAS_VENTANA_PREVIA }).toISODate(),
+      puede_datear_desde: puedeDatearDesde.toISODate(),
       dias_para_vencer: dias,
+      rtm_vigentes: [],
+      seguimiento: null,
     })
   }
   return filas.sort((a, b) => a.dias_para_vencer! - b.dias_para_vencer!)
@@ -535,10 +550,59 @@ async function paginaClientes(
       vence_el: null,
       puede_datear_desde: null,
       dias_para_vencer: null,
+      rtm_vigentes: [],
+      seguimiento: null,
     }
   })
 
+  if (rtmId) await marcarRtmVigentes(data, rtmId)
+
   return { data, total, contadores }
+}
+
+/**
+ * CLIENTES: marca las placas de la página con RTM vigente (mismo cálculo
+ * que RTM_VIGENTE de store(), ventana compartida). Una consulta para la página.
+ */
+async function marcarRtmVigentes(filas: FilaCola[], rtmId: number) {
+  const placas = [...new Set(filas.flatMap((f) => f.placas))]
+  if (!placas.length) return
+  const ultimos = await whereTurnoDaVigencia(
+    Database.from('turnos_rtms').where('turnos_rtms.servicio_id', rtmId)
+  )
+    .whereIn('turnos_rtms.placa', placas)
+    .groupBy('turnos_rtms.placa')
+    .select('turnos_rtms.placa')
+    .max('turnos_rtms.fecha as fecha')
+  const vigentes = new Map<string, { vence_el: string; puede_datear_desde: string }>()
+  for (const u of ultimos as any[]) {
+    const v = vigenciaRtm(aFechaISO(u.fecha))
+    if (bloqueaDateoRtm(v)) {
+      vigentes.set(u.placa, {
+        vence_el: v.venceEl.toISODate()!,
+        puede_datear_desde: v.puedeDatearDesde.toISODate()!,
+      })
+    }
+  }
+  for (const f of filas) {
+    f.rtm_vigentes = f.placas
+      .filter((p) => vigentes.has(p))
+      .map((p) => ({ placa: p, ...vigentes.get(p)! }))
+  }
+}
+
+/** Seguimiento de Telemercadeo de la página: el de la placa con la gestión más reciente. */
+async function marcarSeguimiento(filas: FilaCola[], agenteId: number | null) {
+  const mapa = await seguimientoPorPlacas(
+    filas.flatMap((f) => f.placas),
+    agenteId
+  )
+  if (!mapa.size) return
+  for (const f of filas) {
+    const candidatos = f.placas.map((p) => mapa.get(p)).filter((s): s is SeguimientoPlaca => !!s)
+    f.seguimiento =
+      candidatos.sort((a, b) => b.ultima_gestion.id - a.ultima_gestion.id)[0] ?? null
+  }
 }
 
 /* ───────────────────────── Entrada ───────────────────────── */
@@ -573,6 +637,8 @@ export async function obtenerColaTelemercadeo(p: ParametrosCola): Promise<Result
     total = clientes.total
   }
 
+  await marcarSeguimiento(data, p.agenteId ?? null)
+
   return {
     data,
     meta: {
@@ -587,7 +653,7 @@ export async function obtenerColaTelemercadeo(p: ParametrosCola): Promise<Result
       },
       parametros: {
         meses_vigencia_rtm: MESES_VIGENCIA_RTM,
-        dias_ventana_previa: DIAS_VENTANA_PREVIA,
+        dias_ventana_previa: diasVentanaPreRtm(),
         dias_por_vencer: DIAS_POR_VENCER,
         dias_vencidas_recientes: DIAS_VENCIDAS_RECIENTES,
       },

@@ -854,17 +854,100 @@ router
       return new VehiculosController().destroy(ctx)
     })
     /* =========================== TELEMERCADEO ========================== */
-    router
-      .get('/telemercadeo/cola', async (ctx) => {
+    // Cola (solo lectura), gestiones del asesor (solo agentes
+    // ASESOR_TELEMERCADEO registran; se valida en el controlador), y control
+    // de gerencia (metas, resumen, Excel, extras, configuración).
+    {
+      const tele = async () => {
         const { default: TelemercadeoController } = await import(
           '#controllers/telemercadeo_controller'
         )
-        return new TelemercadeoController().cola(ctx)
-      })
-      .use([
+        return new TelemercadeoController()
+      }
+      const lectura = [
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'COMERCIAL'] }),
-      ])
+      ]
+      const soloAsesor = [middleware.auth(), middleware.checkRole({ roles: ['COMERCIAL'] })]
+      const control = [
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }),
+      ]
+      // Mismos roles que /captacion-dateos/config/max-redateos.
+      const configLectura = [
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'CONTABILIDAD', 'COMERCIAL'] }),
+      ]
+      const ID = /^[0-9]+$/
+
+      router.get('/telemercadeo/cola', async (ctx) => (await tele()).cola(ctx)).use(lectura)
+      router
+        .get('/telemercadeo/catalogos', async (ctx) => (await tele()).catalogos(ctx))
+        .use(lectura)
+
+      router
+        .get('/telemercadeo/gestiones', async (ctx) => (await tele()).gestiones(ctx))
+        .use(lectura)
+      router
+        .post('/telemercadeo/gestiones', async (ctx) => (await tele()).registrar(ctx))
+        .use(soloAsesor)
+      router
+        .get('/telemercadeo/gestiones/:id', async (ctx) => (await tele()).gestion(ctx))
+        .where('id', ID)
+        .use(lectura)
+      router
+        .get('/telemercadeo/gestiones/:id/evidencia', async (ctx) => (await tele()).evidencia(ctx))
+        .where('id', ID)
+        .use(lectura)
+      router
+        .get('/telemercadeo/seguimiento', async (ctx) => (await tele()).seguimiento(ctx))
+        .use(lectura)
+      router
+        .get('/telemercadeo/mi-resumen', async (ctx) => (await tele()).miResumen(ctx))
+        .use(soloAsesor)
+
+      router.get('/telemercadeo/resumen', async (ctx) => (await tele()).resumen(ctx)).use(control)
+      router
+        .get('/telemercadeo/resumen/excel', async (ctx) => (await tele()).resumenExcel(ctx))
+        .use(control)
+      router.get('/telemercadeo/asesores', async (ctx) => (await tele()).asesores(ctx)).use(control)
+      router.get('/telemercadeo/metas', async (ctx) => (await tele()).metas(ctx)).use(control)
+      router.put('/telemercadeo/metas', async (ctx) => (await tele()).guardarMetas(ctx)).use(control)
+      router
+        .post('/telemercadeo/metas/copiar', async (ctx) => (await tele()).copiarMetas(ctx))
+        .use(control)
+      router
+        .post('/telemercadeo/ciclos/:id/autorizar-extra', async (ctx) =>
+          (await tele()).autorizarExtra(ctx)
+        )
+        .where('id', ID)
+        .use(control)
+
+      router
+        .get('/telemercadeo/config/max-seguimientos', async (ctx) => (await tele()).configGet(ctx))
+        .use(configLectura)
+      router
+        .post('/telemercadeo/config/max-seguimientos', async (ctx) =>
+          (await tele()).configUpsert(ctx)
+        )
+        .use(control)
+      router
+        .get('/telemercadeo/config/max-seguimientos/asesores', async (ctx) =>
+          (await tele()).configAsesoresIndex(ctx)
+        )
+        .use(configLectura)
+      router
+        .post('/telemercadeo/config/max-seguimientos/asesores', async (ctx) =>
+          (await tele()).configAsesoresUpsert(ctx)
+        )
+        .use(control)
+      router
+        .delete('/telemercadeo/config/max-seguimientos/asesores/:id', async (ctx) =>
+          (await tele()).configAsesoresDelete(ctx)
+        )
+        .where('id', ID)
+        .use(control)
+    }
 
     /* ========================= AGENTES CAPTACIÓN ======================= */
 
