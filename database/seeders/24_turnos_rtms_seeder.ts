@@ -1,5 +1,6 @@
 // database/seeders/24_turnos_rtms_seeder.ts
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -15,7 +16,9 @@ import Conductor from '#models/conductor' // 👈 NUEVO: para asociar conductor 
 
 type TipoVehiculo = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
 
-const SEDE_ID = 2 // Ibagué — CDA del Centro
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
 
 function pick<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]
@@ -44,6 +47,7 @@ export default class TurnosRtmsSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
   async run() {
+    SEDE_ID = sedeDeSeeder('24_turnos_rtms_seeder')
     await sinFiltroDeSede(async () => await this.sembrar())
   }
 

@@ -7,8 +7,9 @@
 //   Placas:  TST001–TST016 (fáciles de buscar)
 //   Estados: activo × 3 · finalizado × 10 · cancelado × 3
 //   Fechas:  hoy · ayer · hace 7 días · hace 30 días
-//   Sedes:   sede_id = 1 (Ibagué)
+//   Sede:    la de SEED_SEDE (obligatoria; la 2, Bogotá, prohibida)
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -20,7 +21,9 @@ import Servicio from '#models/servicio'
 type EstadoTurno = 'activo' | 'finalizado' | 'cancelado'
 type TipoVehiculo = 'Liviano Particular' | 'Liviano Taxi' | 'Liviano Público' | 'Motocicleta'
 
-const SEDE_ID = 1
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
 const HOY = DateTime.local().setZone('America/Bogota').startOf('day')
 
 interface TurnoSpec {
@@ -205,6 +208,7 @@ export default class TurnosDemoSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
   async run() {
+    SEDE_ID = sedeDeSeeder('31_turnos_demo_seeder')
     await sinFiltroDeSede(async () => await this.sembrar())
   }
 

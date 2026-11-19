@@ -1,12 +1,13 @@
 // database/seeders/37_turnos_servicios_prueba_seeder.ts
 //
 // Genera turnos_rtms + facturacion_tickets (CONFIRMADA) de prueba para
-// SOAT, PREV y PERI en junio 2026, sede_id = 1 (Ibagué), para que el
+// SOAT, PREV y PERI en junio 2026, en la sede de SEED_SEDE, para que el
 // reporte /reportes-admin/servicios tenga datos reales de esos 3 servicios
 // (hasta ahora solo existía volumen real de RTM).
 // Solo INSERTA — no borra ni modifica datos existentes. Es idempotente:
 // si ya hay tickets CONFIRMADA para estos servicios, no vuelve a insertar.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -19,8 +20,11 @@ import Servicio from '#models/servicio'
 import AgenteCaptacion from '#models/agente_captacion'
 import TarifaServicio from '#models/tarifa_servicio'
 
-const SEDE_ID = 1
-const SEDE_NOMBRE = 'Ibagué'
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
+// Nombre de la sede (snapshot en facturacion_tickets.sede_nombre); se lee de sedes en run().
+let SEDE_NOMBRE = ''
 
 type TipoVehiculoTicket = 'MOTO' | 'VEHICULO'
 type CanalCaptacion = 'FACHADA' | 'ASESOR_COMERCIAL'
@@ -72,6 +76,10 @@ export default class TurnosServiciosPruebaSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
   async run() {
+    SEDE_ID = sedeDeSeeder('37_turnos_servicios_prueba_seeder')
+    const sede = await db.from('sedes').where('id', SEDE_ID).first()
+    if (!sede) throw new Error(`[37] No existe la sede ${SEDE_ID}. No se escribió nada.`)
+    SEDE_NOMBRE = sede.nombre
     await sinFiltroDeSede(async () => await this.sembrar())
   }
 

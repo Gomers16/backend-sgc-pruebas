@@ -16,6 +16,7 @@
 // Ejecutar solo este seeder:
 //   node ace db:seed --files database/seeders/40_test_rtm_vigente_excepcion_seeder.ts
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -25,13 +26,16 @@ import Usuario from '#models/usuario'
 import Servicio from '#models/servicio'
 
 const PLACA_PRUEBA = 'TST999' // 3 letras + 3 dígitos: formato válido del formulario
-const SEDE_ID = 2
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
 const EXCESO_DIAS_DESEADO = 5 // cuánto queremos que exceda la ventana permitida
 
 export default class TestRtmVigenteExcepcionSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
   async run() {
+    SEDE_ID = sedeDeSeeder('40_test_rtm_vigente_excepcion_seeder')
     await sinFiltroDeSede(async () => await this.sembrar())
   }
 

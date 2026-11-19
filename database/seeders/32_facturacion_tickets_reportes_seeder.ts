@@ -1,10 +1,11 @@
 // database/seeders/32_facturacion_tickets_reportes_seeder.ts
 //
-// Genera facturación realista de RTM para junio 2026 (sede única Ibagué, sede_id = 1)
+// Genera facturación realista de RTM para junio 2026 en la sede de SEED_SEDE
 // para poder construir los reportes de "ingresos por canal de captación".
 // Crea turnos_rtms sintéticos (no hay suficientes turnos reales) + su facturacion_tickets.
 // Solo INSERTA — no borra ni modifica datos existentes.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -17,8 +18,11 @@ import Vehiculo from '#models/vehiculo'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 
-const SEDE_ID = 1
-const SEDE_NOMBRE = 'Ibagué'
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
+// Nombre de la sede (snapshot en facturacion_tickets.sede_nombre); se lee de sedes en run().
+let SEDE_NOMBRE = ''
 const SERVICIO_CODIGO = 'RTM'
 const SERVICIO_NOMBRE = 'Revisión Técnico Mecánica'
 
@@ -111,6 +115,10 @@ export default class FacturacionTicketsReportesSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
   async run() {
+    SEDE_ID = sedeDeSeeder('32_facturacion_tickets_reportes_seeder')
+    const sede = await db.from('sedes').where('id', SEDE_ID).first()
+    if (!sede) throw new Error(`[32] No existe la sede ${SEDE_ID}. No se escribió nada.`)
+    SEDE_NOMBRE = sede.nombre
     await sinFiltroDeSede(async () => await this.sembrar())
   }
 
