@@ -7,6 +7,10 @@ export default class TarifaTramite extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  // Multi-sede: las tarifas de trámites son por sede (migración 1811000000005).
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number
+
   @column({ columnName: 'tipo_tramite' })
   declare tipoTramite: string
 
