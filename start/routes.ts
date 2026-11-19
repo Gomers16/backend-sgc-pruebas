@@ -462,11 +462,15 @@ router
       { path: 'cargos', controller: '#controllers/cargos_controller' },
     ] as const
 
+    // Multi-sede Fase 0: los selectores exigen sesión (ninguna pantalla los
+    // usa antes del login).
     for (const { path, controller } of selectors) {
-      router.get(`/${path}`, async (ctx) => {
-        const { default: Ctrl } = await import(controller)
-        return new Ctrl().index(ctx)
-      })
+      router
+        .get(`/${path}`, async (ctx) => {
+          const { default: Ctrl } = await import(controller)
+          return new Ctrl().index(ctx)
+        })
+        .use(middleware.auth())
     }
 
     router
@@ -477,12 +481,14 @@ router
       .use(middleware.auth())
 
     /* ============================ ENTIDADES SALUD ====================== */
-    router.get('/entidades-salud/:id', async (ctx) => {
-      const { default: EntidadesSaludsController } = await import(
-        '#controllers/entidades_saluds_controller'
-      )
-      return new EntidadesSaludsController().show(ctx)
-    })
+    router
+      .get('/entidades-salud/:id', async (ctx) => {
+        const { default: EntidadesSaludsController } = await import(
+          '#controllers/entidades_saluds_controller'
+        )
+        return new EntidadesSaludsController().show(ctx)
+      })
+      .use(middleware.auth())
 
     /* =============================== CONTRATOS ========================= */
     router
@@ -768,10 +774,12 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
       ])
     /* =============================== CIUDADES ========================== */
-    router.get('/ciudades/:id', async (ctx) => {
-      const { default: CiudadesController } = await import('#controllers/ciudades_controller')
-      return new CiudadesController().show(ctx)
-    })
+    router
+      .get('/ciudades/:id', async (ctx) => {
+        const { default: CiudadesController } = await import('#controllers/ciudades_controller')
+        return new CiudadesController().show(ctx)
+      })
+      .use(middleware.auth())
 
     // Multi-sede Fase 0: clases de vehículo, clientes y vehículos exigen
     // sesión (antes eran públicas). Todo el front las llama vía http.ts, que
@@ -791,24 +799,31 @@ router
           )
           return new ClasesVehiculosController().show(ctx)
         })
-        router.post('/clases-vehiculo', async (ctx) => {
-          const { default: ClasesVehiculosController } = await import(
-            '#controllers/clases_vehiculos_controller'
-          )
-          return new ClasesVehiculosController().store(ctx)
-        })
-        router.put('/clases-vehiculo/:id', async (ctx) => {
-          const { default: ClasesVehiculosController } = await import(
-            '#controllers/clases_vehiculos_controller'
-          )
-          return new ClasesVehiculosController().update(ctx)
-        })
-        router.delete('/clases-vehiculo/:id', async (ctx) => {
-          const { default: ClasesVehiculosController } = await import(
-            '#controllers/clases_vehiculos_controller'
-          )
-          return new ClasesVehiculosController().destroy(ctx)
-        })
+        // Catálogo global: escribir solo SUPER_ADMIN y GERENCIA.
+        router
+          .post('/clases-vehiculo', async (ctx) => {
+            const { default: ClasesVehiculosController } = await import(
+              '#controllers/clases_vehiculos_controller'
+            )
+            return new ClasesVehiculosController().store(ctx)
+          })
+          .use(middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }))
+        router
+          .put('/clases-vehiculo/:id', async (ctx) => {
+            const { default: ClasesVehiculosController } = await import(
+              '#controllers/clases_vehiculos_controller'
+            )
+            return new ClasesVehiculosController().update(ctx)
+          })
+          .use(middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }))
+        router
+          .delete('/clases-vehiculo/:id', async (ctx) => {
+            const { default: ClasesVehiculosController } = await import(
+              '#controllers/clases_vehiculos_controller'
+            )
+            return new ClasesVehiculosController().destroy(ctx)
+          })
+          .use(middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }))
 
         /* ================================ CLIENTES ========================= */
         router.get('/clientes', async (ctx) => {

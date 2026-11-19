@@ -1,7 +1,7 @@
 // app/Controllers/Http/clases_vehiculos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
-import ClaseVehiculo from 'app/models/clase_vehiculos.js' // <- snake_case en el import
+import ClaseVehiculo from '#models/clase_vehiculos'
 
 export default class ClasesVehiculosController {
   /**

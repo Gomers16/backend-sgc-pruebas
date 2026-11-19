@@ -75,6 +75,16 @@ test.group('Multi-sede Fase 0 · rutas cerradas', (group) => {
     ['DELETE', '/api/clases-vehiculo/999999999'],
     ['POST', '/api/ocr/parse-ticket'],
     ['GET', '/api/razones-sociales/1/usuarios'],
+    // Selectores (cerrados después de aprobar la Fase 0).
+    ['GET', '/api/sedes'],
+    ['GET', '/api/roles'],
+    ['GET', '/api/cargos'],
+    ['GET', '/api/servicios'],
+    ['GET', '/api/ciudades'],
+    ['GET', '/api/ciudades/1'],
+    ['GET', '/api/entidades-saluds'],
+    ['GET', '/api/entidades-salud/1'],
+    ['GET', '/api/razones-sociales'],
   ]
 
   for (const [metodo, ruta] of cerradas) {
@@ -90,6 +100,14 @@ test.group('Multi-sede Fase 0 · rutas cerradas', (group) => {
     '/api/buscar?placa=ZZZ999',
     '/api/clientes',
     '/api/razones-sociales/1/usuarios',
+    '/api/clases-vehiculo',
+    '/api/sedes',
+    '/api/roles',
+    '/api/cargos',
+    '/api/servicios',
+    '/api/ciudades',
+    '/api/entidades-saluds',
+    '/api/razones-sociales',
   ]) {
     test(`GET ${ruta} con token → no 401`, async ({ client, assert }) => {
       const res = await client.get(ruta).headers(bearer)
@@ -98,22 +116,33 @@ test.group('Multi-sede Fase 0 · rutas cerradas', (group) => {
     })
   }
 
-  // BUG PREEXISTENTE (no de Fase 0): vehiculos_controller y
-  // clases_vehiculos_controller importan 'app/models/...' en vez de
-  // '#models/...' y fallan con 500 en runtime. Aquí solo se verifica que la
-  // sesión ya no es el problema (pasa auth: no 401).
-  for (const ruta of ['/api/vehiculos', '/api/clases-vehiculo']) {
-    test(`GET ${ruta} con token → pasa auth (no 401)`, async ({ client, assert }) => {
-      const res = await client.get(ruta).headers(bearer)
-      assert.notEqual(res.status(), 401)
-    })
-  }
+  // BUG PREEXISTENTE: vehiculos_controller importa 'app/models/...' y da 500
+  // en runtime. Se arregla en la Fase 3c junto con el filtro por sede; aquí
+  // solo se verifica que pasa auth.
+  test('GET /api/vehiculos con token → pasa auth (no 401)', async ({ client, assert }) => {
+    const res = await client.get('/api/vehiculos').headers(bearer)
+    assert.notEqual(res.status(), 401)
+  })
 
-  test('los selectores siguen públicos (sin cambio en Fase 0)', async ({ client, assert }) => {
-    for (const ruta of ['/api/sedes', '/api/roles', '/api/servicios']) {
-      const res = await client.get(ruta)
-      assert.equal(res.status(), 200, ruta)
-    }
+  test('clases-vehiculo: escribir solo SUPER_ADMIN y GERENCIA', async ({ client, assert }) => {
+    const comercial = await crearActor('COMERCIAL', SEDE_QA)
+    const r1 = await client
+      .post('/api/clases-vehiculo')
+      .headers(comercial.bearer)
+      .json({ codigo: 'TST_MS0', nombre: 'TEST MS0' })
+    assert.equal(r1.status(), 403)
+    const r2 = await client
+      .put('/api/clases-vehiculo/1')
+      .headers(comercial.bearer)
+      .json({ nombre: 'HACK' })
+    assert.equal(r2.status(), 403)
+    const r3 = await client.delete('/api/clases-vehiculo/999999999').headers(comercial.bearer)
+    assert.equal(r3.status(), 403)
+    // SUPER_ADMIN pasa el rol (id inexistente → 404, sin tocar datos reales).
+    const r4 = await client.delete('/api/clases-vehiculo/999999999').headers(bearer)
+    assert.equal(r4.status(), 404)
+    const lectura = await client.get('/api/clases-vehiculo').headers(comercial.bearer)
+    assert.equal(lectura.status(), 200)
   })
 })
 
