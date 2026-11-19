@@ -5,6 +5,7 @@
 // Crea turnos_rtms sintéticos (no hay suficientes turnos reales) + su facturacion_tickets.
 // Solo INSERTA — no borra ni modifica datos existentes.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -28,12 +29,7 @@ const VALORES_MOTO = [228130, 228430, 228730, 228430]
 const IVA_VEHICULO = 44400
 const IVA_MOTO = 26854
 
-type CanalCaptacion =
-  | 'FACHADA'
-  | 'ASESOR_CONVENIO'
-  | 'ASESOR_COMERCIAL'
-  | 'TELEMERCADEO'
-  | 'REDES'
+type CanalCaptacion = 'FACHADA' | 'ASESOR_CONVENIO' | 'ASESOR_COMERCIAL' | 'TELEMERCADEO' | 'REDES'
 type TipoVehiculoTicket = 'VEHICULO' | 'MOTO'
 // ⚠️ El enum real de `facturacion_tickets.forma_pago` es
 //    ('EFECTIVO','TARJETA','TRANSFERENCIA','MIXTO') — NO existe 'CONSIGNACION'.
@@ -112,7 +108,13 @@ function diasHabilesJunio2026(): DateTime[] {
 }
 
 export default class FacturacionTicketsReportesSeeder extends BaseSeeder {
-  public async run() {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
+  async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       const servicios = await Servicio.query({ client: trx })

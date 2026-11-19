@@ -13,6 +13,7 @@
 // usuarios se leen, nunca se actualizan). Es idempotente: si ya existe
 // alguna comisión real (es_config = 0), no vuelve a insertar.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -68,7 +69,13 @@ interface ComisionSpec {
 }
 
 export default class ComisionesPruebaSeeder extends BaseSeeder {
-  public async run() {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
+  async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       const yaExisten = await trx
@@ -77,7 +84,9 @@ export default class ComisionesPruebaSeeder extends BaseSeeder {
         .count('* as c')
         .first()
       if (Number(yaExisten?.c) > 0) {
-        console.log('⚠️ Ya existen comisiones reales (es_config = 0). Seeder omitido (idempotente).')
+        console.log(
+          '⚠️ Ya existen comisiones reales (es_config = 0). Seeder omitido (idempotente).'
+        )
         await trx.commit()
         return
       }
@@ -202,7 +211,8 @@ export default class ComisionesPruebaSeeder extends BaseSeeder {
             consumidoTurnoId: turno.id,
             consumidoAt: fechaCalculo,
             convenioId: spec.convenioId,
-            asesorConvenioId: spec.canal === 'ASESOR_CONVENIO' ? spec.asesorId : spec.asesorSecundarioId,
+            asesorConvenioId:
+              spec.canal === 'ASESOR_CONVENIO' ? spec.asesorId : spec.asesorSecundarioId,
             servicioId: turno.servicioId,
             resultado: 'EXITOSO',
             liberado: false,

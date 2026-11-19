@@ -1,13 +1,18 @@
 // app/models/certificacion.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import TurnoRtm from '#models/turno_rtm'
 import User from '#models/usuario'
 import type { ResultadoCertificacion } from '#services/segunda_vez_service'
 
-export default class Certificacion extends BaseModel {
+export default class Certificacion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3a): sin sede_id propio; hereda la del turno.
+  static sedeVia = { atributo: 'turnoId', columna: 'turno_id', tablaPadre: 'turnos_rtms' }
+
   public static table = 'certificaciones'
 
   @column({ isPrimary: true })

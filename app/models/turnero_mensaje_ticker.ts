@@ -1,8 +1,14 @@
 // app/models/turnero_mensaje_ticker.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 
-export default class TurneroMensajeTicker extends BaseModel {
+export default class TurneroMensajeTicker extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3a)
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number
+
   public static table = 'turnero_mensajes_ticker'
 
   @column({ isPrimary: true })

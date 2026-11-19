@@ -1,12 +1,17 @@
 // app/models/turno_llamado.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import TurnoRtm from '#models/turno_rtm'
 import Usuario from '#models/usuario'
 
-export default class TurnoLlamado extends BaseModel {
+export default class TurnoLlamado extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3a): sin sede_id propio; hereda la del turno.
+  static sedeVia = { atributo: 'turnoId', columna: 'turno_id', tablaPadre: 'turnos_rtms' }
+
   public static table = 'turno_llamados'
 
   @column({ isPrimary: true })

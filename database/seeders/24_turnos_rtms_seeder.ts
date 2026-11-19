@@ -1,5 +1,6 @@
 // database/seeders/24_turnos_rtms_seeder.ts
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -40,7 +41,13 @@ function toMySQL(dt: DateTime) {
 }
 
 export default class TurnosRtmsSeeder extends BaseSeeder {
-  public async run() {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
+  async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       const now = DateTime.local().setZone('America/Bogota')

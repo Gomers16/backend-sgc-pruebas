@@ -1,6 +1,8 @@
 // app/models/turno_rtm.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, hasMany, hasOne } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo, HasMany, HasOne } from '@adonisjs/lucid/types/relations'
 
 import Usuario from '#models/usuario'
@@ -33,7 +35,7 @@ export type EstadoTurno = 'activo' | 'inactivo' | 'cancelado' | 'finalizado'
 export type CanalAtribucion = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES' | 'GOOGLE_ADS'
 export type CanalDateo = 'FACHADA' | 'ASESOR_COMERCIAL' | 'ASESOR_CONVENIO' | 'TELE' | 'REDES'
 
-export default class TurnoRtm extends BaseModel {
+export default class TurnoRtm extends compose(BaseModel, SedeScoped) {
   public static table = 'turnos_rtms'
 
   @column({ isPrimary: true })

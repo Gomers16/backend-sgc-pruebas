@@ -7,6 +7,7 @@
 // Solo INSERTA — no borra ni modifica datos existentes. Es idempotente:
 // si ya hay tickets CONFIRMADA para estos servicios, no vuelve a insertar.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
+import { sinFiltroDeSede } from '#services/sede_scope'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -68,7 +69,13 @@ function diasHabilesJunio2026(): DateTime[] {
 }
 
 export default class TurnosServiciosPruebaSeeder extends BaseSeeder {
-  public async run() {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
+  async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       const yaExisten = await trx
@@ -137,7 +144,8 @@ export default class TurnosServiciosPruebaSeeder extends BaseSeeder {
       type Trabajo = { codigoServicio: string; tipoVehiculo: TipoVehiculoTicket }
       const trabajos: Trabajo[] = []
       for (const [codigoServicio, cantidades] of Object.entries(DISTRIBUCION)) {
-        for (let i = 0; i < cantidades.MOTO; i++) trabajos.push({ codigoServicio, tipoVehiculo: 'MOTO' })
+        for (let i = 0; i < cantidades.MOTO; i++)
+          trabajos.push({ codigoServicio, tipoVehiculo: 'MOTO' })
         for (let i = 0; i < cantidades.VEHICULO; i++)
           trabajos.push({ codigoServicio, tipoVehiculo: 'VEHICULO' })
       }
@@ -298,7 +306,9 @@ export default class TurnosServiciosPruebaSeeder extends BaseSeeder {
         creados++
       }
 
-      console.log(`✅ turnos_rtms + facturacion_tickets (SOAT/PREV/PERI junio 2026) creados: ${creados}`)
+      console.log(
+        `✅ turnos_rtms + facturacion_tickets (SOAT/PREV/PERI junio 2026) creados: ${creados}`
+      )
       await trx.commit()
     } catch (error) {
       await trx.rollback()
