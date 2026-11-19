@@ -19,14 +19,16 @@ export const http = defineConfig({
   /**
    * 🔥 CONFIGURACIÓN DEL SERVIDOR
    */
-//  host: env.get('HOST', '0.0.0.0'),
-//  port: env.get('PORT', 3333),
+  //  host: env.get('HOST', '0.0.0.0'),
+  //  port: env.get('PORT', 3333),
 
   /**
    * Enabling async local storage will let you access HTTP context
    * from anywhere inside your application.
    */
-  useAsyncLocalStorage: false,
+  // Multi-sede Fase 2: las consultas leen la sede activa del request vía
+  // HttpContext.get() (app/services/sede_scope.ts).
+  useAsyncLocalStorage: true,
 
   /**
    * Manage cookies configuration. The settings for the session id cookie are
