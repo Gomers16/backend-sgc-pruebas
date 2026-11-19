@@ -9,7 +9,7 @@ Estado al 2026-11-19. Repos: `backend-sgc-pruebas` y `front-sgc-pruebas`, rama `
 
 > ## ⚠️ Aviso de sincronización a producción local
 >
-> - **Copiar las migraciones 1803–1809 junto con el código.** Las 7 tablas ya existen en la BD local, que es la **misma** que usa producción local; el repo de producción local necesita los archivos para que Lucid no las vea como "desconocidas".
+> - **Copiar las migraciones 1803–1810 junto con el código** (1810 = cargo "ASESOR TELEMERCADEO", 2026-11-19). Las 7 tablas ya existen en la BD local, que es la **misma** que usa producción local; el repo de producción local necesita los archivos para que Lucid no las vea como "desconocidas".
 > - **NO correr `migration:rollback` desde el repo de producción local.** Lucid falla con `E_MISSING_SCHEMA_FILES` si faltan archivos y, sobre la BD compartida, un rollback borraría las tablas que usa pruebas. `migration:run` sí es seguro.
 > - En el servidor (BD remota), correr `migration:run` **antes** de `pm2 restart`.
 
@@ -129,10 +129,25 @@ Detalle en `MAPA_DEL_SISTEMA_FRONTEND.md` 4.2, 4.9 y 8. Resumen:
 - Evidencias privadas en `uploads/telemercadeo/`, vistas por `GET /api/telemercadeo/gestiones/:id/evidencia`.
 - Excel: se mantiene un tope de filas en el detalle (rango de hasta 2 años, ExcelJS en memoria), pero siempre avisado.
 
+## Alta de un asesor de Telemercadeo (cargo nuevo, 2026-11-19)
+
+- Migración `1810000000000_insert_asesor_telemercadeo_cargo.ts` (insert idempotente por nombre; `down()` solo borra si nadie lo usa) y entrada en `09_cargo_seeder.ts`. **Corrida en la BD local compartida**: una sola fila `ASESOR TELEMERCADEO` (id 17 aquí; buscar siempre por nombre).
+- **Recorrido por pantalla:**
+  1. Gestión Documental → Usuarios → crear con **rol COMERCIAL** (esa pantalla no tiene cargo). Se crea su agente `ASESOR_COMERCIAL`.
+  2. Gestión Documental → Contratos → crear el contrato de esa persona con el **cargo "ASESOR TELEMERCADEO"**. El agente pasa a `ASESOR_TELEMERCADEO`.
+  3. La persona vuelve a entrar: aterriza en "Mi gestión".
+- Test: `tests/functional/cargo_asesor_telemercadeo.spec.ts` (usuario → contrato → agente, login/`me` con `agenteTipo`, `mi-resumen` 200).
+- **Deudas documentadas, sin arreglar** (detalle en el mapa del backend, *Telemercadeo — gestión y control*):
+  - (a) Si ya existe un agente con el mismo nombre completo, el usuario queda sin agente (`usuarios_controller.ts:102-112`).
+  - (b) Un contrato posterior con otro cargo devuelve el agente a `ASESOR_COMERCIAL` (`contratos_controller.ts:448`).
+  - (c) `GET /api/cargos` y las rutas de selectores no exigen autenticación.
+  - (d) `captacion_service.ts` del frontend es código muerto con tipos viejos; no hay pantalla de agentes.
+  - (e) Sin agente previo, el contrato crea el agente pero deja `usuarios.agente_id` en NULL.
+
 ## Avisos de sincronización (cuando se pida)
 
 - Backend y frontend juntos: el frontend nuevo usa endpoints de la Fase 1 y el campo `agente_id` de `beeaec8`.
-- **Copiar las migraciones 1803–1809 junto con el código. NO correr `migration:rollback` desde producción local.** En el servidor, `migration:run` antes de `pm2 restart`.
+- **Copiar las migraciones 1803–1810 junto con el código. NO correr `migration:rollback` desde producción local.** La 1810 inserta el cargo "ASESOR TELEMERCADEO" y ya está corrida en la BD local compartida (producción local ya lo ve en Contratos); su código viejo ya convierte ese cargo en agente `ASESOR_TELEMERCADEO`, pero sin el módulo nuevo. En el servidor, `migration:run` antes de `pm2 restart`.
 - `DIAS_VENTANA_PRE_RTM`: 10 en pruebas (sin definir), 5 en producción local.
 - Opcional: `TELE_EXCEL_MAX_DETALLE` (por defecto 20.000).
 

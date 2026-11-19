@@ -22,6 +22,7 @@ export default class CargoSeeder extends BaseSeeder {
       // 🤝 Comercial
       { nombre: 'ASESOR COMERCIAL' },
       { nombre: 'ASESOR CONVENIO' },
+      { nombre: 'ASESOR TELEMERCADEO' }, // migración 1810000000000
 
       // 👨‍💼 Servicio al cliente
       { nombre: 'ASESOR SERVICIO AL CLIENTE' },
