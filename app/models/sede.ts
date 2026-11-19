@@ -2,7 +2,6 @@ import { DateTime } from 'luxon'
 import { BaseModel, column, hasMany, belongsTo } from '@adonisjs/lucid/orm'
 import type { HasMany, BelongsTo } from '@adonisjs/lucid/types/relations'
 import Usuario from '#models/usuario'
-import RazonSocial from '#models/razon_social'
 import Ciudad from '#models/ciudad'
 
 export default class Sede extends BaseModel {
@@ -11,9 +10,9 @@ export default class Sede extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
-  // FK → razon_social.id
-  @column({ columnName: 'razon_social_id' })
-  declare razonSocialId: number
+  // (La tabla sedes NO tiene razon_social_id: la razón social va en el
+  // usuario y en el contrato. Se quitó la columna/relación fantasma que
+  // declaraba este modelo — drift detectado en multi-sede Fase 0.)
 
   // FK → ciudades.id
   @column({ columnName: 'ciudad_id' })
@@ -45,9 +44,6 @@ export default class Sede extends BaseModel {
   // Relaciones
   @hasMany(() => Usuario)
   declare usuarios: HasMany<typeof Usuario>
-
-  @belongsTo(() => RazonSocial, { foreignKey: 'razonSocialId' })
-  declare razonSocial: BelongsTo<typeof RazonSocial>
 
   @belongsTo(() => Ciudad, { foreignKey: 'ciudadId' })
   declare ciudad: BelongsTo<typeof Ciudad>
