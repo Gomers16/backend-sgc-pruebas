@@ -14,6 +14,7 @@ import Cargo from '#models/cargo'
 import EntidadSalud from '#models/entidad_salud'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
+import { normalizarId, validarGestionUsuario } from '#services/usuario_permisos_service'
 
 /** Campos a seleccionar cuando se precarga el usuario actor */
 const USER_SELECT = ['id', 'nombres', 'apellidos', 'correo'] as const
@@ -58,6 +59,60 @@ function preloadUsuarioCompleto(loader: any) {
 }
 
 export default class UsuariosController {
+  /**
+   * Multi-sede Fase 0: aplica las reglas de usuario_permisos_service.
+   * Resuelve el actor (rol + sede) y valida que rolId/sedeId existan.
+   * Devuelve el resultado del guard o una respuesta de error ya enviada.
+   */
+  private async autorizarGestion(
+    ctx: HttpContext,
+    objetivo: Usuario | null,
+    payload: { rolId?: unknown; sedeId?: unknown }
+  ): Promise<{ ok: true; sedeId: number | null } | { ok: false }> {
+    const { auth, response } = ctx
+    const actor = auth.user!
+    await actor.load('rol')
+
+    const rolIdNuevo = normalizarId(payload.rolId)
+    const sedeIdNueva = normalizarId(payload.sedeId)
+    if (Number.isNaN(rolIdNuevo) || Number.isNaN(sedeIdNueva)) {
+      response.unprocessableEntity({ message: 'rolId o sedeId inválido.' })
+      return { ok: false }
+    }
+
+    let rolNuevo: string | null | undefined
+    if (rolIdNuevo !== undefined && rolIdNuevo !== null) {
+      const rol = await Rol.find(rolIdNuevo)
+      if (!rol) {
+        response.unprocessableEntity({ message: `El rol ${rolIdNuevo} no existe.` })
+        return { ok: false }
+      }
+      rolNuevo = rol.nombre
+    } else if (rolIdNuevo === null) {
+      rolNuevo = null
+    }
+
+    if (sedeIdNueva !== undefined && sedeIdNueva !== null) {
+      const sede = await Sede.find(sedeIdNueva)
+      if (!sede) {
+        response.unprocessableEntity({ message: `La sede ${sedeIdNueva} no existe.` })
+        return { ok: false }
+      }
+    }
+
+    if (objetivo) await objetivo.load('rol')
+    const res = validarGestionUsuario(
+      { rol: actor.rol?.nombre ?? null, sedeId: actor.sedeId ?? null },
+      objetivo ? { rol: objetivo.rol?.nombre ?? null, sedeId: objetivo.sedeId ?? null } : null,
+      { rol: rolNuevo, sedeId: sedeIdNueva as number | null | undefined }
+    )
+    if (!res.ok) {
+      response.status(res.status).send({ message: res.message })
+      return { ok: false }
+    }
+    return res
+  }
+
   /**
    * ✅ Sincroniza agente con usuario (evita duplicados y protege tipos existentes)
    */
@@ -310,7 +365,8 @@ export default class UsuariosController {
   }
 
   /** Crear usuario */
-  public async store({ request, response }: HttpContext) {
+  public async store(ctx: HttpContext) {
+    const { request, response } = ctx
     const payload = request.only([
       'nombres',
       'apellidos',
@@ -338,10 +394,13 @@ export default class UsuariosController {
       'contactoEmergenciaTelefono',
     ])
 
+    const permiso = await this.autorizarGestion(ctx, null, payload)
+    if (!permiso.ok) return
+
     try {
       const user = await Usuario.create({
         ...payload,
-        sedeId: payload.sedeId ?? null,
+        sedeId: permiso.sedeId ?? undefined,
         cargoId: payload.cargoId ?? null,
         epsId: payload.epsId ?? null,
         arlId: payload.arlId ?? null,
@@ -367,7 +426,8 @@ export default class UsuariosController {
     }
   }
   /** Actualizar usuario */
-  public async update({ params, request, response }: HttpContext) {
+  public async update(ctx: HttpContext) {
+    const { params, request, response } = ctx
     try {
       const user = await Usuario.findOrFail(params.id)
 
@@ -407,6 +467,10 @@ export default class UsuariosController {
         }
       }
 
+      const permiso = await this.autorizarGestion(ctx, user, cleanPayload)
+      if (!permiso.ok) return
+      if ('sedeId' in cleanPayload) cleanPayload.sedeId = permiso.sedeId
+
       user.merge(cleanPayload)
       await user.save()
 
@@ -428,9 +492,13 @@ export default class UsuariosController {
   }
 
   /** Eliminar usuario */
-  public async destroy({ params, response }: HttpContext) {
+  public async destroy(ctx: HttpContext) {
+    const { params, response } = ctx
     try {
       const user = await Usuario.findOrFail(params.id)
+
+      const permiso = await this.autorizarGestion(ctx, user, {})
+      if (!permiso.ok) return
 
       if (user.fotoPerfil) {
         const oldPhotoRelativePath = user.fotoPerfil.replace(/^\//, '')
@@ -504,11 +572,14 @@ export default class UsuariosController {
   }
 
   /** Subir foto de perfil */
-  public async uploadProfilePicture({ request, response, params }: HttpContext) {
+  public async uploadProfilePicture(ctx: HttpContext) {
+    const { request, response, params } = ctx
     const userId = params.id
     if (!userId) return response.badRequest({ message: 'Se requiere el ID del usuario.' })
 
     const user = await Usuario.findOrFail(userId)
+    const permiso = await this.autorizarGestion(ctx, user, {})
+    if (!permiso.ok) return
     const foto = request.file('foto', { size: '2mb', extnames: ['jpg', 'png', 'jpeg'] })
 
     if (!foto || !foto.isValid) {

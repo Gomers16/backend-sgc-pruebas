@@ -12,6 +12,7 @@ import Cargo from '#models/cargo'
 import RazonSocial from '#models/razon_social'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
+import { normalizarId, validarSedeContrato } from '#services/usuario_permisos_service'
 
 import app from '@adonisjs/core/services/app'
 import { DateTime } from 'luxon'
@@ -61,6 +62,41 @@ export default class ContratosController {
   }
 
   /** Actor (prioriza auth; luego header; luego body) */
+  /**
+   * Multi-sede Fase 0: el contrato copia su sede al usuario, así que aplica
+   * las mismas reglas de sede que la gestión de usuarios
+   * (usuario_permisos_service.validarSedeContrato). Devuelve el mensaje de
+   * error o null si está permitido.
+   */
+  private async permisoSedeContrato(
+    ctx: HttpContext,
+    datos: { sedeContrato: unknown; sedeContratoActual: number | null; usuarioId: unknown }
+  ): Promise<{ status: number; message: string } | null> {
+    const actor = ctx.auth.user
+    if (!actor) return { status: 401, message: 'No autenticado' }
+    await actor.load('rol')
+
+    const sedeContrato = normalizarId(datos.sedeContrato)
+    if (Number.isNaN(sedeContrato)) return { status: 422, message: 'sedeId inválido.' }
+
+    const usuarioId = normalizarId(datos.usuarioId)
+    let usuario: { rol: string | null; sedeId: number | null } | null = null
+    if (typeof usuarioId === 'number' && !Number.isNaN(usuarioId)) {
+      const u = await Usuario.query().where('id', usuarioId).preload('rol').first()
+      if (u) usuario = { rol: u.rol?.nombre ?? null, sedeId: u.sedeId ?? null }
+    }
+
+    const res = validarSedeContrato(
+      { rol: actor.rol?.nombre ?? null, sedeId: actor.sedeId ?? null },
+      {
+        sedeContrato: sedeContrato ?? null,
+        sedeContratoActual: datos.sedeContratoActual,
+        usuario,
+      }
+    )
+    return res.ok ? null : { status: res.status, message: res.message }
+  }
+
   private getActorId(ctx: HttpContext): number | null {
     const { auth, request } = ctx
     const parse = (v: any) => {
@@ -640,6 +676,16 @@ export default class ContratosController {
         afpId: nullIfEmpty(contratoData.afpId),
         afcId: nullIfEmpty(contratoData.afcId),
         ccfId: nullIfEmpty(contratoData.ccfId),
+      }
+
+      const denegado = await this.permisoSedeContrato(ctx, {
+        sedeContrato: contratoDataNorm.sedeId,
+        sedeContratoActual: null,
+        usuarioId: contratoDataNorm.usuarioId,
+      })
+      if (denegado) {
+        await trx.rollback()
+        return response.status(denegado.status).send({ message: denegado.message })
       }
 
       // ✅ Nueva forma: sin conversión UTC
@@ -1265,6 +1311,16 @@ export default class ContratosController {
       const oldEstado = contrato.estado
 
       const raw = request.all()
+
+      const denegado = await this.permisoSedeContrato(ctx, {
+        sedeContrato: 'sedeId' in raw ? raw.sedeId : contrato.sedeId,
+        sedeContratoActual: contrato.sedeId ?? null,
+        usuarioId: contrato.usuarioId,
+      })
+      if (denegado) {
+        await trx.rollback()
+        return response.status(denegado.status).send({ message: denegado.message })
+      }
 
       // --- Early-exit: solo toggle de estado (con motivo/fecha opcionales) ---
       const keys = Object.keys(raw)
