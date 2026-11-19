@@ -1,6 +1,19 @@
 # Telemercadeo — Gestión (Fase 1 backend): handoff
 
-Estado al 2026-11-18. Repo: `backend-sgc-pruebas`, rama `main`. Nada sincronizado a producción local.
+Estado al 2026-11-19. Repo: `backend-sgc-pruebas`, rama `main`. **Fase 1 backend cerrada.** Nada sincronizado a producción local.
+
+> ## ⚠️ Aviso de sincronización a producción local
+>
+> - **Copiar las migraciones 1803–1809 junto con el código.** Las 7 tablas ya existen en la BD local, que es la **misma** que usa producción local; el repo de producción local necesita los archivos para que Lucid no las vea como "desconocidas".
+> - **NO correr `migration:rollback` desde el repo de producción local.** Lucid falla con `E_MISSING_SCHEMA_FILES` si faltan archivos y, sobre la BD compartida, un rollback borraría las tablas que usa pruebas. `migration:run` sí es seguro.
+> - En el servidor (BD remota), correr `migration:run` **antes** de `pm2 restart`.
+
+## Línea base de la suite
+
+- `main` antes de aplicar el parche: **381 pasan + 1 fails** (382). El "358" que figuraba antes era previo a `telemercadeo_gestion.spec.ts` (23 tests).
+- Final de la Fase 1: **396 pasan + 1 fails** (397).
+- El `fails` es el `.fails()` esperado del bug ticket SOAT→RTM (`tickets_excepcion_turno_soat.spec.ts`); Japa lo reporta como "regression".
+- `tsc --noEmit` limpio.
 
 ## Hecho
 
@@ -14,32 +27,63 @@ Estado al 2026-11-18. Repo: `backend-sgc-pruebas`, rama `main`. Nada sincronizad
   - `1809` `meta_telemercadeo_asesor`
   - Todas con `utf8mb4_unicode_ci` explícito.
 - **Modelos:** `telemercadeo_ciclo`, `telemercadeo_gestion`, `configuracion_seguimiento_tele_global`, `configuracion_seguimiento_tele_asesor`.
-- **Servicios:** `ventana_rtm_service` (ventana `DIAS_VENTANA_PRE_RTM`), `semaforo_service` (movido sin cambios desde `reportes_administrativos_controller`, que ahora lo importa), `telemercadeo_gestion_service`, `telemercadeo_resumen_service`.
+- **Servicios:** `ventana_rtm_service` (ventana `DIAS_VENTANA_PRE_RTM`, ahora también usada por `store()`), `semaforo_service` (movido sin cambios desde `reportes_administrativos_controller`, que ahora lo importa), `telemercadeo_gestion_service`, `telemercadeo_resumen_service`.
 - **Controlador y rutas** `/api/telemercadeo/*`: cola, catálogos, gestiones (listar / ver / evidencia / registrar), seguimiento, mi-resumen, resumen, resumen/excel, asesores, metas (GET/PUT), metas/copiar, ciclos/:id/autorizar-extra, config/max-seguimientos (+ asesores).
 - **Cola:** `puede_datear_desde` con la ventana compartida; RTM vigente marcado con fecha en CLIENTES (`rtm_vigentes`); `seguimiento` por placa.
 - **`uploads_controller`:** `carpeta=telemercadeo` devuelve `ruta` privada; GET/DELETE `/api/uploads/*` no sirven ni borran esa carpeta (también con `../`, `%2e%2e`, `%2f` y mayúsculas); segmentos con `%` o `\` → 404 (antes 500).
 - **`auth_controller`:** `agenteTipo` en login y `me`. **`.gitignore`:** `uploads/telemercadeo/`.
-- **Tests:** 30/30 en verde (23 `telemercadeo_gestion.spec.ts` + 7 `telemercadeo_cola.spec.ts`). `tsc --noEmit` limpio.
-- **Parche de `store()`:** `docs/telemercadeo/store_gestion.patch`, **NO aplicado** (`git apply --check` OK sobre `main`). `captacion_dateos_controller.ts` sin modificar.
 
-## Pendiente backend (en orden)
+## Pendientes del backend — todos hechos (2026-11-19)
 
-1. Aplicar el parche: `git apply docs/telemercadeo/store_gestion.patch`.
-2. Tests:
-   - `telemercadeo_dateo_desde_gestion.spec.ts`: canal TELE y agente del token aunque el body mande otro; gestión → DATEADO y ciclo cerrado DATEADO; 409 con segundo dateo y en paralelo; 403 gestión ajena; 400 placa distinta; rollback si falla la creación.
-   - Regresión de `store()` sin gestión (mismo comportamiento que hoy). Nombrar el test del canal por defecto de un `ASESOR_TELEMERCADEO` (queda `ASESOR_COMERCIAL`) como **"caracteriza deuda conocida"**.
-3. Suites de dateos y tickets; luego la suite completa contra la línea base **358 pasan + 1 fails ("regression")**.
-4. Mostrar el código de `prepararDateoDesdeGestion` y `vincularGestionConDateo` y probar que el ciclo cierra como DATEADO en la misma transacción.
-5. Confirmar que `store()` no relee `agente_id` del body cuando llega `telemercadeo_gestion_id`.
-6. Excel de resumen: hoy corta en silencio a 20.000 filas (`resumenExcel`, `limit(20000)`); quitar el corte o avisarlo.
-7. `GET /telemercadeo/seguimiento`: limitar a ASESOR_TELEMERCADEO, SUPER_ADMIN y GERENCIA (403 al resto, hoy cualquier COMERCIAL entra) + test.
-8. SELECT que confirme que los tests no dejaron residuos en la BD compartida (placas `TLG%`, usuarios/agentes "TEST TLG", metas y overrides de esos agentes, archivos en `uploads/telemercadeo/`).
-9. Checkpoint del backend con la lista de archivos.
+1. ✅ Parche de `store()` aplicado (`git apply`); el archivo `store_gestion.patch` se eliminó. Con `telemercadeo_gestion_id`: agente del token, canal TELE, servicio de la gestión; cierre de dateos viejos + creación + vínculo en una sola transacción. Sin gestión, `store()` no cambia.
+2. ✅ `telemercadeo_dateo_desde_gestion.spec.ts` (13 tests): canal/agente/servicio forzados aunque el body mande otros; gestión → DATEADO y ciclo cerrado DATEADO; 409 secuencial, en paralelo y en carrera dentro de la trx; 403 ajena / 403 comercial / 404 / 400 placa distinta; rollback si falla el INSERT; regresión sin gestión; **"caracteriza deuda conocida"** (ASESOR_TELEMERCADEO sin gestión → ASESOR_COMERCIAL).
+3. ✅ Suites de dateos y tickets: 170 + 1 fails. Suite completa: 396 + 1 fails.
+4. ✅ `vincularGestionConDateo` probado en la misma transacción: dentro de la trx se ven gestión DATEADO y ciclo cerrado; desde otra conexión no; tras rollback, ambos intactos.
+5. ✅ `store()` no relee `agente_id` del body: la única lectura es al inicio y el bloque de gestión la sobrescribe con el agente del token.
+6. ✅ Excel de resumen: el tope de la hoja "Gestiones" (`TELE_EXCEL_MAX_DETALLE`, 20.000 por defecto) ya no corta en silencio: aviso en rojo en "Resumen" y "Gestiones" y cabecera `X-Detalle-Truncado` (expuesta en CORS). Test con tope 1.
+7. ✅ `GET /telemercadeo/seguimiento`: 403 `NO_ES_ASESOR_TELEMERCADEO` a quien no sea ASESOR_TELEMERCADEO, SUPER_ADMIN o GERENCIA. Test.
+8. ✅ Residuos verificados en 0: placas `TLG%`, teléfonos `39911*`/`39912*`, clientes, vehículos, prospectos, agentes/usuarios "TEST TLG", metas/overrides/autorizaciones huérfanas, `uploads/telemercadeo/` vacío.
+9. ✅ Checkpoint aprobado. Commits: `f9f49c4` (store + tests), `04747a1` (Excel + seguimiento).
 
-## Pendiente después del checkpoint
+## Archivos de la Fase 1 (desde `36208e4`)
 
-- **Fase 2 frontend:** "Mi gestión", "Control de Telemercadeo", botón "Registrar gestión" y estado de seguimiento en la cola, componente `DropzoneImagen`, permisos (`usePermissions.ts`), rutas con `meta.roles`, menú (`AppSidebar.vue`), redirección post-login por `agenteTipo` y corrección del respaldo `agenteId || user.id` de `AuthStore.ts:176` (commit separado).
-- Actualizar ambos mapas (`MAPA_DEL_SISTEMA_BACKEND.md`, `MAPA_DEL_SISTEMA_FRONTEND.md`).
+**Nuevos**
+
+- `database/migrations/1803000000000_create_telemercadeo_origenes_table.ts`
+- `database/migrations/1804000000000_create_telemercadeo_ciclos_table.ts`
+- `database/migrations/1805000000000_create_telemercadeo_gestiones_table.ts`
+- `database/migrations/1806000000000_create_telemercadeo_ciclo_autorizaciones_table.ts`
+- `database/migrations/1807000000000_create_configuracion_seguimiento_tele_global_table.ts`
+- `database/migrations/1808000000000_create_configuracion_seguimiento_tele_asesores_table.ts`
+- `database/migrations/1809000000000_create_meta_telemercadeo_asesor_table.ts`
+- `app/models/telemercadeo_ciclo.ts`
+- `app/models/telemercadeo_gestion.ts`
+- `app/models/configuracion_seguimiento_tele_global.ts`
+- `app/models/configuracion_seguimiento_tele_asesor.ts`
+- `app/services/semaforo_service.ts`
+- `app/services/telemercadeo_gestion_service.ts`
+- `app/services/telemercadeo_resumen_service.ts`
+- `app/services/ventana_rtm_service.ts`
+- `tests/functional/telemercadeo_gestion.spec.ts`
+- `tests/functional/telemercadeo_dateo_desde_gestion.spec.ts`
+- `docs/telemercadeo/HANDOFF.md`
+
+**Modificados**
+
+- `.gitignore`
+- `app/controllers/auth_controller.ts`
+- `app/controllers/captacion_dateos_controller.ts`
+- `app/controllers/reportes_administrativos_controller.ts`
+- `app/controllers/telemercadeo_controller.ts`
+- `app/controllers/uploads_controller.ts`
+- `app/services/telemercadeo_cola_service.ts`
+- `config/cors.ts`
+- `start/routes.ts`
+- `tests/functional/telemercadeo_cola.spec.ts`
+
+## Siguiente: Fase 2 frontend
+
+"Mi gestión", "Control de Telemercadeo", botón "Registrar gestión" y estado de seguimiento en la cola, componente `DropzoneImagen`, permisos (`usePermissions.ts`), rutas con `meta.roles`, menú (`AppSidebar.vue`), redirección post-login por `agenteTipo` y corrección del respaldo `agenteId || user.id` de `AuthStore.ts` (commit separado). Actualizar ambos mapas.
 
 ## Decisiones ya tomadas
 
@@ -51,12 +95,14 @@ Estado al 2026-11-18. Repo: `backend-sgc-pruebas`, rama `main`. Nada sincronizad
 - Canal TELE forzado solo con `telemercadeo_gestion_id`; el arreglo global en `resolverIntentoDateo` queda como deuda (revisar antes impacto en comisiones y Reporte de Asesores con el SELECT de producción).
 - Dateo activo de otro asesor: la gestión se permite con aviso.
 - Evidencias privadas en `uploads/telemercadeo/`, vistas por `GET /api/telemercadeo/gestiones/:id/evidencia`.
+- Excel: se mantiene un tope de filas en el detalle (rango de hasta 2 años, ExcelJS en memoria), pero siempre avisado.
 
-## Avisos
+## Avisos y riesgos
 
-- Las 7 tablas ya existen en la BD local **compartida con producción local**. Al sincronizar, copiar las migraciones 1803–1809 junto con el código. **No correr `migration:rollback` desde el repo de producción local** (Lucid falla con `E_MISSING_SCHEMA_FILES` si faltan los archivos; `migration:run` sí funciona).
+- **Test de la carrera** (`telemercadeo_dateo_desde_gestion.spec.ts`, "carrera dentro de la transacción"): para saber que la petición ya está esperando el `FOR UPDATE`, cuenta las transacciones en `LOCK WAIT` de `information_schema.innodb_trx` en **toda la BD compartida**, no solo la suya. Si otra transacción ajena (producción local, otro proceso) está en LOCK WAIT en ese momento, el test puede soltar el bloqueo antes de tiempo. En ese caso la petición pasaría por la validación previa y respondería igual 409, así que el test no fallaría, pero no estaría probando el guard dentro de la transacción. Si se vuelve inestable, filtrar por `trx_mysql_thread_id` de la conexión del servidor.
 - Ventana RTM: en pruebas `DIAS_VENTANA_PRE_RTM` no está definida (10); en producción local es 5.
 - `DELETE /uploads/*` sigue abierto a cualquier usuario autenticado para las carpetas públicas: deuda fuera de esta entrega.
+- Deuda: un ASESOR_TELEMERCADEO que datea sin gestión ni canal queda como ASESOR_COMERCIAL (test "caracteriza deuda conocida").
 - SELECT para dimensionar dateos de telemercadeo mal clasificados (solo lectura, correr en producción):
 
   ```sql

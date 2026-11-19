@@ -10,7 +10,11 @@ import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
 import CaptacionDateo from '#models/captacion_dateo'
 import { evaluarCierreCiclo } from '#services/telemercadeo_gestion_service'
-import { avanceMeta, fraccionTranscurrida, parseRango } from '#services/telemercadeo_resumen_service'
+import {
+  avanceMeta,
+  fraccionTranscurrida,
+  parseRango,
+} from '#services/telemercadeo_resumen_service'
 
 // Gestión de Telemercadeo (gestiones, seguimiento, evidencias privadas,
 // metas, resumen). Escribe en la BD compartida: placas TLG*, teléfonos
@@ -136,7 +140,9 @@ test.group('Telemercadeo · gestiones', (group) => {
     teleB = await agente('ASESOR_TELEMERCADEO', `TEST TLG TELE B ${s}`, uB.id)
     comercial = await agente('ASESOR_COMERCIAL', `TEST TLG COMERCIAL ${s}`, uC.id)
 
-    const origen = await Database.from('telemercadeo_origenes').where('codigo', 'GOOGLE_ADS').first()
+    const origen = await Database.from('telemercadeo_origenes')
+      .where('codigo', 'GOOGLE_ADS')
+      .first()
     origenId = origen.id
 
     imagenPath = app.tmpPath(`tst_tlg_${Date.now()}.png`)
@@ -165,7 +171,9 @@ test.group('Telemercadeo · gestiones', (group) => {
     if (imagenPath) await fs.unlink(imagenPath).catch(() => {})
     const ids = agentes.map((a) => a.id)
     await Database.from('meta_telemercadeo_asesor').whereIn('asesor_id', ids).delete()
-    await Database.from('configuracion_seguimiento_tele_asesores').whereIn('asesor_id', ids).delete()
+    await Database.from('configuracion_seguimiento_tele_asesores')
+      .whereIn('asesor_id', ids)
+      .delete()
     for (const a of agentes) await a.delete()
     for (const u of usuarios) await u.delete()
   })
@@ -183,10 +191,18 @@ test.group('Telemercadeo · gestiones', (group) => {
       'TURNO'
     )
     assert.isNull(
-      evaluarCierreCiclo({ ...base, ultimaGestionAt: ahora.minus({ days: 29 }), turnoFinalizadoDesdeApertura: false })
+      evaluarCierreCiclo({
+        ...base,
+        ultimaGestionAt: ahora.minus({ days: 29 }),
+        turnoFinalizadoDesdeApertura: false,
+      })
     )
     assert.equal(
-      evaluarCierreCiclo({ ...base, ultimaGestionAt: ahora.minus({ days: 30 }), turnoFinalizadoDesdeApertura: false }),
+      evaluarCierreCiclo({
+        ...base,
+        ultimaGestionAt: ahora.minus({ days: 30 }),
+        turnoFinalizadoDesdeApertura: false,
+      }),
       'VENCIDO'
     )
   })
@@ -227,7 +243,9 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert,
   }) => {
     ;(await client.get('/api/telemercadeo/gestiones')).assertStatus(401)
-    ;(await client.get('/api/telemercadeo/gestiones').headers(bearer('OPERATIVO'))).assertStatus(403)
+    ;(await client.get('/api/telemercadeo/gestiones').headers(bearer('OPERATIVO'))).assertStatus(
+      403
+    )
 
     const rc = await gestionar(client, { placa: 'TLG900' }, 'COMERCIAL')
     rc.assertStatus(403)
@@ -241,14 +259,18 @@ test.group('Telemercadeo · gestiones', (group) => {
     ra.assertStatus(403)
 
     // Un comercial no-tele tampoco ve historial.
-    ;(await client.get('/api/telemercadeo/gestiones').headers(bearer('COMERCIAL'))).assertStatus(403)
+    ;(await client.get('/api/telemercadeo/gestiones').headers(bearer('COMERCIAL'))).assertStatus(
+      403
+    )
     // Control solo SUPER_ADMIN/GERENCIA.
     ;(await client.get('/api/telemercadeo/resumen').headers(bearer('TELE_A'))).assertStatus(403)
     ;(await client.get('/api/telemercadeo/metas').headers(bearer('TELE_A'))).assertStatus(403)
     ;(await client.get('/api/telemercadeo/resumen').headers(bearer('GERENCIA'))).assertStatus(200)
     // mi-resumen: solo el asesor.
     ;(await client.get('/api/telemercadeo/mi-resumen').headers(bearer('ADMIN'))).assertStatus(403)
-    ;(await client.get('/api/telemercadeo/mi-resumen').headers(bearer('COMERCIAL'))).assertStatus(403)
+    ;(await client.get('/api/telemercadeo/mi-resumen').headers(bearer('COMERCIAL'))).assertStatus(
+      403
+    )
     ;(await client.get('/api/telemercadeo/mi-resumen').headers(bearer('TELE_A'))).assertStatus(200)
   })
 
@@ -310,22 +332,33 @@ test.group('Telemercadeo · gestiones', (group) => {
     for (const url of intentos) {
       const r = await client.delete(url).headers(bearer('ADMIN'))
       assert.oneOf(r.status(), [403, 404], `DELETE ${url}`)
-      assert.isTrue(fsSync.existsSync(abs), `la evidencia debe seguir existiendo tras DELETE ${url}`)
+      assert.isTrue(
+        fsSync.existsSync(abs),
+        `la evidencia debe seguir existiendo tras DELETE ${url}`
+      )
     }
   })
 
-  test('evidencia: endpoint autenticado solo para el dueño o gerencia', async ({ client, assert }) => {
+  test('evidencia: endpoint autenticado solo para el dueño o gerencia', async ({
+    client,
+    assert,
+  }) => {
     const r = await gestionar(client, { placa: 'TLG002' })
     r.assertStatus(201)
     const id = r.body().gestion.id
     assert.equal(r.body().gestion.evidencia_url, `/api/telemercadeo/gestiones/${id}/evidencia`)
-
     ;(await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`)).assertStatus(401)
-    const own = await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`).headers(bearer('TELE_A'))
+    const own = await client
+      .get(`/api/telemercadeo/gestiones/${id}/evidencia`)
+      .headers(bearer('TELE_A'))
     own.assertStatus(200)
     assert.include(String(own.header('cache-control')), 'no-store')
-    ;(await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`).headers(bearer('TELE_B'))).assertStatus(403)
-    ;(await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`).headers(bearer('GERENCIA'))).assertStatus(200)
+    ;(
+      await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`).headers(bearer('TELE_B'))
+    ).assertStatus(403)
+    ;(
+      await client.get(`/api/telemercadeo/gestiones/${id}/evidencia`).headers(bearer('GERENCIA'))
+    ).assertStatus(200)
   })
 
   /* ═══════════ Registrar: validaciones, idempotencia, alcance ═══════════ */
@@ -336,7 +369,10 @@ test.group('Telemercadeo · gestiones', (group) => {
   }) => {
     const casos: Array<[Record<string, unknown>, string]> = [
       [{ placa: 'TLG003', evidencia_ruta: 'dateos/2026/11/x.png' }, 'EVIDENCIA_INVALIDA'],
-      [{ placa: 'TLG003', evidencia_ruta: 'telemercadeo/2026/11/noexiste.png' }, 'EVIDENCIA_NO_EXISTE'],
+      [
+        { placa: 'TLG003', evidencia_ruta: 'telemercadeo/2026/11/noexiste.png' },
+        'EVIDENCIA_NO_EXISTE',
+      ],
       [{ placa: 'TLG003', resultado: 'DATEADO' }, 'RESULTADO_INVALIDO'],
       [{ placa: 'TLG003', medio: 'FAX' }, 'MEDIO_INVALIDO'],
       [{ placa: 'TLG003', origen_id: 999999 }, 'ORIGEN_INVALIDO'],
@@ -414,16 +450,26 @@ test.group('Telemercadeo · gestiones', (group) => {
       .qs({ agente_id: teleB.id, per_page: 100 })
     listaA.assertStatus(200)
     assert.isTrue(listaA.body().data.every((g: any) => g.agente_id === teleA.id))
-    assert.notInclude(listaA.body().data.map((g: any) => g.id), idB)
-    ;(await client.get(`/api/telemercadeo/gestiones/${idB}`).headers(bearer('TELE_A'))).assertStatus(403)
-    ;(await client.get(`/api/telemercadeo/gestiones/${idB}`).headers(bearer('TELE_B'))).assertStatus(200)
+    assert.notInclude(
+      listaA.body().data.map((g: any) => g.id),
+      idB
+    )
+    ;(
+      await client.get(`/api/telemercadeo/gestiones/${idB}`).headers(bearer('TELE_A'))
+    ).assertStatus(403)
+    ;(
+      await client.get(`/api/telemercadeo/gestiones/${idB}`).headers(bearer('TELE_B'))
+    ).assertStatus(200)
 
     const listaG = await client
       .get('/api/telemercadeo/gestiones')
       .headers(bearer('GERENCIA'))
       .qs({ agente_id: teleB.id, per_page: 100 })
     listaG.assertStatus(200)
-    assert.include(listaG.body().data.map((g: any) => g.id), idB)
+    assert.include(
+      listaG.body().data.map((g: any) => g.id),
+      idB
+    )
     assert.isTrue(listaG.body().data.every((g: any) => g.agente_id === teleB.id))
     assert.properties(listaG.body().meta, ['total', 'current_page', 'per_page', 'last_page'])
   })
@@ -479,10 +525,12 @@ test.group('Telemercadeo · gestiones', (group) => {
     r4.assertStatus(409)
     const cicloId = r4.body().ciclo_id
 
-    ;(await client
-      .post(`/api/telemercadeo/ciclos/${cicloId}/autorizar-extra`)
-      .headers(bearer('TELE_A'))
-      .json({ motivo: 'quiero otra' })).assertStatus(403)
+    ;(
+      await client
+        .post(`/api/telemercadeo/ciclos/${cicloId}/autorizar-extra`)
+        .headers(bearer('TELE_A'))
+        .json({ motivo: 'quiero otra' })
+    ).assertStatus(403)
     const sinMotivo = await client
       .post(`/api/telemercadeo/ciclos/${cicloId}/autorizar-extra`)
       .headers(bearer('GERENCIA'))
@@ -512,34 +560,40 @@ test.group('Telemercadeo · gestiones', (group) => {
     client,
     assert,
   }) => {
-    const g = await client.get('/api/telemercadeo/config/max-seguimientos').headers(bearer('TELE_A'))
+    const g = await client
+      .get('/api/telemercadeo/config/max-seguimientos')
+      .headers(bearer('TELE_A'))
     g.assertStatus(200)
     assert.equal(g.body().max_seguimientos, 3)
-    ;(await client
-      .post('/api/telemercadeo/config/max-seguimientos/asesores')
-      .headers(bearer('TELE_A'))
-      .json({ asesor_id: teleA.id, max_seguimientos: 1 })).assertStatus(403)
-    ;(await client
-      .post('/api/telemercadeo/config/max-seguimientos/asesores')
-      .headers(bearer('GERENCIA'))
-      .json({ asesor_id: comercial.id, max_seguimientos: 1 })).assertStatus(400)
+    ;(
+      await client
+        .post('/api/telemercadeo/config/max-seguimientos/asesores')
+        .headers(bearer('TELE_A'))
+        .json({ asesor_id: teleA.id, max_seguimientos: 1 })
+    ).assertStatus(403)
+    ;(
+      await client
+        .post('/api/telemercadeo/config/max-seguimientos/asesores')
+        .headers(bearer('GERENCIA'))
+        .json({ asesor_id: comercial.id, max_seguimientos: 1 })
+    ).assertStatus(400)
 
     const up = await client
       .post('/api/telemercadeo/config/max-seguimientos/asesores')
       .headers(bearer('GERENCIA'))
       .json({ asesor_id: teleA.id, max_seguimientos: 1 })
     up.assertStatus(200)
-
     ;(await gestionar(client, { placa: 'TLG013' })).assertStatus(201)
     const r2 = await gestionar(client, { placa: 'TLG013' })
     r2.assertStatus(409)
     assert.equal(r2.body().max, 1)
     // B no tiene override: su límite sigue siendo 3 sobre el mismo ciclo.
     ;(await gestionar(client, { placa: 'TLG013' }, 'TELE_B')).assertStatus(201)
-
-    ;(await client
-      .delete(`/api/telemercadeo/config/max-seguimientos/asesores/${up.body().id}`)
-      .headers(bearer('GERENCIA'))).assertStatus(200)
+    ;(
+      await client
+        .delete(`/api/telemercadeo/config/max-seguimientos/asesores/${up.body().id}`)
+        .headers(bearer('GERENCIA'))
+    ).assertStatus(200)
   })
 
   /* ═══════════ Cierre del ciclo ═══════════ */
@@ -618,7 +672,10 @@ test.group('Telemercadeo · gestiones', (group) => {
     }
   })
 
-  test('avisos: RTM vigente con la ventana compartida (DIAS_VENTANA_PRE_RTM)', async ({ client, assert }) => {
+  test('avisos: RTM vigente con la ventana compartida (DIAS_VENTANA_PRE_RTM)', async ({
+    client,
+    assert,
+  }) => {
     const fecha = DateTime.now().setZone(ZONA).minus({ months: 2 })
     await turno('TLG017', fecha)
     const s = await client
@@ -629,7 +686,10 @@ test.group('Telemercadeo · gestiones', (group) => {
     const vence = fecha.plus({ months: 12 }).startOf('day')
     const dias = Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
     assert.equal(s.body().avisos.rtm_vigente.vence_el, vence.toISODate())
-    assert.equal(s.body().avisos.rtm_vigente.puede_datear_desde, vence.minus({ days: dias }).toISODate())
+    assert.equal(
+      s.body().avisos.rtm_vigente.puede_datear_desde,
+      vence.minus({ days: dias }).toISODate()
+    )
   })
 
   /* ═══════════ Cola ═══════════ */
@@ -653,7 +713,10 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert.equal(fila.seguimiento.placa, 'TLG001')
     assert.isAtLeast(fila.seguimiento.n, 1)
     assert.equal(fila.seguimiento.limite, 3)
-    assert.equal(r.body().meta.parametros.dias_ventana_previa, Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10))
+    assert.equal(
+      r.body().meta.parametros.dias_ventana_previa,
+      Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
+    )
   })
 
   /* ═══════════ Metas ═══════════ */
@@ -678,26 +741,36 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert.deepInclude(a, { meta_gestiones: 100, meta_dateos: 20, meta_exitosos: 10 })
     const b = put.body().data.find((x: any) => x.asesor_id === teleB.id)
     assert.deepInclude(b, { meta_gestiones: null, meta_dateos: null, meta_exitosos: 5 })
-
-    ;(await client
-      .put('/api/telemercadeo/metas')
-      .headers(bearer('GERENCIA'))
-      .json({ mes: 1, anio: 2031, metas: [{ asesor_id: comercial.id, meta_exitosos: 1 }] })).assertStatus(400)
-    ;(await client
-      .put('/api/telemercadeo/metas')
-      .headers(bearer('GERENCIA'))
-      .json({ mes: 1, anio: 2031, metas: [{ asesor_id: teleA.id, meta_exitosos: -1 }] })).assertStatus(400)
+    ;(
+      await client
+        .put('/api/telemercadeo/metas')
+        .headers(bearer('GERENCIA'))
+        .json({ mes: 1, anio: 2031, metas: [{ asesor_id: comercial.id, meta_exitosos: 1 }] })
+    ).assertStatus(400)
+    ;(
+      await client
+        .put('/api/telemercadeo/metas')
+        .headers(bearer('GERENCIA'))
+        .json({ mes: 1, anio: 2031, metas: [{ asesor_id: teleA.id, meta_exitosos: -1 }] })
+    ).assertStatus(400)
 
     const borrar = await client
       .put('/api/telemercadeo/metas')
       .headers(bearer('GERENCIA'))
       .json({ mes: 1, anio: 2031, metas: [{ asesor_id: teleB.id }] })
     borrar.assertStatus(200)
-    const filasB = await Database.from('meta_telemercadeo_asesor').where({ asesor_id: teleB.id, mes: 1, anio: 2031 })
+    const filasB = await Database.from('meta_telemercadeo_asesor').where({
+      asesor_id: teleB.id,
+      mes: 1,
+      anio: 2031,
+    })
     assert.lengthOf(filasB, 0)
   })
 
-  test('metas: copiar del mes anterior sin sobrescribir las existentes', async ({ client, assert }) => {
+  test('metas: copiar del mes anterior sin sobrescribir las existentes', async ({
+    client,
+    assert,
+  }) => {
     await client
       .put('/api/telemercadeo/metas')
       .headers(bearer('GERENCIA'))
@@ -739,7 +812,11 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert,
   }) => {
     // Rango futuro aislado: se mueven a 2031-04 las gestiones de TLG02x.
-    const g1 = await gestionar(client, { placa: 'TLG020', medio: 'WHATSAPP', resultado: 'INTERESADO' })
+    const g1 = await gestionar(client, {
+      placa: 'TLG020',
+      medio: 'WHATSAPP',
+      resultado: 'INTERESADO',
+    })
     const g2 = await gestionar(client, { placa: 'TLG021', medio: 'LLAMADA' })
     const g3 = await gestionar(client, { placa: 'TLG022', medio: 'CORREO' }, 'TELE_B')
     for (const r of [g1, g2, g3]) r.assertStatus(201)
@@ -822,7 +899,11 @@ test.group('Telemercadeo · gestiones', (group) => {
         wb.getWorksheet(nombre)!.eachRow((row) => out.push(String(row.getCell(1).value ?? '')))
         return out
       }
-      return { truncado: r.headers.get('x-detalle-truncado'), gestiones: filas('Gestiones'), resumen: filas('Resumen') }
+      return {
+        truncado: r.headers.get('x-detalle-truncado'),
+        gestiones: filas('Gestiones'),
+        resumen: filas('Resumen'),
+      }
     }
 
     const completo = await hoja()
@@ -844,7 +925,10 @@ test.group('Telemercadeo · gestiones', (group) => {
     }
   })
 
-  test('mi-resumen: sin meta → SIN_META y sin %; KPIs del propio asesor', async ({ client, assert }) => {
+  test('mi-resumen: sin meta → SIN_META y sin %; KPIs del propio asesor', async ({
+    client,
+    assert,
+  }) => {
     const hoy = DateTime.now().setZone(ZONA)
     const r = await client
       .get('/api/telemercadeo/mi-resumen')
