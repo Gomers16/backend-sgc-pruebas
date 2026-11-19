@@ -713,6 +713,8 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert.equal(fila.seguimiento.placa, 'TLG001')
     assert.isAtLeast(fila.seguimiento.n, 1)
     assert.equal(fila.seguimiento.limite, 3)
+    // La cola necesita saber de quién es la última gestión (Datear con gestion_id solo si es propia).
+    assert.equal(fila.seguimiento.ultima_gestion.agente_id, teleA.id)
     assert.equal(
       r.body().meta.parametros.dias_ventana_previa,
       Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)

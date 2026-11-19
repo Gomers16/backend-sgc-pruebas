@@ -675,6 +675,7 @@ export interface SeguimientoPlaca {
     fecha: string
     medio: MedioGestion
     resultado: ResultadoGestion
+    agente_id: number
     agente_nombre: string | null
     servicio_id: number
   }
@@ -708,6 +709,7 @@ export async function seguimientoPorPlacas(
       'g.medio',
       'g.resultado',
       'g.created_at',
+      'g.agente_id',
       'a.nombre as agente_nombre',
       'c.numero_gestiones',
       'c.extras_autorizados',
@@ -762,6 +764,7 @@ export async function seguimientoPorPlacas(
         fecha: aDT(u.created_at).setZone(ZONA_TELE).toISO()!,
         medio: u.medio,
         resultado: u.resultado,
+        agente_id: Number(u.agente_id),
         agente_nombre: u.agente_nombre ?? null,
         servicio_id: Number(u.servicio_id),
       },
