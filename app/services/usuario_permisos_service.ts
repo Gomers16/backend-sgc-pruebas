@@ -74,6 +74,14 @@ export function validarGestionUsuario(
   let sedeFinal: number | null =
     cambios.sedeId !== undefined ? cambios.sedeId : (objetivoActual?.sedeId ?? null)
 
+  // Multi-sede Fase 2: un usuario sin sede no puede operar (403 en todo), así
+  // que no se deja crear ni dejar a nadie sin sede. Alta sin sede → la del
+  // actor (cualquier rol); quitar la sede en una edición → 422.
+  if (objetivoActual && cambios.sedeId === null) {
+    return { ok: false, status: 422, message: 'La sede del usuario es obligatoria.' }
+  }
+  if (!objetivoActual && sedeFinal === null) sedeFinal = actor.sedeId ?? null
+
   if (rolActor === ROL_SUPER_ADMIN) return { ok: true, sedeId: sedeFinal }
 
   if (rolActor === ROL_GERENCIA) {

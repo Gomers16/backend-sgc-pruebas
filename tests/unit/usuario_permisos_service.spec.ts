@@ -181,3 +181,27 @@ test.group('usuario_permisos_service · normalizarId', () => {
     assert.isNaN(normalizarId(1.5))
   })
 })
+
+test.group('usuario_permisos_service · Fase 2: nadie queda sin sede', () => {
+  test('alta sin sede → sede del actor, para cualquier rol que pueda crear', ({ assert }) => {
+    assert.deepEqual(validarGestionUsuario(SA, null, { rol: 'COMERCIAL' }), {
+      ok: true,
+      sedeId: IBAGUE,
+    })
+    assert.deepEqual(
+      validarGestionUsuario({ rol: 'GERENCIA', sedeId: BOGOTA }, null, {
+        rol: 'COMERCIAL',
+        sedeId: null,
+      }),
+      {
+        ok: true,
+        sedeId: BOGOTA,
+      }
+    )
+  })
+
+  test('quitar la sede en una edición → 422', ({ assert }) => {
+    const r = validarGestionUsuario(SA, { rol: 'COMERCIAL', sedeId: IBAGUE }, { sedeId: null })
+    assert.deepEqual(r, { ok: false, status: 422, message: 'La sede del usuario es obligatoria.' })
+  })
+})
