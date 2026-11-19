@@ -17,7 +17,7 @@ import FacturacionDescuentoEdicion from '#models/facturacion_descuento_edicion'
 // comisión del dateo del turno se recalcula solo si está PENDIENTE.
 // Todo lo creado aquí se borra en el teardown (por placa y por usuario).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const AGENTE_COMERCIAL_ID = 1
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, CONTABILIDAD: 12 }

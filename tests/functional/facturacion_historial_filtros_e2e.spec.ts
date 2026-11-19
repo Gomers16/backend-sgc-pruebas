@@ -9,7 +9,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 // fecha de pago en hora de Bogotá, placa parcial, vendedor, descuento (o
 // "ninguno"), consecutivo del descuento, estado, servicio y la línea resumen.
 // Cada consulta lleva placa_contiene=QATH para no mezclarse con datos reales.
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
 const SERVICIO_SOAT_ID = 4

@@ -13,7 +13,7 @@ import Database from '@adonisjs/lucid/services/db'
 // TST930–TST939 y TST946–TST948 y limpieza completa al final (turnos, certificaciones por
 // cascade, imágenes subidas y usuario de prueba).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO = { RTM: 1, PREV: 2, PERI: 3, SOAT: 4 } as const
 

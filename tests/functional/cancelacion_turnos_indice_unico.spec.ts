@@ -13,7 +13,7 @@ import Database from '@adonisjs/lucid/services/db'
 const PLACA_CANCELADO_PREVIO = 'TST925'
 const PLACA_A_CANCELAR = 'TST926'
 const PLACA_NUEVO_TURNO = 'TST927'
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 const NUMERO_COMPARTIDO = 25

@@ -10,7 +10,7 @@ import CertificacionResultadoCambio from '#models/certificacion_resultado_cambio
 // (solo SUPER_ADMIN/GERENCIA, motivo obligatorio, auditoría). Escribe en la
 // BD compartida: placas TST976–TST980, limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO = { RTM: 1, PREV: 2, SOAT: 4 } as const
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, COMERCIAL: 11, CONTABILIDAD: 12, OPERATIVO_TURNOS: 14 }
 const ZONA = 'America/Bogota'

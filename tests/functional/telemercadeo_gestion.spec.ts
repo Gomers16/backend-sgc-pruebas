@@ -21,7 +21,7 @@ import {
 // 39911*, agentes/usuarios "TEST TLG", evidencias en uploads/telemercadeo.
 // Limpieza al inicio (restos de una corrida fallida) y al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM = 1
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, COMERCIAL: 11, OPERATIVO_TURNOS: 14 }
 const ZONA = 'America/Bogota'

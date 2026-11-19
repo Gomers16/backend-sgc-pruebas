@@ -11,7 +11,7 @@ import Usuario from '#models/usuario'
 // Escribe en la BD compartida: usuarios test.cargotele.*@test.local y su
 // agente y contrato. Limpieza total al inicio y al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL = { SUPER_ADMIN: 9, COMERCIAL: 11 }
 const MARCA = 'test.cargotele.'
 const PASSWORD = 'Test1234!Aa'

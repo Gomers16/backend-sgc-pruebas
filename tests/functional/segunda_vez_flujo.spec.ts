@@ -21,7 +21,7 @@ import { evaluarVentanaSegundaVez } from '#services/segunda_vez_service'
 // Nota: turno_codigo se genera con resolución de segundos (bug conocido,
 // pendiente B); por eso se espera >1 s antes de cada creación por HTTP.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const OTRA_SEDE_ID = 1
 const SERVICIO = { RTM: 1, PREV: 2 } as const
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, COMERCIAL: 11, OPERATIVO_TURNOS: 14 } as const

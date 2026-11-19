@@ -10,7 +10,7 @@ import Database from '@adonisjs/lucid/services/db'
 // siguen bloqueando como antes. Escribe en la BD compartida: placas
 // TST940–TST945, limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 const ROL_COMERCIAL_ID = 11

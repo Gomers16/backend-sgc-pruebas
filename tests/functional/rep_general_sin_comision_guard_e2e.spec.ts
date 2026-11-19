@@ -19,7 +19,7 @@ import RepGeneralImportController from '#controllers/rep_general_imports_control
 // compartida con facturacion_tickets_controller.ts::applyCommissionHook().
 const PLACA_GUARD = 'TSTRGG1E' // Caso 1, sin comisión — debe quedar protegido
 const PLACA_CONTROL = 'TSTRGG2E' // Caso 1, con comisión — debe recalcular normal
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
 

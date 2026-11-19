@@ -15,7 +15,7 @@ import Certificacion from '#models/certificacion'
 // su dateo se cierra al confirmar Facturación. Escribe en la BD compartida:
 // placas TST900–TST904, limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO = { RTM: 1, PREV: 2, PERI: 3 } as const
 

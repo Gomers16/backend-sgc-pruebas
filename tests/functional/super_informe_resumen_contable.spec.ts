@@ -17,7 +17,7 @@ const D2 = '2032-05-11'
 const D3 = '2032-05-12'
 const FUERA = '2032-05-13'
 const SOLO_SV = '2032-05-14'
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN = 9
 const SERVICIO = { RTM: 1, PREV: 2, PERI: 3, SOAT: 4 }
 

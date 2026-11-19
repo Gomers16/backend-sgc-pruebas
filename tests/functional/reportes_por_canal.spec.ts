@@ -18,7 +18,7 @@ import AgenteCaptacion from '#models/agente_captacion'
 
 const DIA = '2031-03-14'
 const DIA_SV = '2031-03-21'
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM = 1
 const ROL_SUPER_ADMIN = 9
 

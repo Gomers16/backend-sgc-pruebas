@@ -24,7 +24,7 @@ import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
  *  - gerencia corrige el convenio al aprobar (queda el original)
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'

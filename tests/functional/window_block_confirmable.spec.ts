@@ -13,7 +13,7 @@ import Database from '@adonisjs/lucid/services/db'
 // Preventiva y Peritaje no tienen bloqueo de vigencia.
 // Escribe en la BD compartida: placas VRT901–VRT909, limpieza al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_OPERATIVO_TURNOS_ID = 14
 const ZONA = 'America/Bogota'
 const DIAS_VENTANA_PRE = 16

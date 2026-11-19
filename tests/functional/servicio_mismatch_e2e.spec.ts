@@ -9,7 +9,7 @@ import Database from '@adonisjs/lucid/services/db'
 const PLACA_1 = 'TST997'
 const PLACA_2 = 'TST996'
 const AGENTE_ID = 1
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
 const SERVICIO_SOAT_ID = 4

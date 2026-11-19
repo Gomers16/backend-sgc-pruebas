@@ -13,7 +13,7 @@ import { resolverMetaAsesoresPeriodo } from '#services/meta_asesor_service'
 //   A: 2031-03 = 40M / 10 veh · 2031-04 = 60M / sin veh · 2020-01 = 15M
 //   B: 2031-03 = 20M / 5 veh  (sin fila en 2031-04)
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 
 test.group('Súper Informe · meta comercial por asesor', (group) => {

@@ -28,7 +28,7 @@ import {
 // vigente) = guardado = GET /comisiones/:id = previsualización del diálogo.
 // Todo lo creado aquí se borra en el teardown (por placa y por usuario).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const AGENTE_COMERCIAL_ID = 1
 const ROL_SUPER_ADMIN = 9

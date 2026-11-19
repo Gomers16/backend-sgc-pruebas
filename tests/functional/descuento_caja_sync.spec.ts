@@ -11,7 +11,7 @@ import Comision from '#models/comision'
 
 // Ids conocidos ya sembrados en la BD de pruebas (mismos que
 // servicio_mismatch_e2e.spec.ts).
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 const AGENTE_COMERCIAL_ID = 1

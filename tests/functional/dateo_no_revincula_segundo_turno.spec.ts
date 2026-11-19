@@ -18,7 +18,7 @@ import Comision from '#models/comision'
 // día sigue re-vinculando el dateo del turno cancelado.
 // Escribe en la BD compartida: placas DRV901–DRV905, limpieza al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const AGENTE_COMERCIAL_ID = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'

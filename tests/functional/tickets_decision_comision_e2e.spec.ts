@@ -26,7 +26,7 @@ import { sqlCopiaConComision } from '#database/migrations/1797000000000_add_con_
  *  - aprobar() pasa descuento de caja y avance al cálculo
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'

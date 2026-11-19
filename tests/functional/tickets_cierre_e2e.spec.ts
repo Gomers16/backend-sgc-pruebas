@@ -26,7 +26,7 @@ import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
  *    y el caso nuevo manda en la validación de la decisión
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, COMERCIAL: 11, CONTABILIDAD: 12 } as const
 const ZONA = 'America/Bogota'

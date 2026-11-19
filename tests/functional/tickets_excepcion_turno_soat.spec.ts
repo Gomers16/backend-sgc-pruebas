@@ -22,7 +22,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
  * 2026-11-12). Cuando se arregle, Japa avisará y hay que quitar el .fails().
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10 } as const
 const ZONA = 'America/Bogota'
 const PLACA = 'TKS901'

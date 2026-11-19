@@ -23,7 +23,7 @@ import { SQL_BACKFILL_TICKET_EVENTOS } from '#database/migrations/1798000000000_
  * con_comision). Comercial C: eventos, corrección de convenio y backfill.
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL = { SUPER_ADMIN: 9, COMERCIAL: 11 } as const
 const ZONA = 'America/Bogota'

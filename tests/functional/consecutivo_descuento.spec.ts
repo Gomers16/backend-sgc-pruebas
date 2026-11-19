@@ -14,7 +14,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 // sale antes de crear comisiones (no toca comisiones ni captacion_dateos).
 // Todo lo creado aquí se borra en el teardown (por placa y por usuario).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const ROL_OPERATIVO_TURNOS_ID = 14
 const DESCUENTO_INFORMATIVO_ID = 1

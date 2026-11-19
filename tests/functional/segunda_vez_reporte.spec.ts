@@ -11,7 +11,7 @@ import Certificacion from '#models/certificacion'
 // placas ZSV91x, filtradas con placa=ZSV91 para aislarlas. Escribe en la BD
 // compartida solo mientras corre; limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO = { RTM: 1, PREV: 2 } as const
 const ROL = { SUPER_ADMIN: 9, COMERCIAL: 11, CONTABILIDAD: 12 }
 const ZONA = 'America/Bogota'

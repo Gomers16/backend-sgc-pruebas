@@ -11,7 +11,7 @@ import TurnoRtm from '#models/turno_rtm'
 // el mismo día sigue bloqueado. Escribe en la BD compartida: placas
 // TST970–TST974, limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 const ZONA = 'America/Bogota'

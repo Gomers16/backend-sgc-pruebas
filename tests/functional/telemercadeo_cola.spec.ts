@@ -17,7 +17,7 @@ import { diasVentanaPreRtm } from '#services/ventana_rtm_service'
 // inicio (restos de una corrida fallida) y al final. Cada lista se aísla con
 // q=TLMV (POR_VENCER) / q=TLMC (CLIENTES).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM = 1
 const SERVICIO_PREV = 2
 const ROL_SUPER_ADMIN = 9

@@ -13,7 +13,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 //
 // turno_codigo tiene resolución de segundos: se espera >1 s entre creaciones.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'

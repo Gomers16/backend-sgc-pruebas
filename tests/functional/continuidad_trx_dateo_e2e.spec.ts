@@ -19,7 +19,7 @@ import { resolveConfigRecurrencia } from '#services/comision_calculo_service'
  *  - Sin trx, el servicio responde igual que siempre.
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ZONA = 'America/Bogota'
 const P = {
   PUT: 'TKK701',

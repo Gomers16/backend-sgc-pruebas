@@ -24,7 +24,7 @@ const PLACA_SIN_COMISION = 'TSTTKS2E'
 // de que facturación se confirme" — comisión DIFERIDA vía
 // facturacion_tickets_controller.ts::applyCommissionHook().
 const PLACA_DIFERIDA = 'TSTTKD2E'
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1
 

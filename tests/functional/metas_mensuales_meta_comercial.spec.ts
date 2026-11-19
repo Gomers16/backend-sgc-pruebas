@@ -11,7 +11,7 @@ import Comision from '#models/comision'
 // Escribe en la BD compartida: asesor TEST, su config de comisión y sus filas
 // de meta_comercial_asesor; limpieza completa al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const META_RTM_CONFIG = 7
 

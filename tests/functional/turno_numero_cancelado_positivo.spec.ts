@@ -14,7 +14,7 @@ const PLACA_CANCELADO = 'TST931'
 const PLACA_NUEVO = 'TST932'
 const PLACA_CONC_A = 'TST933'
 const PLACA_CONC_B = 'TST934'
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 

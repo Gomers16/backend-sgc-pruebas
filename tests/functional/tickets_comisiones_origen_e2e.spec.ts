@@ -22,7 +22,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
  *    permiso de confirmar (403) y montos que no contradicen (como siempre)
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL = { SUPER_ADMIN: 9, GERENCIA: 10, CONTABILIDAD: 12 } as const
 const ZONA = 'America/Bogota'

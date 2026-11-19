@@ -12,7 +12,7 @@ import { vincularGestionConDateo } from '#services/telemercadeo_gestion_service'
 // BD compartida: placas TLG1**, teléfonos 39912*, agentes/usuarios
 // "TEST TLG", evidencias en uploads/telemercadeo. Limpieza al inicio y al final.
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const ROL = { SUPER_ADMIN: 9, COMERCIAL: 11 }
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',

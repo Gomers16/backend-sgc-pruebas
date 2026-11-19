@@ -24,7 +24,7 @@ import RepGeneralImportController from '#controllers/rep_general_imports_control
  *  - aprobados antes (dentro de ventana sin flags) siguen contando como "con"
  */
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN = 9
 const ZONA = 'America/Bogota'

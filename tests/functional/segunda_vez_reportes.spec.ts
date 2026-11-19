@@ -18,7 +18,7 @@ import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
 // el test y se limpian al final (turnos, certificaciones e imágenes,
 // informes de discrepancias creados y usuario).
 
-const SEDE_ID = 2
+const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
 const ROL_SUPER_ADMIN_ID = 9
 const ZONA = 'America/Bogota'
