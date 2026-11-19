@@ -725,8 +725,15 @@ export default class AgentesCaptacionController {
       convenioId = convenio?.id ?? null
     }
 
+    // Canales del asesor. El de Telemercadeo además ve sus dateos TELE (los
+    // que salen de una gestión); para los demás tipos no cambia nada.
+    const canales =
+      agente.tipo === 'ASESOR_TELEMERCADEO'
+        ? ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO', 'TELE']
+        : ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO']
+
     const q = CaptacionDateo.query()
-      .whereIn('canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
+      .whereIn('canal', canales)
       .where((qb) => {
         qb.where('agente_id', asesorId)
         if (convenioId !== null) qb.orWhere('convenio_id', convenioId)

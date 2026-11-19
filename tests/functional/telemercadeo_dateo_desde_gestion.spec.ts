@@ -409,6 +409,35 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert.isTrue(Boolean(p.archivado))
   })
 
+  test('ficha: dateos-comisiones del asesor de Telemercadeo incluye sus dateos TELE; el comercial no cambia', async ({
+    client,
+    assert,
+  }) => {
+    const g = await gestion(client, 'TLG116')
+    const d = await datear(client, 'TELE_A', { placa: 'TLG116', telemercadeo_gestion_id: g.id })
+    d.assertStatus(201)
+    const fichaTele = await client
+      .get(`/api/agentes-captacion/${teleA.id}/dateos-comisiones`)
+      .headers(bearer('ADMIN'))
+      .qs({ perPage: 500 })
+    fichaTele.assertStatus(200)
+    const idsTele = (fichaTele.body().data as any[]).map((x) => x.id)
+    assert.include(idsTele, d.body().id)
+
+    // Un dateo TELE a nombre de un comercial sigue fuera de SU ficha (como antes).
+    const dc = await datear(client, 'ADMIN', { placa: 'TLG117', agente_id: comercial.id, canal: 'TELE' })
+    dc.assertStatus(201)
+    const fichaCom = await client
+      .get(`/api/agentes-captacion/${comercial.id}/dateos-comisiones`)
+      .headers(bearer('ADMIN'))
+      .qs({ perPage: 500 })
+    fichaCom.assertStatus(200)
+    assert.notInclude(
+      (fichaCom.body().data as any[]).map((x) => x.id),
+      dc.body().id
+    )
+  })
+
   /* ═══════════ Regresión: store() sin gestión ═══════════ */
 
   test('sin gestión: comercial datea con su agente y canal ASESOR_COMERCIAL; no toca gestiones', async ({
