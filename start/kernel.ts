@@ -40,4 +40,6 @@ export const middleware = router.named({
   checkRole: () => import('#middleware/check_role_middleware'),
   guest: () => import('#middleware/guest_middleware'),
   auth: () => import('#middleware/auth_middleware'),
+  // Multi-sede: auth ya lo invoca; queda nombrado para usos explícitos.
+  sedeActiva: () => import('#middleware/sede_activa_middleware'),
 })

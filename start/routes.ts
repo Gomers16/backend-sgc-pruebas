@@ -29,7 +29,8 @@ router
         const { default: AuthController } = await import('#controllers/auth_controller')
         return new AuthController().me(ctx)
       })
-      .use(middleware.auth())
+      // sedeOpcional: un usuario sin sede igual puede ver su perfil (sede null).
+      .use(middleware.auth({ sedeOpcional: true }))
 
     /* ======================== BÚSQUEDA UNIFICADA ======================= */
     router

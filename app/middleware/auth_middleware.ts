@@ -4,6 +4,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 import type { Authenticators } from '@adonisjs/auth/types'
 import db from '@adonisjs/lucid/services/db'
+import { aplicarSedeActiva } from '#middleware/sede_activa_middleware'
 
 /**
  * Auth middleware con manejo robusto de errores JSON para MySQL
@@ -16,12 +17,22 @@ export default class AuthMiddleware {
     next: NextFn,
     options: {
       guards?: (keyof Authenticators)[]
+      /** Multi-sede: deja pasar a un usuario sin sede (solo /auth/me). */
+      sedeOpcional?: boolean
     } = {}
   ) {
     try {
       await ctx.auth.authenticateUsing(options.guards, { loginRoute: this.redirectTo })
-      return next()
     } catch (error: any) {
+      return this.responderError(ctx, error)
+    }
+    // Multi-sede Fase 2: todo request autenticado resuelve su sede activa.
+    if (!(await aplicarSedeActiva(ctx, { sedeOpcional: options.sedeOpcional }))) return
+    return next()
+  }
+
+  private async responderError(ctx: HttpContext, error: any) {
+    {
       // 🔥 Detectar errores específicos de JSON corrupto
       const isJsonError =
         error.message?.includes('Unexpected end of JSON input') ||
