@@ -48,6 +48,8 @@ import {
 const PER_PAGE_DEFAULT = 25
 const PER_PAGE_MAX = 100
 const ROLES_CONTROL = ['SUPER_ADMIN', 'GERENCIA']
+/** Tope de filas de la hoja "Gestiones" del Excel; si se supera se avisa (nunca en silencio). */
+const maxDetalleExcel = () => Number(process.env.TELE_EXCEL_MAX_DETALLE ?? 20000)
 
 const MEDIO_LABEL: Record<string, string> = {
   LLAMADA: 'Llamada',
@@ -434,6 +436,16 @@ export default class TelemercadeoController {
    */
   public async seguimiento(ctx: HttpContext) {
     const { request, response, auth } = ctx
+    // Solo asesores de Telemercadeo y control (SUPER_ADMIN/GERENCIA): un
+    // COMERCIAL sin agente de Telemercadeo no ve el historial de gestiones.
+    const agente = await agenteTelemercadeoDeUsuario(auth.user!.id)
+    if (!agente && !ROLES_CONTROL.includes(await rolDe(auth))) {
+      return response.forbidden({
+        code: 'NO_ES_ASESOR_TELEMERCADEO',
+        message: 'Solo los asesores de Telemercadeo pueden consultar el seguimiento.',
+      })
+    }
+
     const placa = normalizarPlacaTele(request.input('placa'))
     if (!/^[A-Z0-9]{4,10}$/.test(placa)) return response.badRequest({ message: 'Placa inválida' })
 
@@ -444,7 +456,6 @@ export default class TelemercadeoController {
     }
     if (!servicioId) return response.badRequest({ message: 'servicio_id inválido' })
 
-    const agente = await agenteTelemercadeoDeUsuario(auth.user!.id)
     const vehiculo = await Database.from('vehiculos').where('placa', placa).first()
     const cliente = vehiculo?.cliente_id
       ? await Database.from('clientes')
@@ -544,6 +555,7 @@ export default class TelemercadeoController {
     }
     const res = await resumenTelemercadeo(r, agenteId)
 
+    const maxDetalle = maxDetalleExcel()
     const detalleQ = Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
@@ -553,7 +565,8 @@ export default class TelemercadeoController {
       .where('g.created_at', '>=', r.inicioSql)
       .where('g.created_at', '<', r.finSql)
       .orderBy('g.created_at', 'asc')
-      .limit(20000)
+      .orderBy('g.id', 'asc')
+      .limit(maxDetalle + 1)
       .select(
         'g.id',
         'g.created_at',
@@ -571,7 +584,10 @@ export default class TelemercadeoController {
         'cl.nombre as cliente_nombre'
       )
     if (agenteId !== null) detalleQ.where('g.agente_id', agenteId)
-    const detalle = await detalleQ
+    const detalleTodo = (await detalleQ) as any[]
+    const truncado = detalleTodo.length > maxDetalle
+    const detalle = truncado ? detalleTodo.slice(0, maxDetalle) : detalleTodo
+    const avisoTruncado = `⚠️ La hoja "Gestiones" muestra solo las primeras ${maxDetalle.toLocaleString('es-CO')} gestiones de ${res.totales.gestiones.toLocaleString('es-CO')}. Reduce el rango o filtra por asesor para ver el detalle completo.`
 
     const wb = new ExcelJS.Workbook()
     const negrita = (row: ExcelJS.Row) => (row.font = { bold: true })
@@ -580,6 +596,7 @@ export default class TelemercadeoController {
     const ws = wb.addWorksheet('Resumen')
     ws.columns = [{ width: 34 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 16 }]
     ws.addRow([`Telemercadeo — Resumen (${r.desde} a ${r.hasta})`]).font = { bold: true, size: 13 }
+    if (truncado) ws.addRow([avisoTruncado]).font = { bold: true, color: { argb: 'FFC00000' } }
     ws.addRow([])
     negrita(ws.addRow(['Embudo', 'Cantidad', 'Tasa']))
     const t = res.totales
@@ -624,13 +641,14 @@ export default class TelemercadeoController {
       { width: 18 }, { width: 26 }, { width: 10 }, { width: 26 }, { width: 14 }, { width: 8 },
       { width: 16 }, { width: 18 }, { width: 18 }, { width: 6 }, { width: 10 }, { width: 14 }, { width: 40 },
     ]
+    if (truncado) wd.addRow([avisoTruncado]).font = { bold: true, color: { argb: 'FFC00000' } }
     negrita(
       wd.addRow([
         'Fecha', 'Asesor', 'Placa', 'Cliente', 'Teléfono', 'Servicio', 'Medio', 'Origen',
         'Resultado', 'Seg.', 'Dateo', 'Estado dateo', 'Observación',
       ])
     )
-    for (const g of detalle as any[]) {
+    for (const g of detalle) {
       const f = fechaISO(g.created_at)
       wd.addRow([
         f ? DateTime.fromISO(f).setZone(ZONA_TELE).toFormat('dd/LL/yyyy HH:mm') : '',
@@ -644,6 +662,7 @@ export default class TelemercadeoController {
     const nombre = `Telemercadeo_${r.desde.replace(/-/g, '')}_a_${r.hasta.replace(/-/g, '')}.xlsx`
     response.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     response.header('Content-Disposition', `attachment; filename="${nombre}"`)
+    if (truncado) response.header('X-Detalle-Truncado', String(maxDetalle))
     return response.send(Buffer.from(buffer as ArrayBuffer))
   }
 

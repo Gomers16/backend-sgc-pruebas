@@ -3,6 +3,7 @@ import { DateTime } from 'luxon'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import path from 'node:path'
+import ExcelJS from 'exceljs'
 import app from '@adonisjs/core/services/app'
 import Database from '@adonisjs/lucid/services/db'
 import Usuario from '#models/usuario'
@@ -597,6 +598,26 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert.lengthOf(s.body().gestiones_ciclo, 1)
   })
 
+  test('seguimiento: solo ASESOR_TELEMERCADEO, SUPER_ADMIN y GERENCIA; COMERCIAL → 403', async ({
+    client,
+    assert,
+  }) => {
+    const pedir = (k?: string) => {
+      const req = client.get('/api/telemercadeo/seguimiento').qs({ placa: 'TLG016' })
+      return k ? req.headers(bearer(k)) : req
+    }
+    ;(await pedir()).assertStatus(401)
+    ;(await pedir('OPERATIVO')).assertStatus(403)
+    const c = await pedir('COMERCIAL')
+    c.assertStatus(403)
+    assert.equal(c.body().code, 'NO_ES_ASESOR_TELEMERCADEO')
+    for (const k of ['TELE_A', 'TELE_B', 'ADMIN', 'GERENCIA']) {
+      const r = await pedir(k)
+      r.assertStatus(200)
+      assert.equal(r.body().seguimiento.n, 1)
+    }
+  })
+
   test('avisos: RTM vigente con la ventana compartida (DIAS_VENTANA_PRE_RTM)', async ({ client, assert }) => {
     const fecha = DateTime.now().setZone(ZONA).minus({ months: 2 })
     await turno('TLG017', fecha)
@@ -780,6 +801,47 @@ test.group('Telemercadeo · gestiones', (group) => {
     x.assertStatus(200)
     assert.include(String(x.header('content-type')), 'spreadsheetml')
     assert.include(String(x.header('content-disposition')), 'Telemercadeo_20310401_a_20310430.xlsx')
+    assert.isUndefined(x.header('x-detalle-truncado'))
+  })
+
+  test('resumen/excel: si el detalle supera el tope se avisa (cabecera y aviso en las hojas), nunca en silencio', async ({
+    assert,
+  }) => {
+    // Mismo rango aislado 2031-04 que el test anterior (3 gestiones TLG02x).
+    const hoja = async () => {
+      // El cliente de Japa no expone el cuerpo binario: fetch al mismo servidor.
+      const r = await fetch(
+        `http://${process.env.HOST}:${process.env.PORT}/api/telemercadeo/resumen/excel?desde=2031-04-01&hasta=2031-04-30`,
+        { headers: bearer('GERENCIA') }
+      )
+      assert.equal(r.status, 200)
+      const wb = new ExcelJS.Workbook()
+      await wb.xlsx.load((await r.arrayBuffer()) as any)
+      const filas = (nombre: string) => {
+        const out: string[] = []
+        wb.getWorksheet(nombre)!.eachRow((row) => out.push(String(row.getCell(1).value ?? '')))
+        return out
+      }
+      return { truncado: r.headers.get('x-detalle-truncado'), gestiones: filas('Gestiones'), resumen: filas('Resumen') }
+    }
+
+    const completo = await hoja()
+    assert.isNull(completo.truncado)
+    assert.lengthOf(completo.gestiones, 4) // encabezado + 3
+    assert.notInclude(completo.gestiones.join('|'), '⚠️')
+
+    const previo = process.env.TELE_EXCEL_MAX_DETALLE
+    process.env.TELE_EXCEL_MAX_DETALLE = '1'
+    try {
+      const corto = await hoja()
+      assert.equal(corto.truncado, '1')
+      assert.lengthOf(corto.gestiones, 3) // aviso + encabezado + 1
+      assert.include(corto.gestiones[0], 'solo las primeras 1 gestiones de 3')
+      assert.isTrue(corto.resumen.some((f) => f.includes('solo las primeras 1 gestiones de 3')))
+    } finally {
+      if (previo === undefined) delete process.env.TELE_EXCEL_MAX_DETALLE
+      else process.env.TELE_EXCEL_MAX_DETALLE = previo
+    }
   })
 
   test('mi-resumen: sin meta → SIN_META y sin %; KPIs del propio asesor', async ({ client, assert }) => {
