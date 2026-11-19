@@ -28,6 +28,8 @@
 >
 > Actualizado: 2026-11-12, segunda entrega (**WINDOW_BLOCK_CONFIRMABLE también para SOAT**; solo pruebas, sin commit): se quitó la rama que dejaba a SOAT con el 409 `WINDOW_BLOCK` duro. Ahora la advertencia confirmable aplica a cualquier servicio con `bloqueoMesesPorServicio() > 0` (hoy RTM y SOAT); PREV y PERI siguen sin bloqueo, y `store()` ya no emite `WINDOW_BLOCK`. El flag se llama `confirmar_ventana_vigencia` y se sigue aceptando `confirmar_ventana_rtm` como alias. El mensaje del 409 nombra el servicio («La RTM anterior…» / «El SOAT anterior…»). **Las columnas `ventana_rtm_confirmada_*` no se renombraron: pese al nombre «ventana_rtm», guardan la confirmación de cualquier servicio (RTM y SOAT).** Tests: `window_block_confirmable.spec.ts` con 11 casos (RTM y SOAT, bordes 16/17, PREV/PERI sin bloqueo). Suite completa 350/350.
 >
+> Actualizado: 2026-11-19 (**Telemercadeo — gestión y control, Fase 1 backend**; solo pruebas, `608a62e`…`beeaec8`; producción local y servidor pendientes): migraciones `1803`–`1809` (orígenes, ciclos, gestiones, autorizaciones, configuración global/por asesor, metas), gestiones con evidencia privada e idempotencia, ciclo de seguimiento por cliente con límite configurable y extra autorizado por gerencia, dateo desde una gestión en la misma transacción de `store()`, resumen/Excel y metas con avance y ritmo. **Al sincronizar: copiar 1803–1809 y no correr rollback desde producción local.** Ver *Telemercadeo — gestión y control*.
+>
 > Actualizado: 2026-11-12, tercera entrega (**sin comisión doble ni re-vinculación del dateo en el segundo turno del año**; solo pruebas, sin commit). Nuevo helper `dateoConsumidoPorOtroTurno()` en `reserva_dateo_service.ts`. `turnos_rtms_controller.ts::store()` ya no vincula, en ninguna de las 3 capas (explícito/fallback, Capa 1 y Capa 2), un dateo cuyo `consumido_turno_id` apunte a otro turno no cancelado: el turno se crea sin dateo, canal ni asesor heredados, y queda el log `🔒 [DATEO-YA-CONSUMIDO]`. Aplica a RTM y SOAT. Como respaldo, `applyCommissionHook()` no crea comisión si el dateo ya está vinculado a otro turno no cancelado y ya tiene una comisión RTM no anulada, sea del día que sea (log `⚠️ [COMISION-DATEO-OTRO-TURNO]`). Sin cambios: un dateo nuevo se vincula y paga, y un turno cancelado y recreado vuelve a vincular el dateo (`cancelar()` no libera el dateo; un turno cancelado no cuenta). Se confirmó con un test que `aprobar()` de un ticket de Excepción de Dateo crea una comisión **tipo RTM** sobre un turno SOAT; no se arregló. Suite 355 + 1 `.fails()` esperado.
 
 ---
@@ -356,6 +358,71 @@ Una RTM o Preventiva **RECHAZADA** en Certificación abre una ventana de **360 h
 - **Respuesta:** `{ data: FilaCola[], meta: { total, current_page, per_page, last_page, hoy, … } }` con contadores por rango.
 - **Test:** `tests/functional/telemercadeo_cola.spec.ts`.
 - **Canal TELE en tickets/dateos:** un agente `ASESOR_TELEMERCADEO` (canal `TELE`) sigue la misma regla de convenio asignado que el comercial (`intento_dateo_service.ts`), en `store()` de dateos y en los tickets.
+- **🆕 2026-11-18/19:** `puede_datear_desde` usa la ventana compartida `DIAS_VENTANA_PRE_RTM` (`ventana_rtm_service.ts`, la misma de `RTM_VIGENTE` en `store()`; 10 en pruebas, 5 en producción local) en vez de 16 fijos; cada fila trae `seguimiento` y, en CLIENTES, `rtm_vigentes`. Ver la sección siguiente.
+
+---
+
+## Telemercadeo — gestión y control (2026-11-19)
+
+> Solo pruebas: backend `608a62e`…`beeaec8` (Fase 1), frontend Fase 2 (ver `MAPA_DEL_SISTEMA_FRONTEND.md` 4.9). **Producción local y servidor pendientes.** Handoff y lista de archivos: `docs/telemercadeo/HANDOFF.md`.
+
+> **⚠️ Sincronización a producción local:** copiar las migraciones **1803–1809** junto con el código (las 7 tablas ya existen en la BD local, que es la misma que usa producción local). **No correr `migration:rollback` desde el repo de producción local** (Lucid falla con `E_MISSING_SCHEMA_FILES` y, sobre la BD compartida, borraría tablas que usa pruebas); `migration:run` sí es seguro. En el servidor: `migration:run` antes de `pm2 restart`.
+
+**Tablas** (migraciones `1803`–`1809`, todas `utf8mb4_unicode_ci`):
+
+- `telemercadeo_origenes` — catálogo de procedencia (`codigo`, `nombre`, `activo`, `orden`); sembrado RECURRENCIA, GOOGLE_ADS, REDES.
+- `telemercadeo_ciclos` — ciclo de seguimiento por cliente (`placa` + `servicio_id`): `numero_gestiones`, `extras_autorizados`, `abierto_key` (1 abierto / NULL cerrado; UNIQUE `placa, servicio_id, abierto_key` → un solo ciclo abierto), `ultima_gestion_at`, `cerrado_at`, `cerrado_motivo` (`DATEADO` | `TURNO` | `VENCIDO`), `cliente_id`.
+- `telemercadeo_gestiones` — cada contacto: `ciclo_id`, `numero_en_ciclo`, `agente_id`, `usuario_id`, `placa`, `telefono`, `cliente_id`, `vehiculo_id`, `servicio_id`, `medio` (`LLAMADA` | `WHATSAPP` | `SMS` | `CORREO`), `origen_id`, `resultado` (`SIN_RESPUESTA`, `NUMERO_EQUIVOCADO`, `VOLVER_A_LLAMAR`, `INTERESADO`, `NO_INTERESADO`, `YA_REALIZADO`, `DATEADO`), `evidencia_ruta`, `observacion` (máx. 2000), `proximo_contacto_at`, `captacion_dateo_id` (UNIQUE), `idempotency_key` (UNIQUE con `agente_id`).
+- `telemercadeo_ciclo_autorizaciones` — seguimientos extra autorizados por gerencia (`ciclo_id`, `usuario_id`, `motivo`, `created_at`).
+- `configuracion_seguimiento_tele_global` — `max_seguimientos` (3) y `dias_vigencia_ciclo` (30).
+- `configuracion_seguimiento_tele_asesores` — override de `max_seguimientos` por asesor (UNIQUE `asesor_id`; NULL = usa el global). La vigencia del ciclo no tiene override por asesor.
+- `meta_telemercadeo_asesor` — metas por asesor y mes: `meta_gestiones`, `meta_dateos`, `meta_exitosos` (nullable; UNIQUE `asesor_id, mes, anio`).
+
+**Código:** modelos `telemercadeo_ciclo`, `telemercadeo_gestion`, `configuracion_seguimiento_tele_global`, `configuracion_seguimiento_tele_asesor`; servicios `telemercadeo_gestion_service.ts` (reglas, registro, avisos, seguimiento, autorizar extra, dateo desde gestión), `telemercadeo_resumen_service.ts` (resumen, metas, avance/ritmo), `ventana_rtm_service.ts` (ventana `DIAS_VENTANA_PRE_RTM`, compartida con `store()` de dateos y la cola), `semaforo_service.ts` (movido sin cambios desde `reportes_administrativos_controller`); controlador `telemercadeo_controller.ts`.
+
+**Endpoints** (`/api/telemercadeo/*`):
+
+| Método y ruta | Roles | Qué hace |
+|---|---|---|
+| `GET /cola` | SUPER_ADMIN, GERENCIA, COMERCIAL | Cola (ver sección anterior); cada fila trae `seguimiento` (n/límite, ciclo abierto, última gestión con `agente_id`) y, en CLIENTES, `rtm_vigentes`. |
+| `GET /catalogos` | ídem | Orígenes activos, medios y resultados **elegibles** (sin `DATEADO`). |
+| `GET /gestiones` | ídem | `{ data, meta }`; filtros `desde`, `hasta`, `placa`, `medio`, `origen_id`, `resultado`, `pendientes=1`; `agente_id` solo para SUPER_ADMIN/GERENCIA (un asesor ve las suyas; un comercial sin agente de Telemercadeo → 403). |
+| `POST /gestiones` | COMERCIAL con agente `ASESOR_TELEMERCADEO` | Registra (201) o devuelve la misma por idempotencia (200 `repetida`). Agente siempre del token. |
+| `GET /gestiones/:id` y `/:id/evidencia` | dueño o SUPER_ADMIN/GERENCIA | Detalle; evidencia privada (`Cache-Control: private, no-store`). |
+| `GET /seguimiento?placa=&servicio_id=&telefono=` | ASESOR_TELEMERCADEO, SUPER_ADMIN, GERENCIA (resto 403) | Cliente, vehículo, estado del ciclo, gestiones del ciclo y avisos. |
+| `GET /mi-resumen?mes=&anio=` | asesor de Telemercadeo | KPIs y metas del mes del propio asesor. |
+| `GET /resumen`, `GET /resumen/excel` | SUPER_ADMIN, GERENCIA | Embudo, por medio/origen/resultado/asesor; Excel con hojas Resumen, Por asesor y Gestiones. |
+| `GET /asesores`, `GET/PUT /metas`, `POST /metas/copiar` | SUPER_ADMIN, GERENCIA | Asesores; metas por lote (las tres vacías borran); copiar mes (`sobrescribir`). |
+| `POST /ciclos/:id/autorizar-extra` | SUPER_ADMIN, GERENCIA | +1 seguimiento en el ciclo; motivo 5-500 obligatorio; 409 `CICLO_CERRADO`. |
+| `GET/POST /config/max-seguimientos` (+ `/asesores`, `DELETE /asesores/:id`) | lectura: + CONTABILIDAD, COMERCIAL; escritura: SUPER_ADMIN, GERENCIA | Máximo global (1-50), vigencia (1-365) y overrides por asesor. |
+
+**Reglas del ciclo:**
+
+- El seguimiento se cuenta **por cliente (placa + servicio)** sumando a todos los asesores, independiente del re-dateo.
+- Límite del ciclo = máximo del asesor que registra (override → global, por defecto 3) + extras autorizados. Al llegar al límite, `POST /gestiones` → 409 `SEGUIMIENTO_LIMITE` (con `n`, `max`, `extras_autorizados`, `limite`, `ciclo_id`). El 4º seguimiento solo con autorización de gerencia sobre el ciclo (queda quién, cuándo y motivo).
+- Cierre perezoso (sin cron), evaluado al registrar y al consultar: **TURNO** si hubo un turno finalizado de esa placa y servicio desde la apertura; **VENCIDO** si pasaron `dias_vigencia_ciclo` días sin gestiones; **DATEADO** al datear desde la gestión.
+- Registro concurrente: el ciclo se bloquea con `FOR UPDATE` y se reintenta ante duplicado/deadlock; idempotencia por (`agente_id`, `idempotency_key`).
+- Avisos (no bloquean): dateo activo (de otro asesor o propio, criterio de `buildReserva`) y RTM vigente con la ventana compartida.
+
+**Dateo desde una gestión:** `POST /api/captacion-dateos` con `telemercadeo_gestion_id` → agente del token (nunca del body), canal `TELE`, servicio de la gestión; validación previa (`prepararDateoDesdeGestion`: 403 `NO_ES_ASESOR_TELEMERCADEO` / `GESTION_AJENA`, 404 `GESTION_NO_ENCONTRADA`, 409 `GESTION_YA_DATEADA`, 400 `GESTION_PLACA_DISTINTA`); cierre de dateos viejos, creación y vínculo (`vincularGestionConDateo`: gestión → `DATEADO`, ciclo cerrado `DATEADO`) en **una sola transacción**. Sin `telemercadeo_gestion_id`, `store()` no cambia.
+
+**Evidencias privadas:** `POST /api/media/upload` con `carpeta=telemercadeo` devuelve `ruta` (`telemercadeo/AAAA/MM/<cuid>.<ext>`, solo imágenes) y `url: null`; `GET/DELETE /api/uploads/*` no sirven ni borran esa carpeta (también con `../`, `%2e%2e`, `%2f`, mayúsculas); se ven solo por `GET /gestiones/:id/evidencia`. `uploads/telemercadeo/` está en `.gitignore`.
+
+**Metas y semáforo:** `meta_gestiones`, `meta_dateos`, `meta_exitosos`, sin pesos. Meta no definida (o algún mes del rango sin meta) → `SIN_META`, `pct` null (nunca 0%). Semáforo sobre **dateos exitosos** con el **ritmo** (`pct_ritmo`: avance contra la meta prorrateada a los días transcurridos); periodo terminado o futuro → contra la meta completa. VERDE ≥ 100%, AMARILLO ≥ 90%, ROJO el resto.
+
+**Excel del resumen:** la hoja "Gestiones" tiene un tope (`TELE_EXCEL_MAX_DETALLE`, 20.000 por defecto); si se supera, aviso en rojo en las hojas Resumen y Gestiones y cabecera `X-Detalle-Truncado` (expuesta en `config/cors.ts`).
+
+**Login:** `auth_controller` devuelve `agenteTipo` en login y `me` (el front lo usa para aterrizar en "Mi gestión").
+
+**Tests:** `telemercadeo_gestion.spec.ts` (25), `telemercadeo_dateo_desde_gestion.spec.ts` (13), `telemercadeo_cola.spec.ts` (7). Suite completa al cierre de la Fase 1: 396 + 1 `.fails()` esperado.
+
+**Deudas conocidas:**
+
+- Un `ASESOR_TELEMERCADEO` que datea **sin** gestión y sin canal queda como `ASESOR_COMERCIAL` (test "caracteriza deuda conocida"). El arreglo global en `resolverIntentoDateo` está pendiente: revisar antes el impacto en comisiones y Reporte de Asesores con el SELECT de `HANDOFF.md`.
+- El test "carrera dentro de la transacción" cuenta transacciones en `LOCK WAIT` de toda la BD compartida; otra transacción ajena en espera podría hacer que no ejercite el guard (no falla). Si se vuelve inestable, filtrar por el hilo de la conexión del servidor.
+- `DELETE /api/uploads/*` sigue abierto a cualquier usuario autenticado para las carpetas públicas.
+- `busquedas_controller.ts:480` compara `'TELEMERCADEO'` en vez de `'ASESOR_TELEMERCADEO'` (ver pendientes 2026-11-10).
+- La vigencia del ciclo es solo global (sin override por asesor).
 
 ---
 
