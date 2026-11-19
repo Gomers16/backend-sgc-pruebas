@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises'
 
 import Tramite, { type EstadoTramite } from '#models/tramite'
 import Usuario from '#models/usuario'
+import { sedeParaEscritura } from '#services/sede_scope'
 import Servicio from '#models/servicio'
 
 const toMySQLDate = (dt: DateTime) => dt.toFormat('yyyy-LL-dd')
@@ -168,6 +169,8 @@ export default class TramitesController {
             : 'Tu usuario no tiene sede asignada',
         })
       }
+      // Multi-sede (3a): numeración de trámites en la SEDE ACTIVA del request.
+      const sedeTramite = sedeParaEscritura() ?? usuario.sedeId
 
       const servicio = await Servicio.find(Number(raw.servicioId))
       if (!servicio) {
@@ -186,16 +189,17 @@ export default class TramitesController {
 
       const cedulaNorm = String(raw.cedula).replace(/\D/g, '')
       const tramiteExistente = await Tramite.query({ client: trx })
-        .where('sede_id', usuario.sedeId)
+        .where('sede_id', sedeTramite)
         .where('fecha', hoyISO)
         .where('cedula', cedulaNorm)
         .first()
 
       // FIX 1: FOR UPDATE bloquea la lectura del máximo hasta que el INSERT confirme,
       // eliminando la race condition en creaciones concurrentes para la misma sede+fecha.
+      // sede: numeración filtrada explícitamente por la sede activa (sedeTramite)
       const rowMax = await trx
         .from('tramites')
-        .where('sede_id', usuario.sedeId)
+        .where('sede_id', sedeTramite)
         .where('fecha', hoyISO)
         .forUpdate()
         .max('turno_numero as max')
@@ -211,7 +215,7 @@ export default class TramitesController {
 
       const tramite = await Tramite.create(
         {
-          sedeId: usuario.sedeId,
+          sedeId: sedeTramite,
           funcionarioId: usuario.id,
           servicioId: servicio.id,
           nombreCliente: String(raw.nombreCliente).trim(),
@@ -292,6 +296,8 @@ export default class TramitesController {
             : 'Tu usuario no tiene sede asignada',
         })
       }
+      // Multi-sede (3a): numeración de trámites en la SEDE ACTIVA del request.
+      const sedeTramite = sedeParaEscritura() ?? usuario.sedeId
 
       const servicio = await Servicio.find(Number(raw.servicioId))
       if (!servicio) {
@@ -307,9 +313,10 @@ export default class TramitesController {
       const horaIngreso =
         raw.horaIngreso || DateTime.local().setZone('America/Bogota').toFormat('HH:mm')
 
+      // sede: filtrado explícito por la sede activa (sedeTramite)
       const tramiteRef = await trx
         .from('tramites')
-        .where('sede_id', usuario.sedeId)
+        .where('sede_id', sedeTramite)
         .where('fecha', hoyISO)
         .where('turno_numero', turnoNumero)
         .select('turno_codigo')
@@ -324,7 +331,7 @@ export default class TramitesController {
 
       const tramite = await Tramite.create(
         {
-          sedeId: usuario.sedeId,
+          sedeId: sedeTramite,
           funcionarioId: usuario.id,
           servicioId: servicio.id,
           nombreCliente: String(raw.nombreCliente).trim(),
@@ -366,7 +373,14 @@ export default class TramitesController {
   public async update({ params, request, response }: HttpContext) {
     try {
       // FIX 5: usuarioId se eliminó — llegaba al body pero nunca se procesaba
-      const raw = request.only(['tipoTramite', 'estado', 'observaciones', 'resultado', 'placa', 'incluyeCompraventa'])
+      const raw = request.only([
+        'tipoTramite',
+        'estado',
+        'observaciones',
+        'resultado',
+        'placa',
+        'incluyeCompraventa',
+      ])
 
       const tramite = await Tramite.find(Number(params.id))
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })
@@ -420,7 +434,9 @@ export default class TramitesController {
           : {}),
         ...(effectiveTipo && effectiveTipo !== 'TRASPASO'
           ? { incluyeCompraventa: false }
-          : (raw.incluyeCompraventa !== undefined ? { incluyeCompraventa: raw.incluyeCompraventa } : {})),
+          : raw.incluyeCompraventa !== undefined
+            ? { incluyeCompraventa: raw.incluyeCompraventa }
+            : {}),
       })
 
       await tramite.save()
@@ -441,10 +457,10 @@ export default class TramitesController {
       const tramite = await Tramite.find(Number(params.id))
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })
 
-      const formaPagoCobro  = request.input('formaPagoCobro')  as string | undefined
-      const fechaPagoRaw    = request.input('fechaPago')        as string | undefined
-      const referenciaPago  = request.input('referenciaPago')   as string | undefined
-      const valorLiquidado  = request.input('valorLiquidado')
+      const formaPagoCobro = request.input('formaPagoCobro') as string | undefined
+      const fechaPagoRaw = request.input('fechaPago') as string | undefined
+      const referenciaPago = request.input('referenciaPago') as string | undefined
+      const valorLiquidado = request.input('valorLiquidado')
 
       if (!formaPagoCobro || !fechaPagoRaw) {
         return response.badRequest({ message: 'formaPagoCobro y fechaPago son requeridos' })
@@ -456,15 +472,20 @@ export default class TramitesController {
       }
 
       let evidenciaPagoUrl: string | null = null
-      const evidencia = request.file('evidencia', { size: '10mb', extnames: ['jpg', 'jpeg', 'png', 'pdf', 'webp'] })
+      const evidencia = request.file('evidencia', {
+        size: '10mb',
+        extnames: ['jpg', 'jpeg', 'png', 'pdf', 'webp'],
+      })
 
       if (evidencia && evidencia.tmpPath) {
         if (evidencia.hasErrors) {
-          return response.badRequest({ message: evidencia.errors[0]?.message ?? 'Archivo inválido' })
+          return response.badRequest({
+            message: evidencia.errors[0]?.message ?? 'Archivo inválido',
+          })
         }
         const pagoDir = app.makePath('uploads', 'pagos')
         await mkdir(pagoDir, { recursive: true })
-        const ext  = evidencia.extname ?? 'png'
+        const ext = evidencia.extname ?? 'png'
         const name = `pago-tramite-${tramite.id}-${Date.now()}.${ext}`
         const dest = `${pagoDir}/${name}`
         await pipeline(createReadStream(evidencia.tmpPath), createWriteStream(dest))
@@ -472,10 +493,10 @@ export default class TramitesController {
       }
 
       tramite.merge({
-        estadoPago:     'pagado',
+        estadoPago: 'pagado',
         formaPagoCobro,
         fechaPago,
-        referenciaPago:  referenciaPago ?? null,
+        referenciaPago: referenciaPago ?? null,
         evidenciaPagoUrl,
         ...(valorLiquidado != null ? { valorLiquidado: Number(valorLiquidado) } : {}),
       })
@@ -498,15 +519,23 @@ export default class TramitesController {
       const { usuarioId } = request.qs()
       const usuario = await Usuario.find(Number(usuarioId))
       if (!usuario?.sedeId) return response.badRequest({ message: 'Usuario sin sede' })
+      // Multi-sede (3a): numeración de la SEDE ACTIVA ("todas" no tiene número).
+      let sedeTramite: number
+      try {
+        sedeTramite = sedeParaEscritura() ?? usuario.sedeId
+      } catch (e) {
+        return response.badRequest({ message: (e as Error).message })
+      }
 
       const hoy = DateTime.local().setZone('America/Bogota').toISODate()!
+      // sede: numeración filtrada explícitamente por la sede activa (sedeTramite)
       const row = await Database.from('tramites')
-        .where('sede_id', usuario.sedeId)
+        .where('sede_id', sedeTramite)
         .where('fecha', hoy)
         .max('turno_numero as max')
         .first()
 
-      return response.ok({ siguiente: Number(row?.max ?? 0) + 1, sedeId: usuario.sedeId })
+      return response.ok({ siguiente: Number(row?.max ?? 0) + 1, sedeId: sedeTramite })
     } catch (error) {
       console.error('Error siguiente numero:', error)
       return response.internalServerError({ message: 'Error al obtener el número' })
