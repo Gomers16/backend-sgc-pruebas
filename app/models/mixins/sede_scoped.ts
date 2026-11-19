@@ -31,6 +31,7 @@
 
 import type { NormalizeConstructor } from '@adonisjs/core/types/helpers'
 import type { BaseModel } from '@adonisjs/lucid/orm'
+import db from '@adonisjs/lucid/services/db'
 import { scopeObligatorio, SedeScopeError } from '#services/sede_scope'
 
 const SIN_SEDE = Symbol.for('multisede.sinSede')
@@ -41,11 +42,31 @@ type Qb = {
   [k: symbol]: unknown
 }
 
-function filtrar(query: Qb, tabla: string, columna: string) {
+/** Modelo hijo sin columna sede_id: hereda la sede de su padre. */
+export interface SedeVia {
+  /** Atributo del modelo con el id del padre (p. ej. 'turnoId'). */
+  atributo: string
+  /** Columna FK al padre (p. ej. 'turno_id'). */
+  columna: string
+  /** Tabla del padre, que sí tiene sede_id (p. ej. 'turnos_rtms'). */
+  tablaPadre: string
+}
+
+const IDENT = /^[a-z_][a-z0-9_]*$/
+
+function filtrar(query: Qb, tabla: string, columna: string, via: SedeVia | null) {
   if (query[SIN_SEDE] || query[YA_FILTRADO]) return
   const s = scopeObligatorio()
   if (!s) return // bypass explícito
-  query.whereIn(`${tabla}.${columna}`, s.sedeIds)
+  if (via) {
+    // Ids enteros validados por la resolución de la sede: van en línea.
+    const ids = s.sedeIds.length ? s.sedeIds.map((n) => Math.trunc(n)).join(',') : 'NULL'
+    ;(query as any).whereRaw(
+      `${tabla}.${via.columna} IN (SELECT ${via.tablaPadre}.id FROM ${via.tablaPadre} WHERE ${via.tablaPadre}.sede_id IN (${ids}))`
+    )
+  } else {
+    query.whereIn(`${tabla}.${columna}`, s.sedeIds)
+  }
   query[YA_FILTRADO] = true
 }
 
@@ -55,24 +76,44 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
     static sedeColumna = 'sede_id'
     /** Atributo del modelo que mapea esa columna. */
     static sedeAtributo = 'sedeId'
+    /** Hijo sin sede_id propio: filtra por la sede de su padre. */
+    static sedeVia: SedeVia | null = null
 
     static boot() {
       if (this.booted) return
       super.boot()
       const modelo = this as unknown as typeof ConSede & { table: string }
-      this.before('find', (q: any) => filtrar(q, modelo.table, modelo.sedeColumna))
-      this.before('fetch', (q: any) => filtrar(q, modelo.table, modelo.sedeColumna))
+      const via = modelo.sedeVia
+      if (via && (!IDENT.test(via.columna) || !IDENT.test(via.tablaPadre))) {
+        throw new Error(`SedeScoped: sedeVia inválido en ${modelo.name}`)
+      }
+      const f = (q: any) => filtrar(q, modelo.table, modelo.sedeColumna, via)
+      this.before('find', f)
+      this.before('fetch', f)
       this.before('paginate', ([countQ, q]: any[]) => {
-        filtrar(countQ, modelo.table, modelo.sedeColumna)
-        filtrar(q, modelo.table, modelo.sedeColumna)
+        f(countQ)
+        f(q)
       })
-      this.before('create', (instancia: any) => {
+      this.before('create', async (instancia: any) => {
         const s = scopeObligatorio()
         if (!s) return // bypass: se respeta lo que traiga
         if (s.todas || !s.sedeEscritura) {
           throw new SedeScopeError('Para operar debes elegir una sede concreta (no "todas").', 400)
         }
-        instancia[modelo.sedeAtributo] = s.sedeEscritura
+        if (!via) {
+          instancia[modelo.sedeAtributo] = s.sedeEscritura
+          return
+        }
+        // Hijo: el padre tiene que ser de la sede activa.
+        const cliente = instancia.$trx ?? db
+        const padre = await cliente
+          .from(via.tablaPadre)
+          .where('id', instancia[via.atributo] ?? 0)
+          .select('sede_id')
+          .first()
+        if (!padre || Number(padre.sede_id) !== s.sedeEscritura) {
+          throw new SedeScopeError('Registro padre no encontrado en la sede activa.', 404)
+        }
       })
     }
 
