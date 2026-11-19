@@ -142,7 +142,24 @@ export function scopeActual(): SedeScope | 'sin_filtro' | null {
   if (o?.tipo === 'sin_filtro') return 'sin_filtro'
   if (o?.tipo === 'sede') return o.scope
   const ctx = HttpContext.get()
-  return ctx?.sedeScope ?? null
+  // Dentro de un request manda SIEMPRE el scope del request (también en tests).
+  if (ctx) return ctx.sedeScope ?? null
+  return consultasSinContextoPermitidas ? 'sin_filtro' : null
+}
+
+/**
+ * SOLO tests/bootstrap.ts: el código del test (setup, fixtures, asserts
+ * contra la BD) corre fuera de cualquier request y usa los modelos
+ * directamente; ahí se permite consultar sin filtro. Los requests HTTP de
+ * los tests siguen usando la sede del usuario. En la app real nunca se
+ * activa: fuera de un request sin conSede()/sinFiltroDeSede() → error.
+ */
+let consultasSinContextoPermitidas = false
+export function permitirConsultasSinContexto(valor: boolean) {
+  consultasSinContextoPermitidas = valor
+}
+export function consultasSinContextoActivas() {
+  return consultasSinContextoPermitidas
 }
 
 /** Scope obligatorio (fail-closed). null = bypass explícito. */

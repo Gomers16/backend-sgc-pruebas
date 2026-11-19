@@ -4,7 +4,7 @@ import { BaseModel, belongsTo, column, hasMany } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasMany } from '@adonisjs/lucid/types/relations'
 import Database from '@adonisjs/lucid/services/db'
 import { SedeScoped } from '#models/mixins/sede_scoped'
-import { conSede, sinFiltroDeSede } from '#services/sede_scope'
+import { conSede, permitirConsultasSinContexto, sinFiltroDeSede } from '#services/sede_scope'
 
 // Multi-sede Fase 2 — comportamiento del mixin SedeScoped con Lucid real.
 // Tablas propias del test (zz_ms2_padres / zz_ms2_hijos), creadas y
@@ -52,8 +52,13 @@ async function crearTablas() {
 }
 
 test.group('Multi-sede Fase 2 · mixin SedeScoped', (group) => {
-  group.setup(crearTablas)
+  // Fail-closed real: sin el permiso de tests/bootstrap.ts.
+  group.setup(async () => {
+    permitirConsultasSinContexto(false)
+    await crearTablas()
+  })
   group.teardown(async () => {
+    permitirConsultasSinContexto(true)
     await Database.rawQuery('DROP TABLE IF EXISTS zz_ms2_hijos')
     await Database.rawQuery('DROP TABLE IF EXISTS zz_ms2_padres')
   })

@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import {
   aplicarSede,
   conSede,
+  permitirConsultasSinContexto,
   resolverSedeActiva,
   scopeActual,
   sedeParaEscritura,
@@ -114,7 +115,11 @@ test.group('sede_scope · resolverSedeActiva', () => {
   })
 })
 
-test.group('sede_scope · contexto y SQL', () => {
+test.group('sede_scope · contexto y SQL', (group) => {
+  // Fail-closed real: sin el permiso de tests/bootstrap.ts.
+  group.setup(() => permitirConsultasSinContexto(false))
+  group.teardown(() => permitirConsultasSinContexto(true))
+
   test('fail-closed: sin sede activa, sedeSql y aplicarSede lanzan error', ({ assert }) => {
     assert.isNull(scopeActual())
     assert.throws(() => sedeSql('t'), /sin sede activa/)

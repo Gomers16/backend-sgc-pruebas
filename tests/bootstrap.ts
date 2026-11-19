@@ -23,7 +23,14 @@ export const plugins: Config['plugins'] = [assert(), apiClient(), pluginAdonisJS
  * The teardown functions are executed after all the tests
  */
 export const runnerHooks: Required<Pick<Config, 'setup' | 'teardown'>> = {
-  setup: [],
+  setup: [
+    // Multi-sede: el código de los tests (fuera de requests) usa los modelos
+    // sin filtro de sede; los requests HTTP siguen usando la sede del usuario.
+    async () => {
+      const { permitirConsultasSinContexto } = await import('#services/sede_scope')
+      permitirConsultasSinContexto(true)
+    },
+  ],
   teardown: [],
 }
 
