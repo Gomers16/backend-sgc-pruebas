@@ -69,8 +69,11 @@ function llamadoActivoOficial(q: ModelQueryBuilderContract<typeof TurnoLlamado>)
 // callback de where() agrupa las ramas entre paréntesis, así los OR no se
 // mezclan con los demás filtros.
 function sinLlamadoActivo(q: ModelQueryBuilderContract<typeof TurnoRtm>) {
+  // sede: se aplica sobre TurnoRtm.query() (ya filtrado); llamado es del mismo turno
   q.whereDoesntHave('llamado', (l) => l).orWhereHas('llamado', (l) =>
-    l.whereNull('entregado_at').where((f) => f.where('no_presentado', true).orWhere('llamado_oficial', false))
+    l
+      .whereNull('entregado_at')
+      .where((f) => f.where('no_presentado', true).orWhere('llamado_oficial', false))
   )
 }
 
@@ -128,7 +131,9 @@ export default class TurnoLlamadosController {
       })
     } catch (error) {
       console.error('Error en pendientes-llamar:', error)
-      return response.internalServerError({ message: 'Error al obtener turnos pendientes de llamar' })
+      return response.internalServerError({
+        message: 'Error al obtener turnos pendientes de llamar',
+      })
     }
   }
 
@@ -183,7 +188,9 @@ export default class TurnoLlamadosController {
       // patrón que DUPLICATE_DAY en turnos_rtms_controller.ts::store()).
       const yaLlamado = await TurnoLlamado.query({ client: trx }).where('turno_id', turnoId).first()
       const esReutilizable =
-        !!yaLlamado && !yaLlamado.entregadoAt && (yaLlamado.noPresentado || !yaLlamado.llamadoOficial)
+        !!yaLlamado &&
+        !yaLlamado.entregadoAt &&
+        (yaLlamado.noPresentado || !yaLlamado.llamadoOficial)
       if (yaLlamado && !esReutilizable) {
         await trx.rollback()
         return response.conflict({ message: 'Este turno ya fue llamado', llamadoId: yaLlamado.id })
@@ -198,6 +205,7 @@ export default class TurnoLlamadosController {
         // entregó) entre la lectura de arriba y este punto, no afecta filas
         // y se responde 409 — mismo papel que cumple el índice único en el
         // INSERT de abajo ante una condición de carrera.
+        // sede: update por id de un llamado leído con el filtro de sede (mixin)
         const resultado = await TurnoLlamado.query({ client: trx })
           .where('id', yaLlamado.id)
           .whereNull('entregado_at')
@@ -214,7 +222,10 @@ export default class TurnoLlamadosController {
         const filasAfectadas = Number(Array.isArray(resultado) ? resultado[0] : resultado)
         if (!filasAfectadas) {
           await trx.rollback()
-          return response.conflict({ message: 'Este turno ya fue llamado', llamadoId: yaLlamado.id })
+          return response.conflict({
+            message: 'Este turno ya fue llamado',
+            llamadoId: yaLlamado.id,
+          })
         }
         llamadoId = yaLlamado.id
       } else {
@@ -345,6 +356,7 @@ export default class TurnoLlamadosController {
         }
         // b) Fila fuera de módulo: UPDATE condicionado a que siga fuera de
         // módulo (si otro operador lo llamó en el medio → 409).
+        // sede: update por id de un llamado leído con el filtro de sede (mixin)
         const resultado = await TurnoLlamado.query({ client: trx })
           .where('id', existente.id)
           .whereNull('entregado_at')
@@ -359,7 +371,10 @@ export default class TurnoLlamadosController {
         const filasAfectadas = Number(Array.isArray(resultado) ? resultado[0] : resultado)
         if (!filasAfectadas) {
           await trx.rollback()
-          return response.conflict({ message: 'Este turno ya fue llamado', llamadoId: existente.id })
+          return response.conflict({
+            message: 'Este turno ya fue llamado',
+            llamadoId: existente.id,
+          })
         }
         llamadoId = existente.id
       }
@@ -374,7 +389,9 @@ export default class TurnoLlamadosController {
         error?.code === 'ER_DUP_ENTRY' &&
         String(error?.sqlMessage ?? error?.message ?? '').includes('uq_turno_llamados_turno_id')
       ) {
-        return response.conflict({ message: 'Este turno ya tiene un llamado en curso, intente de nuevo' })
+        return response.conflict({
+          message: 'Este turno ya tiene un llamado en curso, intente de nuevo',
+        })
       }
       console.error('Error al preguntar:', error)
       return response.internalServerError({ message: 'Error al enviar la pregunta' })
@@ -399,6 +416,7 @@ export default class TurnoLlamadosController {
 
       const llamados = await TurnoLlamado.query()
         .where(llamadoActivoOficial)
+        // sede: la consulta exterior (TurnoLlamado) ya filtra por la sede del turno; whereHas solo por fecha
         .whereHas('turno', (q) => q.where('fecha', hoyISO))
         .preload('turno', (q) => q.preload('servicio'))
         .orderBy('llamado_at', 'asc')
@@ -423,7 +441,9 @@ export default class TurnoLlamadosController {
       return response.ok({ turnos })
     } catch (error) {
       console.error('Error en pendientesEntrega:', error)
-      return response.internalServerError({ message: 'Error al obtener los turnos pendientes de entrega' })
+      return response.internalServerError({
+        message: 'Error al obtener los turnos pendientes de entrega',
+      })
     }
   }
 
@@ -490,7 +510,9 @@ export default class TurnoLlamadosController {
       }
 
       if (llamado.entregadoAt) {
-        return response.badRequest({ message: 'Este turno ya fue entregado, no se puede volver a llamar' })
+        return response.badRequest({
+          message: 'Este turno ya fue entregado, no se puede volver a llamar',
+        })
       }
       if (!esLlamadoActivoOficial(llamado)) {
         return response.conflict({
@@ -696,6 +718,7 @@ export default class TurnoLlamadosController {
       // turno viejo llamado hoy aparecía en el hero/histórico.
       const llamadosOficiales = await TurnoLlamado.query()
         .where(llamadoActivoOficial)
+        // sede: la consulta exterior (TurnoLlamado) ya filtra por la sede del turno; whereHas solo por fecha
         .whereHas('turno', (q) => q.where('fecha', hoyISO))
         .preload('turno', (q) => q.preload('servicio'))
         .orderBy('llamado_at', 'desc')
@@ -705,6 +728,7 @@ export default class TurnoLlamadosController {
         .whereNull('entregado_at')
         .where('tipo_llamado', 'pregunta')
         .where((f) => f.where('no_presentado', true).orWhere('llamado_oficial', false))
+        // sede: la consulta exterior (TurnoLlamado) ya filtra por la sede del turno; whereHas solo por fecha
         .whereHas('turno', (q) => q.where('fecha', hoyISO))
         .preload('turno', (q) => q.preload('servicio'))
         .orderBy('llamado_at', 'desc')

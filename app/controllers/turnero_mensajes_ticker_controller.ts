@@ -52,6 +52,10 @@ export default class TurneroMensajesTickerController {
       await item.save()
       return response.ok({ success: true, message: 'Mensaje actualizado', data: item })
     } catch (error) {
+      // Multi-sede: inexistente o de otra sede → 404 (antes caía en 400).
+      if ((error as any)?.code === 'E_ROW_NOT_FOUND') {
+        return response.notFound({ success: false, message: 'No encontrado' })
+      }
       return response.badRequest({
         success: false,
         message: 'Error al actualizar el mensaje',
@@ -66,6 +70,10 @@ export default class TurneroMensajesTickerController {
       await item.delete()
       return response.ok({ success: true, message: 'Mensaje eliminado' })
     } catch (error) {
+      // Multi-sede: inexistente o de otra sede → 404 (antes caía en 400).
+      if ((error as any)?.code === 'E_ROW_NOT_FOUND') {
+        return response.notFound({ success: false, message: 'No encontrado' })
+      }
       return response.badRequest({
         success: false,
         message: 'Error al eliminar el mensaje',

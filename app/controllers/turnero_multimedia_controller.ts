@@ -81,6 +81,10 @@ export default class TurneroMultimediaController {
 
       return response.ok({ success: true, message: 'Multimedia actualizada', data: item })
     } catch (error) {
+      // Multi-sede: inexistente o de otra sede → 404 (antes caía en 400).
+      if ((error as any)?.code === 'E_ROW_NOT_FOUND') {
+        return response.notFound({ success: false, message: 'No encontrado' })
+      }
       return response.badRequest({
         success: false,
         message: 'Error al actualizar la multimedia',
@@ -97,6 +101,10 @@ export default class TurneroMultimediaController {
       await item.delete()
       return response.ok({ success: true, message: 'Multimedia eliminada' })
     } catch (error) {
+      // Multi-sede: inexistente o de otra sede → 404 (antes caía en 400).
+      if ((error as any)?.code === 'E_ROW_NOT_FOUND') {
+        return response.notFound({ success: false, message: 'No encontrado' })
+      }
       return response.badRequest({
         success: false,
         message: 'Error al eliminar la multimedia',
