@@ -1,12 +1,22 @@
-# Telemercadeo — Gestión (Fase 1 backend): handoff
+# Telemercadeo — Gestión y control: handoff
 
-Estado al 2026-11-19. Repo: `backend-sgc-pruebas`, rama `main`. **Fase 1 backend cerrada.** Nada sincronizado a producción local.
+Estado al 2026-11-19. Repos: `backend-sgc-pruebas` y `front-sgc-pruebas`, rama `main`, con push.
+
+- **Fase 1 (backend): completa.**
+- **Fase 2 (frontend): completa**, con la corrección del gate por tipo de agente tras la revisión.
+- **Pendiente:** el recorrido por la interfaz, a mano en el navegador (el recorrido de la Fase 2 se hizo contra la API de pruebas, ver abajo).
+- **Nada sincronizado a producción local ni al servidor.**
 
 > ## ⚠️ Aviso de sincronización a producción local
 >
 > - **Copiar las migraciones 1803–1809 junto con el código.** Las 7 tablas ya existen en la BD local, que es la **misma** que usa producción local; el repo de producción local necesita los archivos para que Lucid no las vea como "desconocidas".
 > - **NO correr `migration:rollback` desde el repo de producción local.** Lucid falla con `E_MISSING_SCHEMA_FILES` si faltan archivos y, sobre la BD compartida, un rollback borraría las tablas que usa pruebas. `migration:run` sí es seguro.
 > - En el servidor (BD remota), correr `migration:run` **antes** de `pm2 restart`.
+
+## Commits
+
+- **Backend:** `608a62e` migraciones y modelos, `daf9429` servicios, `466f4a8` endpoints, `39161bd` tests (2026-11-18); `f9aa41d` parche WIP y `19bcd35` handoff (documentos); `f9f49c4` dateo desde gestión, `04747a1` Excel y seguimiento, `3813981` cierre de la Fase 1, `beeaec8` `agente_id` en el seguimiento de la cola, `82c197b` mapa (2026-11-19); y el commit de esta actualización.
+- **Frontend:** `45e1649` Fase 2, `224e081` mapa, `fe0e1c0` respaldo `agenteId || user.id`, y el commit del gate por tipo de agente.
 
 ## Línea base de la suite
 
@@ -81,9 +91,31 @@ Estado al 2026-11-19. Repo: `backend-sgc-pruebas`, rama `main`. **Fase 1 backend
 - `start/routes.ts`
 - `tests/functional/telemercadeo_cola.spec.ts`
 
-## Siguiente: Fase 2 frontend
+## Fase 2 frontend — hecha (2026-11-19)
 
-"Mi gestión", "Control de Telemercadeo", botón "Registrar gestión" y estado de seguimiento en la cola, componente `DropzoneImagen`, permisos (`usePermissions.ts`), rutas con `meta.roles`, menú (`AppSidebar.vue`), redirección post-login por `agenteTipo` y corrección del respaldo `agenteId || user.id` de `AuthStore.ts` (commit separado). Actualizar ambos mapas.
+Detalle en `MAPA_DEL_SISTEMA_FRONTEND.md` 4.2, 4.9 y 8. Resumen:
+
+- Vistas **Mi gestión** (`TelemercadeoMiGestion`) y **Control de Telemercadeo** (`TelemercadeoControl`: Resumen, Gestiones y ciclos, Metas y configuración).
+- Cola: "Registrar gestión", columna Seguimiento, RTM vigente en Clientes y "Datear" con `gestion_id` cuando la gestión abierta es propia.
+- `DateoCreate.vue` con `?gestion_id=` (canal TELE y servicio fijos, sin agente, `telemercadeo_gestion_id`).
+- `DropzoneImagen.vue`, `telemercadeoService.ts` completo, `http.ts::downloadConCabeceras` (aditivo, con test).
+- **Gate por tipo de agente** (corrección tras la revisión): "Mi gestión" y "Registrar gestión" solo para COMERCIAL con agente `ASESOR_TELEMERCADEO` (`agenteTipo`). Un comercial sin ese agente no ve el menú ni el botón, y si entra por URL a "Mi gestión" el guard de `main.ts` lo manda al dashboard (`meta.agenteTipo`). SUPER_ADMIN y GERENCIA ven Control y no registran gestiones. Reglas en `utils/permisosTelemercadeo.ts`, con tests.
+- Post-login: ASESOR_TELEMERCADEO → "Mi gestión"; comercial sin agente → listado de dateos (antes abría la ficha con `user.id`).
+- Vitest 341/341, `vue-tsc` limpio.
+
+### Recorrido
+
+- **Hecho (2026-11-19) contra la API de pruebas**, con las mismas llamadas y payloads de las vistas: registrar gestión con evidencia → "Seguimiento 1 de 3" → reintento idempotente sin duplicar → datear desde la gestión (canal TELE, gestión DATEADO, ciclo cerrado) → cifras en Control y Excel. 22/22 comprobaciones; datos de prueba borrados.
+- **Pendiente: recorrerlo a mano en el navegador** (no hubo navegador en la sesión), incluido el gate: asesor de telemercadeo, comercial sin ese agente (sin menú ni botón, redirigido si entra por URL) y gerencia (Control).
+
+### Dateo desde una gestión: convenio, descuento y avance
+
+- **Hoy el frontend envía el dateo desde una gestión sin convenio, sin descuento y sin avance** (`payloadDateo.ts`). **Es una decisión del frontend, no una regla del backend.** Pendiente de definir con negocio; no se cambió.
+- **Qué permite el backend:** `prepararDateoDesdeGestion` no mira convenio ni descuento, y `store()` pasa `convenio_id`, `descuento_id` y `es_avance` del body a `resolverIntentoDateo` (solo fuerza canal TELE, agente y servicio). Con canal TELE:
+  - `convenio_id`: se acepta si el convenio está asignado activo al agente; si no, 403.
+  - `descuento_id`: se acepta si existe y está activo (la regla "con convenio solo AVANCE" es solo para `ASESOR_COMERCIAL`).
+  - `es_avance: true`: 400 (solo `ASESOR_COMERCIAL`/`ASESOR_CONVENIO`).
+- Ninguno de estos casos tiene test en el backend.
 
 ## Decisiones ya tomadas
 
@@ -96,6 +128,13 @@ Estado al 2026-11-19. Repo: `backend-sgc-pruebas`, rama `main`. **Fase 1 backend
 - Dateo activo de otro asesor: la gestión se permite con aviso.
 - Evidencias privadas en `uploads/telemercadeo/`, vistas por `GET /api/telemercadeo/gestiones/:id/evidencia`.
 - Excel: se mantiene un tope de filas en el detalle (rango de hasta 2 años, ExcelJS en memoria), pero siempre avisado.
+
+## Avisos de sincronización (cuando se pida)
+
+- Backend y frontend juntos: el frontend nuevo usa endpoints de la Fase 1 y el campo `agente_id` de `beeaec8`.
+- **Copiar las migraciones 1803–1809 junto con el código. NO correr `migration:rollback` desde producción local.** En el servidor, `migration:run` antes de `pm2 restart`.
+- `DIAS_VENTANA_PRE_RTM`: 10 en pruebas (sin definir), 5 en producción local.
+- Opcional: `TELE_EXCEL_MAX_DETALLE` (por defecto 20.000).
 
 ## Avisos y riesgos
 
