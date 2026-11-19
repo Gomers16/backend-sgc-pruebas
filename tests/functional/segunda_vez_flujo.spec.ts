@@ -327,7 +327,11 @@ test.group('Segunda vez · flujo B1', (group) => {
   })
 
   // ───────────────────────── Concurrencia ─────────────────────────
-  test('Doble creación simultánea (dos sedes): una sola segunda vez activa', async ({
+  // Multi-sede 3a (decisión: segunda vez POR SEDE): el origen es de la sede
+  // QA; el usuario de Ibagué ya no ve ese turno, así que su intento siempre
+  // se rechaza (sin ventana: el origen no existe para su sede) y solo QA crea
+  // la segunda vez. Antes, con datos sin aislar, ganaba cualquiera de las dos.
+  test('Doble creación simultánea (dos sedes): solo la sede del origen crea la segunda vez', async ({
     client,
     assert,
   }) => {
@@ -342,19 +346,11 @@ test.group('Segunda vez · flujo B1', (group) => {
         { usuario: 'ADMIN_SEDE1', esperar: false }
       ),
     ])
-    const estados = [a.status(), b.status()].sort()
-    assert.deepEqual(estados, [201, 409])
-    console.log(
-      '--- concurrencia dos sedes ---',
-      a.status(),
-      a.body()?.code,
-      '|',
-      b.status(),
-      b.body()?.code
-    )
-    const perdedor = a.status() === 409 ? a : b
-    perdedor.assertBodyContains({ code: 'SEGUNDA_VEZ_NO_DISPONIBLE' })
-    assert.equal(perdedor.body().ventana.estado, 'USADA')
+    console.log('--- dos sedes ---', a.status(), a.body()?.code, '|', b.status(), b.body()?.code)
+    a.assertStatus(201)
+    b.assertStatus(409)
+    b.assertBodyContains({ code: 'SEGUNDA_VEZ_NO_DISPONIBLE' })
+    assert.isNull(b.body().ventana)
     assert.lengthOf(await hijosActivos(origen.id), 1)
   })
 
@@ -546,7 +542,10 @@ test.group('Segunda vez · flujo B1', (group) => {
     })
     excepcion.assertStatus(409)
     excepcion.assertBodyContains({ code: 'TURNO_SEGUNDA_VEZ' })
-    const ticketsDelTurno = await Database.from('tickets_detalle_excepcion_dateo').where('turno_id', sv.id)
+    const ticketsDelTurno = await Database.from('tickets_detalle_excepcion_dateo').where(
+      'turno_id',
+      sv.id
+    )
     assert.lengthOf(ticketsDelTurno, 0)
 
     const turnoDb = await TurnoRtm.findOrFail(sv.id)

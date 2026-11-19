@@ -56,10 +56,7 @@
     "app/controllers/tickets_controller.ts::turnos_rtms": 2,
     "app/controllers/tickets_controller.ts::usuarios": 3,
     "app/controllers/tickets_excepcion_dateo_controller.ts::liquidacion_detalle": 1,
-    "app/controllers/tramites_controller.ts::tramites": 3,
     "app/controllers/turnos_rtms_controller.ts::captacion_dateos": 1,
-    "app/controllers/turnos_rtms_controller.ts::turnos_rtms": 16,
-    "app/controllers/turnos_rtms_controller.ts::usuarios": 1,
     "app/services/canal_reporte_service.ts::captacion_dateos": 2,
     "app/services/comision_calculo_service.ts::configuracion_recurrencia_asesores": 1,
     "app/services/comision_ticket_excepcion_service.ts::comisiones": 1,
@@ -128,8 +125,6 @@
     "app/controllers/descuentos_controller.ts::captacionDateo": 1,
     "app/controllers/descuentos_controller.ts::turno": 1,
     "app/controllers/tickets_excepcion_dateo_controller.ts::ticket": 1,
-    "app/controllers/turno_llamados_controller.ts::llamado": 2,
-    "app/controllers/turno_llamados_controller.ts::turno": 3,
     "app/controllers/turnos_rtms_controller.ts::agenteCaptacion": 2,
     "app/services/reserva_dateo_service.ts::ticket": 1
   },
@@ -140,7 +135,6 @@
     "app/controllers/facturacion_tickets_controller.ts::CaptacionDateo": 2,
     "app/controllers/historico_dateo_rtm_controller.ts::CaptacionDateo": 1,
     "app/controllers/prospectos_controller.ts::Prospecto": 1,
-    "app/controllers/turno_llamados_controller.ts::TurnoLlamado": 2,
     "app/controllers/turnos_rtms_controller.ts::CaptacionDateo": 1
   }
 }
