@@ -32,10 +32,12 @@ router
       .use(middleware.auth())
 
     /* ======================== BÚSQUEDA UNIFICADA ======================= */
-    router.get('/buscar', async (ctx) => {
-      const { default: BusquedasController } = await import('#controllers/busquedas_controller')
-      return new BusquedasController().unificada(ctx)
-    })
+    router
+      .get('/buscar', async (ctx) => {
+        const { default: BusquedasController } = await import('#controllers/busquedas_controller')
+        return new BusquedasController().unificada(ctx)
+      })
+      .use(middleware.auth())
 
     /* ============================== TURNOS ============================= */
     router
@@ -467,10 +469,12 @@ router
       })
     }
 
-    router.get('/razones-sociales/:id/usuarios', async (ctx) => {
-      const { default: Ctrl } = await import('#controllers/razones_sociales_controller')
-      return new Ctrl().usuarios(ctx)
-    })
+    router
+      .get('/razones-sociales/:id/usuarios', async (ctx) => {
+        const { default: Ctrl } = await import('#controllers/razones_sociales_controller')
+        return new Ctrl().usuarios(ctx)
+      })
+      .use(middleware.auth())
 
     /* ============================ ENTIDADES SALUD ====================== */
     router.get('/entidades-salud/:id', async (ctx) => {
@@ -769,90 +773,97 @@ router
       return new CiudadesController().show(ctx)
     })
 
-    /* ========================= CLASES DE VEHÍCULO ====================== */
-    router.get('/clases-vehiculo', async (ctx) => {
-      const { default: ClasesVehiculosController } = await import(
-        '#controllers/clases_vehiculos_controller'
-      )
-      return new ClasesVehiculosController().index(ctx)
-    })
-    router.get('/clases-vehiculo/:id', async (ctx) => {
-      const { default: ClasesVehiculosController } = await import(
-        '#controllers/clases_vehiculos_controller'
-      )
-      return new ClasesVehiculosController().show(ctx)
-    })
-    router.post('/clases-vehiculo', async (ctx) => {
-      const { default: ClasesVehiculosController } = await import(
-        '#controllers/clases_vehiculos_controller'
-      )
-      return new ClasesVehiculosController().store(ctx)
-    })
-    router.put('/clases-vehiculo/:id', async (ctx) => {
-      const { default: ClasesVehiculosController } = await import(
-        '#controllers/clases_vehiculos_controller'
-      )
-      return new ClasesVehiculosController().update(ctx)
-    })
-    router.delete('/clases-vehiculo/:id', async (ctx) => {
-      const { default: ClasesVehiculosController } = await import(
-        '#controllers/clases_vehiculos_controller'
-      )
-      return new ClasesVehiculosController().destroy(ctx)
-    })
+    // Multi-sede Fase 0: clases de vehículo, clientes y vehículos exigen
+    // sesión (antes eran públicas). Todo el front las llama vía http.ts, que
+    // ya manda el token.
+    router
+      .group(() => {
+        /* ========================= CLASES DE VEHÍCULO ====================== */
+        router.get('/clases-vehiculo', async (ctx) => {
+          const { default: ClasesVehiculosController } = await import(
+            '#controllers/clases_vehiculos_controller'
+          )
+          return new ClasesVehiculosController().index(ctx)
+        })
+        router.get('/clases-vehiculo/:id', async (ctx) => {
+          const { default: ClasesVehiculosController } = await import(
+            '#controllers/clases_vehiculos_controller'
+          )
+          return new ClasesVehiculosController().show(ctx)
+        })
+        router.post('/clases-vehiculo', async (ctx) => {
+          const { default: ClasesVehiculosController } = await import(
+            '#controllers/clases_vehiculos_controller'
+          )
+          return new ClasesVehiculosController().store(ctx)
+        })
+        router.put('/clases-vehiculo/:id', async (ctx) => {
+          const { default: ClasesVehiculosController } = await import(
+            '#controllers/clases_vehiculos_controller'
+          )
+          return new ClasesVehiculosController().update(ctx)
+        })
+        router.delete('/clases-vehiculo/:id', async (ctx) => {
+          const { default: ClasesVehiculosController } = await import(
+            '#controllers/clases_vehiculos_controller'
+          )
+          return new ClasesVehiculosController().destroy(ctx)
+        })
 
-    /* ================================ CLIENTES ========================= */
-    router.get('/clientes', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().index(ctx)
-    })
-    router.get('/clientes/:id', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().show(ctx)
-    })
-    router.post('/clientes', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().store(ctx)
-    })
-    router.put('/clientes/:id', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().update(ctx)
-    })
-    router.delete('/clientes/:id', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().destroy(ctx)
-    })
+        /* ================================ CLIENTES ========================= */
+        router.get('/clientes', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().index(ctx)
+        })
+        router.get('/clientes/:id', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().show(ctx)
+        })
+        router.post('/clientes', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().store(ctx)
+        })
+        router.put('/clientes/:id', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().update(ctx)
+        })
+        router.delete('/clientes/:id', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().destroy(ctx)
+        })
 
-    router.get('/clientes/:id/detalle', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().detalle(ctx)
-    })
-    router.get('/clientes/:id/historial', async (ctx) => {
-      const { default: ClientesController } = await import('#controllers/clientes_controller')
-      return new ClientesController().historial(ctx)
-    })
+        router.get('/clientes/:id/detalle', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().detalle(ctx)
+        })
+        router.get('/clientes/:id/historial', async (ctx) => {
+          const { default: ClientesController } = await import('#controllers/clientes_controller')
+          return new ClientesController().historial(ctx)
+        })
 
-    /* ================================ VEHÍCULOS ======================== */
-    router.get('/vehiculos', async (ctx) => {
-      const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
-      return new VehiculosController().index(ctx)
-    })
-    router.get('/vehiculos/:id', async (ctx) => {
-      const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
-      return new VehiculosController().show(ctx)
-    })
-    router.post('/vehiculos', async (ctx) => {
-      const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
-      return new VehiculosController().store(ctx)
-    })
-    router.put('/vehiculos/:id', async (ctx) => {
-      const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
-      return new VehiculosController().update(ctx)
-    })
-    router.delete('/vehiculos/:id', async (ctx) => {
-      const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
-      return new VehiculosController().destroy(ctx)
-    })
+        /* ================================ VEHÍCULOS ======================== */
+        router.get('/vehiculos', async (ctx) => {
+          const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
+          return new VehiculosController().index(ctx)
+        })
+        router.get('/vehiculos/:id', async (ctx) => {
+          const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
+          return new VehiculosController().show(ctx)
+        })
+        router.post('/vehiculos', async (ctx) => {
+          const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
+          return new VehiculosController().store(ctx)
+        })
+        router.put('/vehiculos/:id', async (ctx) => {
+          const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
+          return new VehiculosController().update(ctx)
+        })
+        router.delete('/vehiculos/:id', async (ctx) => {
+          const { default: VehiculosController } = await import('#controllers/vehiculos_controller')
+          return new VehiculosController().destroy(ctx)
+        })
+      })
+      .use(middleware.auth())
     /* =========================== TELEMERCADEO ========================== */
     // Cola (solo lectura), gestiones del asesor (solo agentes
     // ASESOR_TELEMERCADEO registran; se valida en el controlador), y control
@@ -912,7 +923,9 @@ router
         .use(control)
       router.get('/telemercadeo/asesores', async (ctx) => (await tele()).asesores(ctx)).use(control)
       router.get('/telemercadeo/metas', async (ctx) => (await tele()).metas(ctx)).use(control)
-      router.put('/telemercadeo/metas', async (ctx) => (await tele()).guardarMetas(ctx)).use(control)
+      router
+        .put('/telemercadeo/metas', async (ctx) => (await tele()).guardarMetas(ctx))
+        .use(control)
       router
         .post('/telemercadeo/metas/copiar', async (ctx) => (await tele()).copiarMetas(ctx))
         .use(control)
@@ -2464,10 +2477,12 @@ router
 
     /* =============================== OCR (BACKEND) ===================== */
 
-    router.post('/ocr/parse-ticket', async (ctx) => {
-      const { default: OcrController } = await import('#controllers/ocr_controller')
-      return new OcrController().parseTicket(ctx)
-    })
+    router
+      .post('/ocr/parse-ticket', async (ctx) => {
+        const { default: OcrController } = await import('#controllers/ocr_controller')
+        return new OcrController().parseTicket(ctx)
+      })
+      .use(middleware.auth())
 
     /* ======================== COMPROBANTES DE PAGO ===================== */
 
