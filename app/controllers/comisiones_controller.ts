@@ -1598,7 +1598,12 @@ export default class ComisionesController {
     if (asesorId === null) existingQuery.whereNull('asesor_id')
     else existingQuery.where('asesor_id', asesorId)
 
-    let comision = await existingQuery.first()
+    // Multi-sede: si la sede activa tiene override se edita ese; si no, la
+    // fila global (sede NULL). Una fila nueva nace global (Comision.resolverSedeAlCrear).
+    let comision = await existingQuery
+      .orderByRaw('sede_id IS NULL')
+      .orderBy('id', 'asc')
+      .first()
 
     if (!comision) {
       comision = new Comision()
@@ -1896,7 +1901,12 @@ export default class ComisionesController {
     if (asesorId === null) existingQuery.whereNull('asesor_id')
     else existingQuery.where('asesor_id', asesorId)
 
-    let comision = await existingQuery.first()
+    // Multi-sede: si la sede activa tiene override se edita ese; si no, la
+    // fila global (sede NULL). Una fila nueva nace global (Comision.resolverSedeAlCrear).
+    let comision = await existingQuery
+      .orderByRaw('sede_id IS NULL')
+      .orderBy('id', 'asc')
+      .first()
 
     if (!comision) {
       comision = new Comision()

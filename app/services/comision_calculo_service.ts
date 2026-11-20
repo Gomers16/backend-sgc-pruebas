@@ -100,7 +100,10 @@ export async function resolveConfigComision(params: {
     else q.where('asesor_id', aId)
     if (tv === null) q.whereNull('tipo_vehiculo')
     else q.where('tipo_vehiculo', tv)
-    return q.first()
+    // Multi-sede: override de la sede activa primero; si no hay, la global
+    // (sede NULL). Hoy no hay duplicados por (asesor, tipo): la fila elegida
+    // es la misma que antes.
+    return q.orderByRaw('sede_id IS NULL').orderBy('id', 'asc').first()
   }
 
   // Búsqueda 1: config del COMERCIAL (dateo nuevo, nuevo directo)

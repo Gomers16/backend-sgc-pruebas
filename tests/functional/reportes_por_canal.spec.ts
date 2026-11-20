@@ -758,6 +758,7 @@ test.group('Cédula convenio en Excel de liquidación', (group) => {
     })
     dateoIds.push(dateoId)
     const [id] = await Database.table('comisiones').insert({
+      sede_id: SEDE_ID,
       captacion_dateo_id: dateoId,
       asesor_id: asesorId,
       convenio_id: convenioId,

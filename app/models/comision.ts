@@ -2,6 +2,8 @@
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped, type SedeAlCrear } from '#models/mixins/sede_scoped'
 
 import CaptacionDateo from '#models/captacion_dateo'
 import Convenio from '#models/convenio'
@@ -11,8 +13,44 @@ export type ComisionEstado = 'PENDIENTE' | 'APROBADA' | 'PAGADA' | 'ANULADA'
 export type ComisionTipoServicio = 'RTM' | 'TECNOMECANICA' | 'PREVENTIVA' | 'SOAT' | 'OTRO'
 export type ComisionTipoVehiculo = 'MOTO' | 'VEHICULO'
 
-export default class Comision extends BaseModel {
+/**
+ * Sede de una comisión real: la del turno (el que consumió el dateo, o el que
+ * lo tiene vinculado); si no hay turno, la del dateo. Sin dateo → la sede
+ * activa (undefined). Una fila de configuración es GLOBAL (null).
+ */
+async function sedeDeComision(c: any, cliente: any): Promise<SedeAlCrear> {
+  if (c.esConfig) return null
+  if (!c.captacionDateoId) return undefined
+  // sede: lectura por id del dateo de la comisión (deriva su sede)
+  const fila = await cliente
+    .from('captacion_dateos as d')
+    .leftJoin('turnos_rtms as tc', 'tc.id', 'd.consumido_turno_id')
+    .where('d.id', c.captacionDateoId)
+    .select(
+      'tc.sede_id as sede_turno',
+      'd.sede_id as sede_dateo',
+      cliente.raw(
+        `(SELECT tv.sede_id FROM turnos_rtms tv WHERE tv.captacion_dateo_id = d.id
+           AND tv.estado <> 'cancelado' ORDER BY tv.id DESC LIMIT 1) as sede_vinculado`
+      )
+    )
+    .first()
+  if (!fila) return undefined
+  const sede = fila.sede_turno ?? fila.sede_vinculado ?? fila.sede_dateo
+  return sede === null || sede === undefined ? undefined : Number(sede)
+}
+
+export default class Comision extends compose(BaseModel, SedeScoped) {
   public static table = 'comisiones'
+
+  // Multi-sede (3d): sede_id propio. La configuración (es_config = 1, sede
+  // NULL) es global y se ve desde toda sede; una comisión real toma la sede
+  // de su turno/dateo, que tiene que ser la sede activa.
+  static sedeGlobalSi = 'es_config = 1'
+  static resolverSedeAlCrear = sedeDeComision
+
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
 
   @column({ isPrimary: true })
   declare id: number
