@@ -63,7 +63,7 @@ export interface IntentoDateo {
 
 export type ResultadoIntentoDateo =
   | { ok: true; intento: IntentoDateo }
-  | { ok: false; status: 400 | 403 | 422; message: string }
+  | { ok: false; status: 400 | 403 | 409 | 422; message: string }
 
 /**
  * Convenio activo de un asesor convenio: el que se llama igual que el
@@ -74,6 +74,7 @@ export async function buscarConvenioDelAsesorConvenio(
   agente: AgenteCaptacion
 ): Promise<Convenio | null> {
   const nombreNormalizado = agente.nombre.trim().replace(/\s+/g, ' ').toUpperCase()
+  // Convenios de la sede activa (mixin): el del asesor es de su misma sede.
   const conveniosActivos = await Convenio.query().where('activo', true).select(['id', 'nombre'])
   const encontrado = conveniosActivos.find((c) => {
     const n = c.nombre.trim().replace(/\s+/g, ' ').toUpperCase()
@@ -82,7 +83,7 @@ export async function buscarConvenioDelAsesorConvenio(
   return encontrado ? Convenio.find(encontrado.id) : null
 }
 
-const falla = (status: 400 | 403 | 422, message: string): ResultadoIntentoDateo => ({
+const falla = (status: 400 | 403 | 409 | 422, message: string): ResultadoIntentoDateo => ({
   ok: false,
   status,
   message,
@@ -91,6 +92,20 @@ const falla = (status: 400 | 403 | 422, message: string): ResultadoIntentoDateo 
 export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<ResultadoIntentoDateo> {
   const agenteId = e.agenteId
   let agente: AgenteCaptacion | null = null
+
+  // Multi-sede: el agente y el convenio del dateo tienen que ser de la sede
+  // activa (los modelos ya filtran: si "no existe" aquí pero sí en otra
+  // sede, es un 409 explícito, no un 400).
+  if (agenteId !== null && !(await AgenteCaptacion.find(agenteId))) {
+    if (await AgenteCaptacion.querySinSede().where('id', agenteId).first()) {
+      return falla(409, 'El asesor/agente pertenece a otra sede.')
+    }
+  }
+  if (e.convenioId !== null && !(await Convenio.find(e.convenioId))) {
+    if (await Convenio.querySinSede().where('id', e.convenioId).first()) {
+      return falla(409, 'El convenio pertenece a otra sede.')
+    }
+  }
 
   const canalRaw = String(e.canal || 'ASESOR').toUpperCase()
   let canal: CanalDateoDb
