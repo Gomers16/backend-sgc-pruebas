@@ -2,6 +2,8 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import ComprobantePago from '#models/comprobante_pago'
+import Comision from '#models/comision'
+import { sedeParaEscritura } from '#services/sede_scope'
 
 function toNum(v: unknown): number {
   const n = Number(v)
@@ -86,6 +88,33 @@ export default class ComprobantesPagoController {
     const groups = Array.isArray(payload.groups) ? payload.groups : []
     if (groups.length === 0) {
       return response.badRequest({ message: 'Se requiere al menos un grupo en groups[]' })
+    }
+
+    // Multi-sede: un comprobante es de UNA sede (la activa; "todas" → 400) y
+    // todas sus comisiones tienen que ser de esa sede; si alguna es de otra,
+    // no se crea ninguno (409).
+    const sede = sedeParaEscritura()
+    const idsComisiones = [
+      ...new Set(
+        groups
+          .flatMap((g: any) => (Array.isArray(g.comision_ids) ? g.comision_ids : []))
+          .map(Number)
+          .filter((n: number) => Number.isFinite(n))
+      ),
+    ] as number[]
+    if (sede && idsComisiones.length) {
+      const ajenas: Array<{ id: number }> = await Comision.querySinSede()
+        .whereIn('id', idsComisiones)
+        .where('es_config', false)
+        .where((q: any) => q.whereNot('sede_id', sede).orWhereNull('sede_id'))
+        .select('id')
+      if (ajenas.length > 0) {
+        return response.conflict({
+          code: 'COMISIONES_DE_OTRA_SEDE',
+          message: 'El comprobante incluye comisiones de otra sede.',
+          ids: ajenas.map((c) => c.id),
+        })
+      }
     }
 
     const created: ReturnType<typeof mapDto>[] = []
@@ -183,6 +212,7 @@ export default class ComprobantesPagoController {
    * Body: { evidencia_url: string }
    */
   public async subirEvidencia({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const c = await ComprobantePago.find(params.id)
     if (!c) return response.notFound({ message: 'Comprobante no encontrado' })
 
@@ -203,6 +233,7 @@ export default class ComprobantesPagoController {
    * Elimina la evidencia asociada al comprobante.
    */
   public async eliminarEvidencia({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const c = await ComprobantePago.find(params.id)
     if (!c) return response.notFound({ message: 'Comprobante no encontrado' })
 

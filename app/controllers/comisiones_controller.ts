@@ -12,6 +12,7 @@ import Liquidacion, {
   type LiquidacionTipoPeriodo,
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
+import { sedeParaEscritura } from '#services/sede_scope'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
   conflictoSinComisionTicket,
@@ -846,6 +847,7 @@ export default class ComisionesController {
 
   public async editar(ctx: HttpContext) {
     const { params, request, response } = ctx
+    sedeParaEscritura() // "todas" no escribe (400)
     const comision = await Comision.find(params.id)
     if (!comision || comision.esConfig)
       return response.notFound({ message: 'Comisión no encontrada' })
@@ -945,6 +947,7 @@ export default class ComisionesController {
   }
   public async actualizarValores(ctx: HttpContext) {
     const { params, request, response } = ctx
+    sedeParaEscritura() // "todas" no escribe (400)
     const comision = await Comision.find(params.id)
 
     if (!comision || comision.esConfig)
@@ -984,6 +987,7 @@ export default class ComisionesController {
    * POST /api/comisiones/:id/aprobar
    */
   public async aprobar({ params, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const comision = await Comision.find(params.id)
     if (!comision || comision.esConfig)
       return response.notFound({ message: 'Comisión no encontrada' })
@@ -1001,6 +1005,7 @@ export default class ComisionesController {
    * POST /api/comisiones/:id/pagar
    */
   public async pagar({ params, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const comision = await Comision.find(params.id)
     if (!comision || comision.esConfig)
       return response.notFound({ message: 'Comisión no encontrada' })
@@ -1018,6 +1023,7 @@ export default class ComisionesController {
    * POST /api/comisiones/:id/anular
    */
   public async anular({ params, request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const comision = await Comision.find(params.id)
     if (!comision || comision.esConfig)
       return response.notFound({ message: 'Comisión no encontrada' })
@@ -1075,6 +1081,25 @@ export default class ComisionesController {
     ]
     if (idsNumericos.length === 0) {
       return response.badRequest({ message: 'ids no contiene valores numéricos válidos' })
+    }
+
+    // Multi-sede: un pago/aprobación masiva es de UNA sede. "todas" → 400 y,
+    // si algún id es una comisión de otra sede, se rechaza todo (409) sin
+    // escribir nada.
+    const sedePago = sedeParaEscritura()
+    if (sedePago) {
+      const ajenas: Array<{ id: number }> = await Comision.querySinSede()
+        .whereIn('id', idsNumericos)
+        .where('es_config', false)
+        .where((q: any) => q.whereNot('sede_id', sedePago).orWhereNull('sede_id'))
+        .select('id')
+      if (ajenas.length > 0) {
+        return response.conflict({
+          code: 'COMISIONES_DE_OTRA_SEDE',
+          message: 'El pago incluye comisiones de otra sede: se paga una sede a la vez.',
+          ids: ajenas.map((c) => c.id),
+        })
+      }
     }
 
     const usuarioId = auth.user?.id ?? null
@@ -1319,6 +1344,7 @@ export default class ComisionesController {
    */
   public async store(ctx: HttpContext) {
     const { request, response } = ctx
+    sedeParaEscritura() // "todas" no escribe (400)
     const payload = request.only([
       'turno_id',
       'asesor_id',
@@ -1407,6 +1433,7 @@ export default class ComisionesController {
           updateData.observacion = payload.dateo_observacion || null
         }
 
+        // sede: por id del dateo del turno (ya leído con el mixin en la sede activa)
         await CaptacionDateo.query({ client: trx })
           .where('id', captacionDateoId)
           .update(updateData as any)
@@ -1512,6 +1539,7 @@ export default class ComisionesController {
         comision.descuentoCodigoAplicado = desc.codigo
         comision.descuentoObservacionCaja = descuentoObservacion
 
+        // sede: por id del dateo del turno (ya leído con el mixin en la sede activa)
         await CaptacionDateo.query({ client: trx })
           .where('id', captacionDateoId!)
           .update({

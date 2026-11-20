@@ -637,6 +637,7 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
       dateo: 'SIN_CONVENIO',
     })
     const [liquidacionId] = await Database.table('liquidaciones').insert({
+      sede_id: SEDE_ID,
       fecha_inicio: DateTime.now().toISODate(),
       fecha_fin: DateTime.now().toISODate(),
       tipo_origen: 'TABLA_GENERAL',

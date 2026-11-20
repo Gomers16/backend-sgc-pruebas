@@ -1,11 +1,17 @@
 // app/models/comprobante_pago.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 import Usuario from '#models/usuario'
 
-export default class ComprobantePago extends BaseModel {
+export default class ComprobantePago extends compose(BaseModel, SedeScoped) {
   public static table = 'comprobantes_pago'
+
+  // Multi-sede (3d): un comprobante es de UNA sede (la de sus comisiones).
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
 
   @column({ isPrimary: true })
   declare id: number
