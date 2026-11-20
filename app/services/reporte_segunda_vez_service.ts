@@ -14,6 +14,7 @@
 //   ABIERTA · USADA (tiene su segunda vez) · VENCIDA (no regresó) ·
 //   SUPERADA (hubo otro turno después que no es su segunda vez, p. ej. pagó
 //   normal) · ANULADA (origen cancelado o rechazo corregido a APROBADA).
+import { aplicarSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
 import ExcelJS from 'exceljs'
@@ -91,12 +92,14 @@ export async function calcularReporteSegundaVez(
     Database.from('turnos_rtms as t')
       .join('servicios as s', 's.id', 't.servicio_id')
       .leftJoin('sedes as se', 'se.id', 't.sede_id')
+      .where((q) => aplicarSede(q, 't.sede_id'))
       .leftJoin('usuarios as u', 'u.id', 't.certificacion_funcionario_id')
       .whereIn('s.codigo_servicio', servicios.length ? servicios : ['__ninguno__'])
       .whereRaw("t.placa NOT LIKE 'TST%'")
       .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [filtros.fechaInicio, filtros.fechaFin])
       .where((w) => {
         w.where('t.resultado_certificacion', 'RECHAZADA').orWhereExists((sub) => {
+          // sede: correlacionada con el turno (ya filtrado por sede)
           sub
             .from('certificacion_resultado_cambios as c')
             .whereRaw('c.turno_id = t.id')
@@ -126,6 +129,7 @@ export async function calcularReporteSegundaVez(
       'u.apellidos as cert_apellidos'
     )
     .select(
+      // sede: correlacionada con el turno (ya filtrado por sede)
       Database.raw(
         "EXISTS (SELECT 1 FROM certificacion_resultado_cambios c WHERE c.turno_id = t.id AND c.resultado_anterior = 'RECHAZADA') AS rechazo_corregido"
       )
@@ -137,7 +141,9 @@ export async function calcularReporteSegundaVez(
   // sola consulta; clasificarPosteriores() aplica la regla de cada origen.
   const placas = [...new Set(origenes.map((o) => o.placa))]
   const posteriores: FilaTurnoPosterior[] = placas.length
-    ? await Database.from('turnos_rtms')
+    ? // sede: la segunda vez es por sede → solo turnos posteriores de la sede activa
+      await Database.from('turnos_rtms')
+        .where((q) => aplicarSede(q, 'turnos_rtms.sede_id'))
         .whereIn('placa', placas)
         .whereIn('servicio_id', [...new Set(origenes.map((o) => o.servicio_id))])
         .where('id', '>', Math.min(...origenes.map((o) => o.id)))

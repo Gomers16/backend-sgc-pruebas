@@ -286,6 +286,7 @@ export default class DiscrepanciasRtmService {
     const idsUnicos = [...new Set(turnoIds)]
     if (idsUnicos.length === 0) return mapa
 
+    // sede: por ids de turnos ya leídos con el mixin en la sede activa
     const turnos = await Database.from('turnos_rtms')
       .whereIn('id', idsUnicos)
       .select(
@@ -300,6 +301,7 @@ export default class DiscrepanciasRtmService {
 
     // Un turno puede tener más de una certificación (regrabado) — la más
     // reciente (id desc) es la que representa el estado actual.
+    // sede: por ids de turnos ya leídos con el mixin en la sede activa
     const certificaciones = await Database.from('certificaciones')
       .whereIn('turno_id', idsUnicos)
       .orderBy('id', 'desc')
@@ -321,7 +323,8 @@ export default class DiscrepanciasRtmService {
     }
 
     const usuarios = usuarioIds.size
-      ? await Database.from('usuarios').whereIn('id', [...usuarioIds]).select('id', 'nombres', 'apellidos')
+      ? // sede: nombres de los funcionarios de esos turnos (identidad)
+        await Database.from('usuarios').whereIn('id', [...usuarioIds]).select('id', 'nombres', 'apellidos')
       : []
     const nombrePorUsuario = new Map<number, string>(
       usuarios.map((u) => [u.id, `${u.nombres} ${u.apellidos}`.trim()])
@@ -427,6 +430,7 @@ export default class DiscrepanciasRtmService {
     const turnoIds = turnosSgc.map((t) => t.id)
     const facturacionConfirmadaSet = new Set<number>()
     if (turnoIds.length > 0) {
+      // sede: por ids de turnos ya leídos con el mixin en la sede activa
       const facturados = await Database.from('facturacion_tickets')
         .whereIn('turno_id', turnoIds)
         .where('estado', 'CONFIRMADA')

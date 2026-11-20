@@ -5,6 +5,7 @@
 // meta — no se usa comisiones.meta_rtm como respaldo (esa se captura como
 // cantidad de RTM, no en pesos).
 
+import { sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import Database from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -53,7 +54,10 @@ export async function resolverMetasAsesores(
   const metas = new Map<number, MetaAsesorMes>()
   if (asesorIds !== null && asesorIds.length === 0) return metas
 
-  const query = Database.from('meta_comercial_asesor').where({ mes, anio })
+  // Multi-sede: metas de los asesores de la sede activa (la meta es del asesor).
+  const query = Database.from('meta_comercial_asesor')
+    .whereRaw(sqlAsesorDeLaSede('meta_comercial_asesor.asesor_id'))
+    .where({ mes, anio })
   if (asesorIds !== null) query.whereIn('asesor_id', asesorIds)
   const rows = (await query.select('asesor_id', 'meta_pesos', 'meta_vehiculos')) as {
     asesor_id: number

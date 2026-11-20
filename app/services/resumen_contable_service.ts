@@ -17,6 +17,7 @@
 //    denominador es 0.
 //  - sin_finalizar: turnos de la base aún en estado 'activo' (informativo; la
 //    sección 1 cuenta solo finalizados).
+import { aplicarSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
 
@@ -157,6 +158,7 @@ export async function obtenerResumenContable(
 
   const rows = (await Database.from('turnos_rtms as t')
     .leftJoin('servicios as s', 's.id', 't.servicio_id')
+    .where((q) => aplicarSede(q, 't.sede_id'))
     .whereBetween('t.fecha', [di.toISODate()!, df.toISODate()!])
     .whereNotIn('t.estado', ['cancelado', 'inactivo'])
     .whereRaw("t.placa NOT LIKE 'TST%'")
