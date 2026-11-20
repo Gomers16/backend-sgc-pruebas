@@ -5,6 +5,18 @@ import type { HttpContext } from '@adonisjs/core/http'
 import Vehiculo from '#models/vehiculo'
 import ClaseVehiculo from '#models/clase_vehiculos'
 import Cliente from '#models/cliente'
+import { sedeParaEscritura } from '#services/sede_scope'
+import {
+  clienteVisible,
+  sqlVehiculoVisible,
+  tieneHistorialFueraDeSede,
+  vehiculoVisible,
+} from '#services/visibilidad_sede'
+
+// Multi-sede (3c): identidad global (una fila por placa) y visibilidad por
+// sede: un vehículo se ve en la sede activa solo si tiene turnos o dateos en
+// ella (si no, 404 como un dato de otra sede). Crear con una placa que ya
+// existe en otra sede sigue siendo 409 (la placa es única global).
 
 function normalizePlaca(raw?: string) {
   if (!raw) return ''
@@ -31,7 +43,11 @@ export default class VehiculosController {
     const claseCodigo = String(request.input('clase_codigo', '')).trim()
     const clienteTelefono = normalizePhone(request.input('cliente_telefono'))
 
-    const query = Vehiculo.query().preload('clase').preload('cliente').orderBy('id', 'asc')
+    const query = Vehiculo.query()
+      .whereRaw(sqlVehiculoVisible('vehiculos.id', 'vehiculos.placa'))
+      .preload('clase')
+      .preload('cliente')
+      .orderBy('id', 'asc')
 
     if (q) {
       query.where((qb) => {
@@ -68,7 +84,9 @@ export default class VehiculosController {
       .preload('cliente')
       .first()
 
-    if (!item) return response.notFound({ message: 'Vehículo no encontrado' })
+    if (!item || !(await vehiculoVisible(item.id))) {
+      return response.notFound({ message: 'Vehículo no encontrado' })
+    }
     return item
   }
 
@@ -100,6 +118,7 @@ export default class VehiculosController {
     const matricula = request.input('matricula')
 
     if (!placa) return response.badRequest({ message: 'placa es requerida' })
+    sedeParaEscritura() // "todas" no escribe (400)
 
     // Unicidad placa
     const dup = await Vehiculo.findBy('placa', placa)
@@ -152,8 +171,11 @@ export default class VehiculosController {
    * }
    */
   public async update({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const item = await Vehiculo.find(params.id)
-    if (!item) return response.notFound({ message: 'Vehículo no encontrado' })
+    if (!item || !(await vehiculoVisible(item.id))) {
+      return response.notFound({ message: 'Vehículo no encontrado' })
+    }
 
     const placaRaw = request.input('placa')
     if (placaRaw !== undefined) {
@@ -205,7 +227,11 @@ export default class VehiculosController {
     const clienteIdBody = request.input('cliente_id')
 
     if (clienteIdBody !== undefined) {
-      item.clienteId = clienteIdBody ? Number(clienteIdBody) : null
+      const nuevoClienteId = clienteIdBody ? Number(clienteIdBody) : null
+      if (nuevoClienteId && !(await clienteVisible(nuevoClienteId))) {
+        return response.badRequest({ message: 'cliente_id no existe' })
+      }
+      item.clienteId = nuevoClienteId
     } else if (clienteTelefono !== undefined) {
       if (!clienteTelefono) {
         item.clienteId = null
@@ -222,8 +248,16 @@ export default class VehiculosController {
 
   /** DELETE /vehiculos/:id */
   public async destroy({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const item = await Vehiculo.find(params.id)
-    if (!item) return response.notFound({ message: 'Vehículo no encontrado' })
+    if (!item || !(await vehiculoVisible(item.id))) {
+      return response.notFound({ message: 'Vehículo no encontrado' })
+    }
+    if (await tieneHistorialFueraDeSede({ tipo: 'vehiculo', id: item.id, placa: item.placa })) {
+      return response.conflict({
+        message: 'No se puede eliminar: el vehículo tiene historial en otra sede.',
+      })
+    }
 
     // Si luego hay turnos que referencien vehículo, aquí se podría bloquear el delete
     await item.delete()
