@@ -1,4 +1,6 @@
 // app/models/convenio.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, hasMany, belongsTo } from '@adonisjs/lucid/orm'
 import type { HasMany, BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -12,7 +14,11 @@ export type MetodoPago = 'EFECTIVO' | 'TRANSFERENCIA' | 'TARJETA' | 'CHEQUE'
 export type ConvenioEstado = 'ACTIVO' | 'INACTIVO' | 'PROSPECTO'
 export type ConvenioPeriodicidad = 'DIARIA' | 'SEMANAL' | 'QUINCENAL' | 'MENSUAL'
 
-export default class Convenio extends BaseModel {
+export default class Convenio extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, sede_id propio.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'convenios'
 
   @column({ isPrimary: true })

@@ -148,6 +148,16 @@ function filtrar(
   query[YA_FILTRADO] = true
 }
 
+/**
+ * Marca un query builder (p. ej. el de un preload) para que NO se filtre por
+ * sede. Bypass explícito y visible, como querySinSede(): úsese solo para
+ * identidad (el agente del propio usuario en login, /auth/me).
+ */
+export function sinFiltroDeSedeEnConsulta<Q>(q: Q): Q {
+  ;(q as any)[SIN_SEDE] = true
+  return q
+}
+
 export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(superclass: T) {
   class ConSede extends superclass {
     /** Columna de sede en la tabla. */

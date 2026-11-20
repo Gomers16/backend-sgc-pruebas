@@ -1,3 +1,5 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped, type SedeAlCrear } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, hasMany, computed } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasMany } from '@adonisjs/lucid/types/relations'
@@ -9,7 +11,17 @@ import CaptacionDateo from '#models/captacion_dateo'
 
 export type ProspectoOrigen = 'IMPORT' | 'CAMPO' | 'EVENTO' | 'OTRO'
 
-export default class Prospecto extends BaseModel {
+export default class Prospecto extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, sede_id propio; hereda la del convenio al crear (resolverSedeAlCrear).
+  static resolverSedeAlCrear = async (p: any, cliente: any): Promise<SedeAlCrear> => {
+    if (!p.convenioId) return undefined
+    // sede: lectura por id del convenio del prospecto (deriva su sede)
+    const c = await cliente.from('convenios').where('id', p.convenioId).select('sede_id').first()
+    return c?.sede_id ? Number(c.sede_id) : undefined
+  }
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'prospectos'
 
   @column({ isPrimary: true })

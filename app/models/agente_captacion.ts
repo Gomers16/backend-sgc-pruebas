@@ -1,3 +1,5 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { BaseModel, column, hasMany, manyToMany, belongsTo } from '@adonisjs/lucid/orm'
 import type { HasMany, ManyToMany, BelongsTo } from '@adonisjs/lucid/types/relations'
 import { DateTime } from 'luxon'
@@ -8,7 +10,11 @@ import CaptacionCanal from '#models/captacion_canal'
 // 🎯 Tipos de agentes coherentes con cargos y canales
 export type TipoAsesor = 'ASESOR_COMERCIAL' | 'ASESOR_CONVENIO' | 'ASESOR_TELEMERCADEO'
 
-export default class AgenteCaptacion extends BaseModel {
+export default class AgenteCaptacion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, sede_id propio (trabajar en 2 sedes = 2 agentes).
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'agentes_captacions'
 
   @column({ isPrimary: true })

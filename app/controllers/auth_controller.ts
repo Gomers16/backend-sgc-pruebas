@@ -1,5 +1,6 @@
 // app/controllers/auth_controller.ts
 
+import { sinFiltroDeSedeEnConsulta } from '#models/mixins/sede_scoped'
 import type { HttpContext } from '@adonisjs/core/http'
 import Usuario from '#models/usuario'
 import hash from '@adonisjs/core/services/hash'
@@ -20,7 +21,8 @@ export default class AuthController {
       const user = await Usuario.query()
         .where('correo', correo)
         .preload('rol')
-        .preload('agenteCaptacion')
+        // sede: el agente del propio usuario es identidad (en login no hay sede activa)
+        .preload('agenteCaptacion', (q) => sinFiltroDeSedeEnConsulta(q))
         .firstOrFail()
 
       const cleanedPassword = typeof password === 'string' ? password.trim() : ''
@@ -68,7 +70,8 @@ export default class AuthController {
       const user = await Usuario.query()
         .where('id', auth.user.id)
         .preload('rol')
-        .preload('agenteCaptacion')
+        // sede: el agente del propio usuario es identidad (en login no hay sede activa)
+        .preload('agenteCaptacion', (q) => sinFiltroDeSedeEnConsulta(q))
         .preload('sede')
         .firstOrFail()
 

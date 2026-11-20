@@ -1,4 +1,6 @@
 // app/models/telemercadeo_gestion.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
 
@@ -22,7 +24,11 @@ export const RESULTADOS_ELEGIBLES: readonly ResultadoGestion[] = RESULTADOS_GEST
 )
 
 /** Gestión de contacto de Telemercadeo. Ver migración 1805000000000. */
-export default class TelemercadeoGestion extends BaseModel {
+export default class TelemercadeoGestion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, sede_id propio.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'telemercadeo_gestiones'
 
   @column({ isPrimary: true })

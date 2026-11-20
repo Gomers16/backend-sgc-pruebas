@@ -1,11 +1,17 @@
 // app/models/telemercadeo_ciclo.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
 
 export type MotivoCierreCiclo = 'DATEADO' | 'TURNO' | 'VENCIDO'
 
 /** Ciclo de seguimiento de Telemercadeo (placa + servicio). Ver migración 1804000000000. */
-export default class TelemercadeoCiclo extends BaseModel {
+export default class TelemercadeoCiclo extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, sede_id propio.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'telemercadeo_ciclos'
 
   @column({ isPrimary: true })

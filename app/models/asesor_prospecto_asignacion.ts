@@ -1,3 +1,5 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -5,7 +7,10 @@ import Prospecto from '#models/prospecto'
 import AgenteCaptacion from '#models/agente_captacion'
 import Usuario from '#models/usuario'
 
-export default class AsesorProspectoAsignacion extends BaseModel {
+export default class AsesorProspectoAsignacion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3g, hereda la sede del asesor.
+  static sedeVia = { atributo: 'asesorId', columna: 'asesor_id', tablaPadre: 'agentes_captacions' }
+
   public static table = 'asesor_prospecto_asignaciones'
 
   @column({ isPrimary: true })

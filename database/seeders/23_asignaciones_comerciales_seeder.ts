@@ -1,4 +1,5 @@
 // database/seeders/23_asignaciones_comerciales_seeder.ts
+import { sinFiltroDeSede } from '#services/sede_scope'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import Database from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -11,7 +12,13 @@ import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import AsesorProspectoAsignacion from '#models/asesor_prospecto_asignacion'
 
 export default class AsignacionesComercialesSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; cada registro declara su sede
+  // (la de su usuario/agente), así que corre sin filtro de forma explícita.
   public async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await Database.transaction()
 
     try {

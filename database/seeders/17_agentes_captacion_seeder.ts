@@ -1,12 +1,19 @@
 // database/seeders/17_agentes_captacion_seeder.ts
 
+import { sinFiltroDeSede } from '#services/sede_scope'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import AgenteCaptacion from '#models/agente_captacion'
 import Cargo from '#models/cargo'
 import Usuario from '#models/usuario'
 
 export default class AgentesCaptacionSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; cada registro declara su sede
+  // (la de su usuario/agente), así que corre sin filtro de forma explícita.
   public async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     // Ubicamos los cargos clave
     const cargoCom = await Cargo.findBy('nombre', 'ASESOR COMERCIAL')
     const cargoConv = await Cargo.findBy('nombre', 'ASESOR CONVENIO')
@@ -27,6 +34,7 @@ export default class AgentesCaptacionSeeder extends BaseSeeder {
         { usuarioId: u.id },
         {
           usuarioId: u.id,
+          sedeId: u.sedeId,
           tipo: 'ASESOR_COMERCIAL',
           nombre: `${u.nombres} ${u.apellidos}`.trim(),
           telefono: u.celularPersonal ?? u.celularCorporativo ?? null,
@@ -45,6 +53,7 @@ export default class AgentesCaptacionSeeder extends BaseSeeder {
         { usuarioId: u.id },
         {
           usuarioId: u.id,
+          sedeId: u.sedeId,
           tipo: 'ASESOR_CONVENIO',
           nombre: `${u.nombres} ${u.apellidos}`.trim(),
           telefono: u.celularPersonal ?? u.celularCorporativo ?? null,

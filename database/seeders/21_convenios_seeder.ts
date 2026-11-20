@@ -1,4 +1,5 @@
 // database/seeders/21_convenios_seeder.ts
+import { sinFiltroDeSede } from '#services/sede_scope'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import Usuario from '#models/usuario'
 import Cargo from '#models/cargo'
@@ -24,7 +25,13 @@ function docPara(tipo: TipoConvenio, id: number): { docTipo: 'CC' | 'NIT'; docNu
 }
 
 export default class ConveniosSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; cada registro declara su sede
+  // (la de su usuario/agente), así que corre sin filtro de forma explícita.
   public async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     // 1) Validar que exista el cargo
     const cargoConvenio = await Cargo.findBy('nombre', 'ASESOR CONVENIO')
     if (!cargoConvenio) {
@@ -58,6 +65,7 @@ export default class ConveniosSeeder extends BaseSeeder {
         { docTipo, docNumero },
         {
           nombre: `${u.nombres} ${u.apellidos}`.trim(),
+          sedeId: agente?.sedeId ?? u.sedeId,
           docTipo,
           docNumero,
           telefono: u.celularPersonal ?? null,
