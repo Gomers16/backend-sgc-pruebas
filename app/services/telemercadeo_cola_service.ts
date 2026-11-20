@@ -13,6 +13,7 @@
 // criterio que store() de dateos: el último dateo liberado=0 por
 // placa/teléfono + servicio, con la vigencia de buildReserva()).
 
+import { sqlClienteVisible } from '#services/visibilidad_sede'
 import { aplicarSede, sedeSql } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
@@ -480,7 +481,8 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
     LEFT JOIN (
       SELECT DISTINCT e.cliente_id FROM (${turnoHoy}${dateoVigente}) e
     ) ex ON ex.cliente_id = c.id
-    WHERE ex.cliente_id IS NULL ${filtroQ}`
+    WHERE ex.cliente_id IS NULL ${filtroQ}
+      AND ${sqlClienteVisible('c.id')}`
 
   return { sql, bindings }
 }

@@ -2,7 +2,9 @@
 //
 // Multi-sede 3c — clientes y vehículos tienen IDENTIDAD GLOBAL (una sola fila
 // por documento/teléfono o por placa, compartida entre sedes) pero se VEN en
-// la sede activa solo si tienen turnos o dateos en ella.
+// la sede activa si tienen turnos o dateos en ella, o si no tienen historial
+// en NINGUNA sede (p. ej. la base importada sin visitas: decisión 2026-11-20).
+// Solo se oculta lo que tiene historial y únicamente en otra sede.
 //
 // - sqlClienteVisible / sqlVehiculoVisible: fragmentos EXISTS para listados.
 // - clienteVisible / vehiculoVisible: chequeo por registro (ver, editar,
@@ -23,21 +25,31 @@ function col(c: string): string {
   return c
 }
 
-/** EXISTS: el cliente (columna con su id) tiene turnos o dateos en la sede activa. */
+/**
+ * Visible: el cliente (columna con su id) tiene turnos o dateos en la sede
+ * activa, o no tiene historial en ninguna sede.
+ */
 export function sqlClienteVisible(colId: string): string {
   if (!scopeObligatorio()) return '1=1'
   const id = col(colId)
   return `(EXISTS (SELECT 1 FROM turnos_rtms tvis WHERE tvis.cliente_id = ${id} AND ${sedeSql('tvis')})
-    OR EXISTS (SELECT 1 FROM captacion_dateos dvis WHERE dvis.cliente_id = ${id} AND ${sedeSql('dvis')}))`
+    OR EXISTS (SELECT 1 FROM captacion_dateos dvis WHERE dvis.cliente_id = ${id} AND ${sedeSql('dvis')})
+    OR (NOT EXISTS (SELECT 1 FROM turnos_rtms tsin WHERE tsin.cliente_id = ${id})
+      AND NOT EXISTS (SELECT 1 FROM captacion_dateos dsin WHERE dsin.cliente_id = ${id})))`
 }
 
-/** EXISTS: el vehículo (id y placa) tiene turnos o dateos en la sede activa. */
+/**
+ * Visible: el vehículo (id y placa) tiene turnos o dateos en la sede activa,
+ * o no tiene historial en ninguna sede.
+ */
 export function sqlVehiculoVisible(colId: string, colPlaca: string): string {
   if (!scopeObligatorio()) return '1=1'
   const id = col(colId)
   const placa = col(colPlaca)
   return `(EXISTS (SELECT 1 FROM turnos_rtms tvis WHERE (tvis.vehiculo_id = ${id} OR tvis.placa = ${placa}) AND ${sedeSql('tvis')})
-    OR EXISTS (SELECT 1 FROM captacion_dateos dvis WHERE (dvis.vehiculo_id = ${id} OR dvis.placa = ${placa}) AND ${sedeSql('dvis')}))`
+    OR EXISTS (SELECT 1 FROM captacion_dateos dvis WHERE (dvis.vehiculo_id = ${id} OR dvis.placa = ${placa}) AND ${sedeSql('dvis')})
+    OR (NOT EXISTS (SELECT 1 FROM turnos_rtms tsin WHERE tsin.vehiculo_id = ${id} OR tsin.placa = ${placa})
+      AND NOT EXISTS (SELECT 1 FROM captacion_dateos dsin WHERE dsin.vehiculo_id = ${id} OR dsin.placa = ${placa})))`
 }
 
 export async function clienteVisible(clienteId: number): Promise<boolean> {

@@ -23,10 +23,12 @@ const P = {
   RECURRENTE: 'MS3CR1',
   CONTINUIDAD: 'MS3CC1',
   VENTANA: 'MS3CW1',
+  SIN_HISTORIAL: 'MS3CS1',
 }
 const PLACAS = Object.values(P)
 const TEL_VISIBLE = '3009993101'
 const TEL_RECURRENTE = '3009993102'
+const TEL_SIN_HISTORIAL = '3009993103'
 
 async function limpiar() {
   const marks = PLACAS.map(() => '?').join(',')
@@ -37,7 +39,9 @@ async function limpiar() {
   await Database.rawQuery(`DELETE FROM turnos_rtms WHERE placa IN (${marks})`, PLACAS)
   await Database.rawQuery(`DELETE FROM captacion_dateos WHERE placa IN (${marks})`, PLACAS)
   await Database.rawQuery(`DELETE FROM vehiculos WHERE placa IN (${marks})`, PLACAS)
-  await Database.from('clientes').whereIn('telefono', [TEL_VISIBLE, TEL_RECURRENTE]).delete()
+  await Database.from('clientes')
+    .whereIn('telefono', [TEL_VISIBLE, TEL_RECURRENTE, TEL_SIN_HISTORIAL])
+    .delete()
   const us = await Database.from('usuarios').where('correo', 'like', `${MARCA}%`).select('id')
   const ids = us.map((u: any) => u.id)
   if (ids.length) {
@@ -299,5 +303,32 @@ test.group('Multi-sede 3c · dateos, búsqueda, clientes y vehículos', (group) 
     const borrarVeh = await client.delete(`/api/vehiculos/${veh}`).headers(otA.h)
     assert.equal(borrarVeh.status(), 409)
     assert.exists(await Database.from('vehiculos').where('id', veh).first())
+  })
+
+  test('sin historial en ninguna sede: visible desde todas (decisión 2026-11-20)', async ({
+    client,
+    assert,
+  }) => {
+    const [cli] = await Database.table('clientes').insert({
+      nombre: 'MS3C SIN HISTORIAL',
+      telefono: TEL_SIN_HISTORIAL,
+    })
+    const [veh] = await Database.table('vehiculos').insert({
+      placa: P.SIN_HISTORIAL,
+      clase_vehiculo_id: claseId,
+      cliente_id: cli,
+    })
+    for (const a of [otA, otB]) {
+      assert.equal((await client.get(`/api/clientes/${cli}`).headers(a.h)).status(), 200)
+      assert.equal((await client.get(`/api/vehiculos/${veh}`).headers(a.h)).status(), 200)
+      const b = await client.get('/api/buscar').qs({ placa: P.SIN_HISTORIAL }).headers(a.h)
+      assert.equal(b.body().vehiculo?.placa, P.SIN_HISTORIAL)
+    }
+    // En cuanto tiene un turno en Ibagué, deja de verse en QA.
+    const t = await crearTurno(client, otA, P.SIN_HISTORIAL)
+    assert.equal(t.status(), 201, JSON.stringify(t.body()))
+    assert.equal((await client.get(`/api/clientes/${cli}`).headers(otB.h)).status(), 404)
+    assert.equal((await client.get(`/api/vehiculos/${veh}`).headers(otB.h)).status(), 404)
+    assert.equal((await client.get(`/api/clientes/${cli}`).headers(otA.h)).status(), 200)
   })
 })
