@@ -34,6 +34,11 @@
 // En la Fase 2 NO se aplica a ningún modelo de negocio; se activa modelo por
 // modelo en las subfases de la Fase 3.
 
+import type {
+  LucidModel,
+  ModelAdapterOptions,
+  ModelQueryBuilderContract,
+} from '@adonisjs/lucid/types/model'
 import type { NormalizeConstructor } from '@adonisjs/core/types/helpers'
 import type { BaseModel } from '@adonisjs/lucid/orm'
 import db from '@adonisjs/lucid/services/db'
@@ -195,8 +200,11 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
     }
 
     /** Consulta SIN filtro de sede (bypass explícito y visible en el código). */
-    static querySinSede(this: any, options?: any) {
-      const q = this.query(options)
+    static querySinSede<M extends LucidModel>(
+      this: M,
+      options?: ModelAdapterOptions
+    ): ModelQueryBuilderContract<M> {
+      const q = this.query(options) as any
       q[SIN_SEDE] = true
       return q
     }

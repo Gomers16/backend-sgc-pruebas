@@ -558,8 +558,11 @@ export default class TicketsExcepcionDateoController {
         })
       }
 
-      // 1. Carga el turno del ticket.
-      const turno = await TurnoRtm.query({ client: trx }).where('id', detalle.turnoId).first()
+      // 1. Carga el turno del ticket (sin filtro: si es de otra sede es un
+      // 409 explícito, no un "no encontrado").
+      const turno = await TurnoRtm.querySinSede({ client: trx })
+        .where('id', detalle.turnoId)
+        .first()
       if (!turno) {
         await trx.rollback()
         return response.notFound({ message: 'Turno del ticket no encontrado' })
@@ -918,8 +921,17 @@ export default class TicketsExcepcionDateoController {
         }
       }
 
-      const turno = await TurnoRtm.query({ client: trx }).where('id', detalle.turnoId).first()
+      // Sin filtro: turno o comisión de otra sede → 409 explícito (abajo).
+      const turno = await TurnoRtm.querySinSede({ client: trx })
+        .where('id', detalle.turnoId)
+        .first()
       if (!turno) return cortar(404, { message: 'Turno del ticket no encontrado' })
+      if (turno.sedeId !== ticket.sedeId) {
+        return cortar(409, {
+          code: 'TICKET_OTRA_SEDE',
+          message: 'El ticket y su turno no son de la misma sede.',
+        })
+      }
       const dateo = turno.captacionDateoId
         ? await CaptacionDateo.query({ client: trx })
             .where('id', turno.captacionDateoId)
@@ -934,7 +946,8 @@ export default class TicketsExcepcionDateoController {
       }
 
       // Comisión: solo PENDIENTE y fuera de liquidaciones.
-      const comisiones = await Comision.query({ client: trx })
+      // sede: sin filtro a propósito; una comisión de otra sede es un 409 (abajo)
+      const comisiones = await Comision.querySinSede({ client: trx })
         .where('captacion_dateo_id', dateo.id)
         .where('tipo_servicio', 'RTM')
         .whereNot('estado', 'ANULADA')
