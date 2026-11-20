@@ -378,6 +378,7 @@ export default class CaptacionDateosController {
       // Turno cancelado/inactivo vinculado no bloquea, ese caso sigue
       // venciendo normal.
       .whereNotExists((sub) => {
+        // sede: correlacionada con el dateo (su turno es de la misma sede)
         sub
           .from('turnos_rtms')
           .whereColumn('turnos_rtms.captacion_dateo_id', 'captacion_dateos.id')
@@ -399,9 +400,11 @@ export default class CaptacionDateosController {
 
           const placaNormalizada = dateo.placa?.replace(/[\s-]/g, '').toUpperCase()
           if (placaNormalizada) {
+            // sede: solo prospectos de la sede del dateo (o sin sede)
             const resultadoPlaca = await Prospecto.query({ client: trx })
               .where('archivado', true)
               .whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placaNormalizada])
+              .where((q) => q.where('sede_id', dateo.sedeId ?? 0).orWhereNull('sede_id'))
               .update({ archivado: false })
 
             console.log(
@@ -944,8 +947,7 @@ export default class CaptacionDateosController {
             (request.input('servicio_id') ?? request.input('servicioId')) as unknown
           ),
       esAvance: esAvanceEntrada,
-      comprobanteAvanceUrl:
-        (request.input('comprobante_avance_url') as string | undefined) ?? null,
+      comprobanteAvanceUrl: (request.input('comprobante_avance_url') as string | undefined) ?? null,
     })
     if (!resIntento.ok) {
       return response.status(resIntento.status).send({ message: resIntento.message })
@@ -1309,9 +1311,11 @@ export default class CaptacionDateosController {
 
     if (placa) {
       try {
+        // sede: solo prospectos de la sede del dateo (o sin sede)
         const prospectoEncontrado = await Prospecto.query()
           .where('archivado', false)
           .whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placa])
+          .where((q) => q.where('sede_id', created.sedeId ?? 0).orWhereNull('sede_id'))
           .first()
 
         if (prospectoEncontrado) {
@@ -1320,9 +1324,11 @@ export default class CaptacionDateosController {
           console.log(`🔗 Dateo ${created.id} vinculado con prospecto ${prospectoEncontrado.id}`)
         }
 
+        // sede: solo prospectos de la sede del dateo (o sin sede)
         const resultadoArch = await Prospecto.query()
           .where('archivado', false)
           .whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placa])
+          .where((q) => q.where('sede_id', created.sedeId ?? 0).orWhereNull('sede_id'))
           .update({ archivado: true })
 
         console.log(`✅ Se archivaron ${resultadoArch} prospecto(s) con placa ${placa}`)

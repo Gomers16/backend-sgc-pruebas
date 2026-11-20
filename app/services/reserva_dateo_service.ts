@@ -155,6 +155,7 @@ export async function dateoConsumidoPorOtroTurno(
 ): Promise<boolean> {
   if (!dateo.consumidoTurnoId) return false
   const { default: Database } = await import('@adonisjs/lucid/services/db')
+  // sede: por id del turno que consumió el dateo (misma sede que el dateo)
   const fila = await (trx ?? Database)
     .from('turnos_rtms')
     .where('id', dateo.consumidoTurnoId)

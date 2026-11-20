@@ -1137,6 +1137,7 @@ export default class TurnosRtmController {
           mesesDesdeUltimaVisita = meses
 
           if (captacionDateoId) {
+            // sede: por id del dateo ya resuelto con el mixin en la sede del turno
             const dateoActual = await Database.from('captacion_dateos')
               .where('id', captacionDateoId)
               .first()
@@ -1247,6 +1248,7 @@ export default class TurnosRtmController {
       const turno = await TurnoRtm.create(payload, { client: trx })
 
       if (captacionDateoId) {
+        // sede: por id del dateo ya resuelto con el mixin en la sede del turno
         await CaptacionDateo.query({ client: trx })
           .where('id', captacionDateoId)
           .update({
