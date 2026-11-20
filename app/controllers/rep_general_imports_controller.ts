@@ -149,7 +149,9 @@ export default class RepGeneralImportController {
         sedeIdValido = sedeDefault.id
       }
 
-      const configGlobal = await preferirConfigDeSede(db.from('configuracion_recurrencia_global')).first()
+      const configGlobal = await preferirConfigDeSede(
+        db.from('configuracion_recurrencia_global')
+      ).first()
       const mesesMinimos: number = configGlobal?.meses_minimos ?? this.MESES_MINIMOS_DEFAULT
 
       let clientesCreados = 0
@@ -1193,7 +1195,9 @@ export default class RepGeneralImportController {
     console.log(`   🚗 tipoVehiculo: ${tipoVehiculo} | esMoto: ${esMoto}`)
 
     const asesorId = comision.asesorId
-    const configGlobal = await preferirConfigDeSede(db.from('configuracion_recurrencia_global')).first()
+    const configGlobal = await preferirConfigDeSede(
+      db.from('configuracion_recurrencia_global')
+    ).first()
 
     let valorRecurrente: number
 
