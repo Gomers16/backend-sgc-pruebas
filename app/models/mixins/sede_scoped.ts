@@ -13,6 +13,11 @@
 //
 // Fail-closed: sin sede activa (request, conSede() o sinFiltroDeSede()) la
 // consulta lanza error. Bypass por consulta: Modelo.querySinSede().
+// Editar o borrar (before:update / before:delete) con "todas" → error 400:
+// "todas" es solo lectura.
+// Opcionales (3d): sedeGlobalSi (filas con sede NULL que valen para toda
+// sede, p. ej. la configuración de comisiones) y resolverSedeAlCrear (sede
+// derivada de los datos del registro, que tiene que ser la sede activa).
 //
 // LÍMITES (verificados en tests/functional/multisede_fase2_mixin.spec.ts):
 //  - Los hooks solo corren en SELECT del query builder del modelo:
@@ -53,6 +58,13 @@ export interface SedeVia {
 }
 
 const IDENT = /^[a-z_][a-z0-9_]*$/
+/** Condición de fila global: "columna = entero" (p. ej. "es_config = 1"). */
+const COND_GLOBAL = /^([a-z_][a-z0-9_]*) = (\d+)$/
+
+/** Resultado de resolverSedeAlCrear: número = esa sede; null = fila global; undefined = sede activa. */
+export type SedeAlCrear = number | null | undefined
+
+const SOLO_LECTURA = 'Para operar debes elegir una sede concreta (no "todas").'
 
 /**
  * Agrupa los where que ya tiene la consulta en un paréntesis (API pública de
@@ -66,16 +78,27 @@ function agruparWheres(query: Qb) {
   if (typeof q.wrapExisting === 'function') q.wrapExisting()
 }
 
-function filtrar(query: Qb, tabla: string, columna: string, via: SedeVia | null) {
+function filtrar(
+  query: Qb,
+  tabla: string,
+  columna: string,
+  via: SedeVia | null,
+  globalSi: string | null
+) {
   if (query[SIN_SEDE] || query[YA_FILTRADO]) return
   const s = scopeObligatorio()
   if (!s) return // bypass explícito
   agruparWheres(query)
+  // Ids enteros validados por la resolución de la sede: van en línea.
+  const ids = s.sedeIds.length ? s.sedeIds.map((n) => Math.trunc(n)).join(',') : 'NULL'
   if (via) {
-    // Ids enteros validados por la resolución de la sede: van en línea.
-    const ids = s.sedeIds.length ? s.sedeIds.map((n) => Math.trunc(n)).join(',') : 'NULL'
     ;(query as any).whereRaw(
       `${tabla}.${via.columna} IN (SELECT ${via.tablaPadre}.id FROM ${via.tablaPadre} WHERE ${via.tablaPadre}.sede_id IN (${ids}))`
+    )
+  } else if (globalSi) {
+    // Filas globales (sede NULL que cumplen la condición) visibles desde toda sede.
+    ;(query as any).whereRaw(
+      `(${tabla}.${columna} IN (${ids}) OR (${tabla}.${columna} IS NULL AND ${tabla}.${globalSi}))`
     )
   } else {
     query.whereIn(`${tabla}.${columna}`, s.sedeIds)
@@ -91,6 +114,20 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
     static sedeAtributo = 'sedeId'
     /** Hijo sin sede_id propio: filtra por la sede de su padre. */
     static sedeVia: SedeVia | null = null
+    /**
+     * Filas GLOBALES: con sede NULL y esta condición ("columna = entero") se ven
+     * desde cualquier sede (p. ej. comisiones "es_config = 1"). Las demás filas
+     * con sede NULL siguen invisibles (fail-closed).
+     */
+    static sedeGlobalSi: string | null = null
+    /**
+     * Sede del registro al crearlo, derivada de sus datos (p. ej. la comisión
+     * toma la del turno/dateo). number = esa sede (tiene que ser la activa;
+     * si no, 409); null = fila global (solo con sedeGlobalSi); undefined = la
+     * sede activa. Sin definir = la sede activa.
+     */
+    static resolverSedeAlCrear: ((instancia: any, cliente: any) => Promise<SedeAlCrear>) | null =
+      null
 
     static boot() {
       if (this.booted) return
@@ -100,7 +137,11 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
       if (via && (!IDENT.test(via.columna) || !IDENT.test(via.tablaPadre))) {
         throw new Error(`SedeScoped: sedeVia inválido en ${modelo.name}`)
       }
-      const f = (q: any) => filtrar(q, modelo.table, modelo.sedeColumna, via)
+      const globalSi = modelo.sedeGlobalSi
+      if (globalSi && !COND_GLOBAL.test(globalSi)) {
+        throw new Error(`SedeScoped: sedeGlobalSi inválido en ${modelo.name}`)
+      }
+      const f = (q: any) => filtrar(q, modelo.table, modelo.sedeColumna, via, globalSi)
       this.before('find', f)
       this.before('fetch', f)
       this.before('paginate', ([countQ, q]: any[]) => {
@@ -111,9 +152,25 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
         const s = scopeObligatorio()
         if (!s) return // bypass: se respeta lo que traiga
         if (s.todas || !s.sedeEscritura) {
-          throw new SedeScopeError('Para operar debes elegir una sede concreta (no "todas").', 400)
+          throw new SedeScopeError(SOLO_LECTURA, 400)
         }
         if (!via) {
+          const cliente = instancia.$trx ?? db
+          const r = modelo.resolverSedeAlCrear
+            ? await modelo.resolverSedeAlCrear(instancia, cliente)
+            : undefined
+          if (r === null) {
+            if (!globalSi) throw new Error(`SedeScoped: ${modelo.name} no admite filas globales`)
+            instancia[modelo.sedeAtributo] = null
+            return
+          }
+          if (typeof r === 'number') {
+            if (r !== s.sedeEscritura) {
+              throw new SedeScopeError('El registro pertenece a otra sede.', 409)
+            }
+            instancia[modelo.sedeAtributo] = r
+            return
+          }
           instancia[modelo.sedeAtributo] = s.sedeEscritura
           return
         }
@@ -128,6 +185,13 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
           throw new SedeScopeError('Registro padre no encontrado en la sede activa.', 404)
         }
       })
+      // "Todas" es solo lectura: editar o borrar un registro también exige sede concreta.
+      const soloLectura = async () => {
+        const s = scopeObligatorio()
+        if (s && (s.todas || !s.sedeEscritura)) throw new SedeScopeError(SOLO_LECTURA, 400)
+      }
+      this.before('update', soloLectura)
+      this.before('delete', soloLectura)
     }
 
     /** Consulta SIN filtro de sede (bypass explícito y visible en el código). */
