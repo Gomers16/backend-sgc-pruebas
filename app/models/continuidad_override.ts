@@ -1,6 +1,8 @@
 // app/models/continuidad_override.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import AgenteCaptacion from '#models/agente_captacion'
@@ -9,7 +11,11 @@ import Usuario from '#models/usuario'
 
 export type ContinuidadOverrideEstado = 'AUTOMATICO' | 'FORZAR_SI' | 'FORZAR_NO'
 
-export default class ContinuidadOverride extends BaseModel {
+export default class ContinuidadOverride extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3c): la continuidad es por sede; el mixin pone la sede al crear.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'continuidad_overrides'
 
   @column({ isPrimary: true })

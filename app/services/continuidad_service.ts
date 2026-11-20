@@ -26,6 +26,7 @@
 import Database from '@adonisjs/lucid/services/db'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import { DateTime } from 'luxon'
+import { aplicarSede } from '#services/sede_scope'
 
 export type EstadoContinuidad = 'CONTINUA' | 'ROTA' | 'SIN_EVIDENCIA'
 
@@ -56,8 +57,9 @@ export async function evaluarContinuidad(
   const { placa, asesorConvenioId = null, convenioId = null, excluirTurnoId = null } = params
   if (!asesorConvenioId && !convenioId) return 'SIN_EVIDENCIA'
 
+  // Multi-sede: la continuidad es por sede (overrides e historial de la sede activa).
   // 1) Override manual — tiene la última palabra.
-  const override = await cliente
+  const overrideQuery = cliente
     .from('continuidad_overrides')
     .where('placa', placa)
     .where((qb) => {
@@ -65,7 +67,7 @@ export async function evaluarContinuidad(
       if (convenioId) qb.orWhere('convenio_id', convenioId)
     })
     .orderBy('updated_at', 'desc')
-    .first()
+  const override = await aplicarSede(overrideQuery, 'continuidad_overrides.sede_id').first()
 
   if (override?.estado === 'FORZAR_SI') return 'CONTINUA'
   if (override?.estado === 'FORZAR_NO') return 'ROTA'
@@ -80,6 +82,7 @@ export async function evaluarContinuidad(
     .where('es_segunda_vez', 0)
     .orderBy('fecha', 'asc')
     .select('id', 'captacion_dateo_id')
+  aplicarSede(query, 'turnos_rtms.sede_id')
   if (excluirTurnoId) query.whereNot('id', excluirTurnoId)
 
   const todosLosTurnos = await query
@@ -92,6 +95,7 @@ export async function evaluarContinuidad(
     const dateoId = turno.captacion_dateo_id
     if (!dateoId) return 'ROTA' // Visita sin dateo (otro canal) → rompe
 
+    // sede: por id del dateo de un turno de la sede activa
     const dateo = await cliente
       .from('captacion_dateos')
       .where('id', dateoId)

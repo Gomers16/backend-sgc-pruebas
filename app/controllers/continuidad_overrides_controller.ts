@@ -3,6 +3,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
 import Cliente from '#models/cliente'
 import ContinuidadOverride from '#models/continuidad_override'
+import { aplicarSede } from '#services/sede_scope'
 
 function normalizePlaca(v?: string | null) {
   return v ? v.replace(/[\s-]/g, '').toUpperCase() : null
@@ -25,17 +26,23 @@ export default class ContinuidadOverridesController {
 
     if (!placa && cedula) {
       const cliente = await Cliente.query().where('doc_numero', cedula).first()
-      if (!cliente) return response.notFound({ message: 'No se encontró un cliente con esa cédula' })
+      if (!cliente)
+        return response.notFound({ message: 'No se encontró un cliente con esa cédula' })
 
-      const placas = await Database.from('turnos_rtms')
-        .where('cliente_id', cliente.id)
-        .whereNotNull('placa')
-        .distinct('placa')
-        .orderBy('placa', 'asc')
-        .select('placa')
+      // Multi-sede: solo placas con turnos en la sede activa; un cliente sin
+      // turnos aquí no se ve en esta sede (identidad global, visibilidad por sede).
+      const placas = await aplicarSede(
+        Database.from('turnos_rtms')
+          .where('cliente_id', cliente.id)
+          .whereNotNull('placa')
+          .distinct('placa')
+          .orderBy('placa', 'asc')
+          .select('placa'),
+        'sede_id'
+      )
 
       if (placas.length === 0) {
-        return response.ok({ cliente: { id: cliente.id, nombre: cliente.nombre }, placas: [] })
+        return response.notFound({ message: 'No se encontró un cliente con esa cédula' })
       }
       if (placas.length > 1) {
         return response.ok({
@@ -48,7 +55,8 @@ export default class ContinuidadOverridesController {
 
     if (!placa) return response.badRequest({ message: 'Debe indicar placa o cédula' })
 
-    const visitas = await Database.from('turnos_rtms as t')
+    // sede: visitas de la sede activa (aplicarSede sobre t.sede_id)
+    const visitasQuery = Database.from('turnos_rtms as t')
       .leftJoin('captacion_dateos as cd', 't.captacion_dateo_id', 'cd.id')
       .leftJoin('agentes_captacions as ag', 'cd.asesor_convenio_id', 'ag.id')
       .leftJoin('agentes_captacions as agc', 'cd.agente_id', 'agc.id')
@@ -70,6 +78,7 @@ export default class ContinuidadOverridesController {
         'agc.nombre as agenteNombre',
         'cv.nombre as convenioNombre'
       )
+    const visitas = await aplicarSede(visitasQuery, 't.sede_id')
 
     const overrides = await ContinuidadOverride.query()
       .where('placa', placa)
@@ -105,7 +114,9 @@ export default class ContinuidadOverridesController {
     if (!['AUTOMATICO', 'FORZAR_SI', 'FORZAR_NO'].includes(estado))
       return response.badRequest({ message: 'estado inválido (AUTOMATICO, FORZAR_SI, FORZAR_NO)' })
     if (estado !== 'AUTOMATICO' && !motivo)
-      return response.badRequest({ message: 'motivo es obligatorio cuando estado no es AUTOMATICO' })
+      return response.badRequest({
+        message: 'motivo es obligatorio cuando estado no es AUTOMATICO',
+      })
 
     const query = ContinuidadOverride.query().where('placa', placa)
     if (asesorConvenioId) query.where('asesor_convenio_id', asesorConvenioId)
