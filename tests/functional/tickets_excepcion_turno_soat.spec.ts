@@ -75,6 +75,7 @@ test.group('Tickets · Excepción de Dateo sobre turno SOAT', (group) => {
     admin = await crearUsuario('ADMIN', ROL.SUPER_ADMIN)
     await crearUsuario('GERENCIA', ROL.GERENCIA)
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKS COMERCIAL ${Date.now().toString(36).toUpperCase()}`,
     } as any)

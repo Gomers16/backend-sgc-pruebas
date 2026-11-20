@@ -49,6 +49,7 @@ test.group('Súper Informe · meta comercial por asesor', (group) => {
 
     const crear = (sufijo: string) =>
       AgenteCaptacion.create({
+        sedeId: SEDE_ID,
         tipo: 'ASESOR_COMERCIAL',
         nombre: `TEST SI META ${sufijo} ${Date.now()}`,
         activo: true,

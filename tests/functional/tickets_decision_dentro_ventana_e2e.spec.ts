@@ -221,14 +221,17 @@ test.group('Tickets · decisión de comisión dentro de ventana', (group) => {
 
     const sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKV COMERCIAL ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKV CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKV CONVENIO ${sufijo}`,
       activo: true,

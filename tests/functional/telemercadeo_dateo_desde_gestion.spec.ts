@@ -68,7 +68,8 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
   }
 
   async function agente(tipo: string, nombre: string, usuarioId: number | null) {
-    const a = await AgenteCaptacion.create({ tipo, nombre, usuarioId } as any)
+    const a = await AgenteCaptacion.create({
+ sedeId: SEDE_ID, tipo, nombre, usuarioId } as any)
     agentes.push(a)
     return a
   }
@@ -402,7 +403,8 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     client,
     assert,
   }) => {
-    const [prospectoId] = await Database.table('prospectos').insert({ placa: 'TLG109' })
+    const [prospectoId] = await Database.table('prospectos').insert({
+ sede_id: SEDE_ID, placa: 'TLG109' })
     const g = await gestion(client, 'TLG109')
     const r = await datear(client, 'TELE_A', { placa: 'TLG109', telemercadeo_gestion_id: g.id })
     r.assertStatus(201)

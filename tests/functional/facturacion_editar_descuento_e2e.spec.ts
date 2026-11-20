@@ -60,11 +60,13 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
       tokens[clave] = tok.value!.release()
     }
     convenioAsesor = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST EDITAR DESC CONVENIO ASESOR ${RUN}`,
       activo: true,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'TALLER',
       nombre: `TEST EDITAR DESC CONVENIO ${RUN}`,
       activo: true,

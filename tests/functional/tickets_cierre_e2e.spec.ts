@@ -197,24 +197,29 @@ test.group('Tickets · Fase 7 cierre', (group) => {
 
     const sufijo = Date.now().toString(36).toUpperCase()
     agenteA = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKCI COMERCIAL A ${sufijo}`,
       usuarioId: ids.COMERCIAL_A.id,
     } as any)
     agenteB = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKCI COMERCIAL B ${sufijo}`,
       usuarioId: ids.COMERCIAL_B.id,
     } as any)
     agenteVentana = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKCI VENTANA ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKCI ASESOR CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKCI CONVENIO ${sufijo}`,
       activo: true,

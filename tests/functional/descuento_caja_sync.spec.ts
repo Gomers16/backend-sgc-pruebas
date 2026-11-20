@@ -49,12 +49,14 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
     token = tokenObj.value!.release()
 
     convenioAsesor = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST CONVENIO ASESOR ${Date.now()}`,
       activo: true,
     } as any)
 
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'TALLER',
       nombre: `TEST CONVENIO ${Date.now()}`,
       activo: true,

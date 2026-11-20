@@ -91,20 +91,24 @@ test.group('Continuidad · transacción opcional', (group) => {
     token = tokenObj.value!.release()
     const sufijo = Date.now().toString(36).toUpperCase()
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKK CONVENIO ${sufijo}`,
     } as any)
     otroAsesor = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKK OTRO ${sufijo}`,
     } as any)
     convNuevo = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKK CONVENIO ${sufijo}`,
       activo: true,
       asesorConvenioId: asesorConvenio.id,
     } as any)
     convViejo = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKK OTRO ${sufijo}`,
       activo: true,

@@ -186,11 +186,13 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     const tokenObj = await Usuario.accessTokens.create(admin)
     token = tokenObj.value!.release()
     agenteConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: 'TEST GZC AGENTE CONVENIO',
       activo: true,
     } as any)
     agenteComercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST GZC AGENTE COMERCIAL',
       activo: true,
@@ -822,11 +824,13 @@ test.group('Cédula convenio en Excel de liquidación', (group) => {
     } as any)
     token = (await Usuario.accessTokens.create(admin)).value!.release()!
     agenteConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: 'TEST GZD ASESOR CONVENIO',
       activo: true,
     } as any)
     agenteComercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST GZD COMERCIAL',
       activo: true,
@@ -839,6 +843,7 @@ test.group('Cédula convenio en Excel de liquidación', (group) => {
     }
     for (const k of CLAVES) {
       const [id] = await Database.table('convenios').insert({
+        sede_id: SEDE_ID,
         tipo: 'PERSONA',
         nombre: `TEST GZD CONVENIO ${k}`,
         doc_tipo: docs[k] ? 'CC' : null,

@@ -8,7 +8,9 @@ import Database from '@adonisjs/lucid/services/db'
 
 const PLACA_1 = 'TST997'
 const PLACA_2 = 'TST996'
-const AGENTE_ID = 1
+// Multi-sede: asesor de la sede de pruebas (QAT ELENA CONVENIO, ASESOR_CONVENIO con
+// convenio, igual que el id 1 de Ibagué que se usaba antes; el de otra sede ya no se ve).
+const AGENTE_ID = 1833
 const SEDE_ID = 3
 const ROL_SUPER_ADMIN_ID = 9
 const SERVICIO_RTM_ID = 1

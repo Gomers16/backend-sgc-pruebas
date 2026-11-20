@@ -129,16 +129,19 @@ test.group('Tickets · Fase 1 seguridad y robustez', (group) => {
     await crearUsuario('COMERCIAL_B', ROL.COMERCIAL)
 
     agenteA = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST TK SEG COMERCIAL A',
       usuarioId: ids.COMERCIAL_A.id,
     } as any)
     agenteB = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST TK SEG COMERCIAL B',
       usuarioId: ids.COMERCIAL_B.id,
     } as any)
     convenioInactivo = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: 'TEST TK SEG CONVENIO INACTIVO',
       activo: false,

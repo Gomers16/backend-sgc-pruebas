@@ -18,7 +18,9 @@ import Comision from '#models/comision'
 
 const SEDE_ID = 3
 const SERVICIO_RTM_ID = 1
-const AGENTE_COMERCIAL_ID = 1
+// Multi-sede: asesor de la sede de pruebas (QAT ELENA CONVENIO, ASESOR_CONVENIO con
+// convenio, igual que el id 1 de Ibagué que se usaba antes; el de otra sede ya no se ve).
+const AGENTE_COMERCIAL_ID = 1833
 const ROL_SUPER_ADMIN = 9
 const DESCUENTO = { INFORMATIVO: 1, EMPLEADO: 3, OBSEQUIO: 6 }
 const FIJO_EMPLEADO = 60000
@@ -48,11 +50,13 @@ test.group('Comisiones: desglose del motor = previsualización = guardado = GET'
     const tokenObj = await Usuario.accessTokens.create(admin)
     token = tokenObj.value!.release()
     convenioAsesor = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST DESGLOSE CONVENIO ASESOR ${RUN}`,
       activo: true,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'TALLER',
       nombre: `TEST DESGLOSE CONVENIO ${RUN}`,
       activo: true,

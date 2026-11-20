@@ -211,14 +211,17 @@ test.group('Tickets · corrección del convenio después de aprobar', (group) =>
 
     const sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKCC COMERCIAL ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKCC ASESORCONV ${sufijo}`,
     } as any)
     convenioAsesor = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKCC ASESORCONV ${sufijo}`,
       activo: true,
@@ -226,6 +229,7 @@ test.group('Tickets · corrección del convenio después de aprobar', (group) =>
     } as any)
     const nuevoConvenio = (nombre: string) =>
       Convenio.create({
+        sedeId: SEDE_ID,
         tipo: 'PERSONA',
         nombre: `TEST TKCC ${nombre} ${sufijo}`,
         activo: true,

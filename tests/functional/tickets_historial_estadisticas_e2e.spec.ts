@@ -177,23 +177,28 @@ test.group('Tickets · Fase 5 historial y estadísticas', (group) => {
 
     const sufijo = Date.now().toString(36).toUpperCase()
     agenteA = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKF5 A ${sufijo}`,
       usuarioId: usuarioComercial.id,
     } as any)
     agenteB = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKF5 B ${sufijo}`,
     } as any)
     agenteC = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKF5 C ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKF5 CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKF5 CONVENIO ${sufijo}`,
       activo: true,

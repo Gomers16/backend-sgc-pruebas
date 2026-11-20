@@ -216,18 +216,22 @@ test.group('Tickets · Fase 4 decisión de comisión separada', (group) => {
 
     const sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKDC COMERCIAL ${sufijo}`,
     } as any)
     comercialSinConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKDC DIRECTO ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKDC CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKDC CONVENIO ${sufijo}`,
       activo: true,

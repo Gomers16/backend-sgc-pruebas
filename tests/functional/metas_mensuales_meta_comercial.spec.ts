@@ -45,6 +45,7 @@ test.group('Metas mensuales · meta del mes desde meta_comercial_asesor', (group
     token = (await Usuario.accessTokens.create(usuario)).value!.release()
 
     asesor = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST METAS MENSUALES ${Date.now()}`,
       activo: true,
@@ -165,11 +166,13 @@ test.group('Metas configuradas · meta del mes en curso (solo lectura)', (group)
     token = (await Usuario.accessTokens.create(usuario)).value!.release()
 
     conMeta = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST METAS CONFIG CON META ${Date.now()}`,
       activo: true,
     } as any)
     sinMeta = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST METAS CONFIG SIN META ${Date.now()}`,
       activo: true,

@@ -77,7 +77,8 @@ test.group('Telemercadeo · gestiones', (group) => {
   }
 
   async function agente(tipo: string, nombre: string, usuarioId: number | null) {
-    const a = await AgenteCaptacion.create({ tipo, nombre, usuarioId } as any)
+    const a = await AgenteCaptacion.create({
+ sedeId: SEDE_ID, tipo, nombre, usuarioId } as any)
     agentes.push(a)
     return a
   }

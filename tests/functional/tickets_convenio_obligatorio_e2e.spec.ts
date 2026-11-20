@@ -188,21 +188,25 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
 
     sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKCV COMERCIAL ${sufijo}`,
       usuarioId: usuarioComercial.id,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKCV ASESORCONV ${sufijo}`,
     } as any)
     convenioAsesor = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKCV ASESORCONV ${sufijo}`,
       activo: true,
       asesorConvenioId: asesorConvenio.id,
     } as any)
     convenioAsignado = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKCV ASIGNADO ${sufijo}`,
       establecimiento: `TALLER TKCV ${sufijo}`,
@@ -210,6 +214,7 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
       asesorConvenioId: asesorConvenio.id,
     } as any)
     convenioNoAsignado = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKCV OTRO ${sufijo}`,
       activo: true,
@@ -224,6 +229,7 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
 
     const usuarioTele = await crearUsuario('TELE', ROL.COMERCIAL)
     tele = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_TELEMERCADEO',
       nombre: `TEST TKCV TELE ${sufijo}`,
       usuarioId: usuarioTele.id,

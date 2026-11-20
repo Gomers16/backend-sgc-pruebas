@@ -242,7 +242,10 @@ test.group('Segunda vez · flujo B1', (group) => {
       servicioId: SERVICIO.RTM,
       resultado: 'PENDIENTE',
     } as any)
-    const agente = await Database.from('agentes_captacions').select('id').first()
+    const agente = await Database.from('agentes_captacions')
+      .where('sede_id', SEDE_ID)
+      .select('id')
+      .first()
 
     const r1 = await crearTurnoHttp(client, P.DIA1)
     r1.assertStatus(409)
@@ -476,7 +479,10 @@ test.group('Segunda vez · flujo B1', (group) => {
   }) => {
     const origen = await origenRechazado(P.GUARDS)
     const sv = await turnoDirecto(P.GUARDS, { esSegundaVez: true, turnoOrigenId: origen.id })
-    const agente = await Database.from('agentes_captacions').select('id').first()
+    const agente = await Database.from('agentes_captacions')
+      .where('sede_id', SEDE_ID)
+      .select('id')
+      .first()
     const auth = { Authorization: `Bearer ${tokens.ADMIN}` }
 
     const tStore = await client
@@ -610,7 +616,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     client,
     assert,
   }) => {
-    const convenio = await Database.from('convenios').select('id').first()
+    const convenio = await Database.from('convenios').where('sede_id', SEDE_ID).select('id').first()
     assert.exists(convenio, 'se necesita al menos un convenio en la BD')
     const dateo = await CaptacionDateo.create({
       sedeId: SEDE_ID,
@@ -813,8 +819,12 @@ test.group('Segunda vez · flujo B1', (group) => {
 
   // ───────── Búsqueda unificada: dateo automático de convenio ─────────
   async function buscarConProspectoConvenio(client: any, placa: string) {
-    const convenio = await Database.from('convenios').select('id').first()
-    await Database.table('prospectos').insert({ placa, convenio_id: convenio.id })
+    const convenio = await Database.from('convenios').where('sede_id', SEDE_ID).select('id').first()
+    await Database.table('prospectos').insert({
+      sede_id: SEDE_ID,
+      placa,
+      convenio_id: convenio.id,
+    })
     const antes = await CaptacionDateo.query().where('placa', placa)
     const r = await client
       .get('/api/buscar')

@@ -55,6 +55,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     token = tokenObj.value!.release()
 
     agenteTest = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST TICKET E2E COMERCIAL',
     } as any)

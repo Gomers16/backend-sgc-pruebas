@@ -47,6 +47,7 @@ test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep G
     token = tokenObj.value!.release()
 
     agenteTest = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: 'TEST REPGENERAL GUARD COMERCIAL',
     } as any)

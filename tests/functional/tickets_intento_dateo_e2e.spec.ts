@@ -169,20 +169,24 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
 
     const sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKIN COMERCIAL ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKIN CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKIN CONVENIO ${sufijo}`,
       activo: true,
       asesorConvenioId: asesorConvenio.id,
     } as any)
     convenioNoAsignado = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKIN OTRO ${sufijo}`,
       activo: true,

@@ -171,14 +171,17 @@ test.group('Tickets · comisiones con ticket de origen y bloqueo del $0', (group
     await crearUsuario('CONTABILIDAD', ROL.CONTABILIDAD)
     const sufijo = Date.now().toString(36).toUpperCase()
     comercial = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_COMERCIAL',
       nombre: `TEST TKO COMERCIAL ${sufijo}`,
     } as any)
     asesorConvenio = await AgenteCaptacion.create({
+      sedeId: SEDE_ID,
       tipo: 'ASESOR_CONVENIO',
       nombre: `TEST TKO CONVENIO ${sufijo}`,
     } as any)
     convenio = await Convenio.create({
+      sedeId: SEDE_ID,
       tipo: 'PERSONA',
       nombre: `TEST TKO CONVENIO ${sufijo}`,
       activo: true,
