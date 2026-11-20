@@ -29,6 +29,11 @@ const MODO = process.env.SNAPSHOT_IBAGUE
 const DIR =
   process.env.SNAPSHOT_IBAGUE_DIR ?? 'C:/Users/ggyt1/backups/multisede/snapshot_reportes_ibague'
 const MANIFIESTO = path.join(DIR, 'manifiesto.json')
+// Parte operativa (clientes, vehículos, búsqueda y cola de telemercadeo):
+// manifiesto aparte. La cola depende de "hoy" (meses transcurridos, por
+// vencer): recapturar ese manifiesto el día en que se compare
+// (SNAPSHOT_IBAGUE=capturar_operativo).
+const MANIFIESTO_OPERATIVO = path.join(DIR, 'manifiesto_operativo.json')
 const SEDE_QA = 3
 const MARCA = 'test.snapibague.'
 const DESDE = '2026-06-01'
@@ -106,6 +111,49 @@ function hashDe(body: Json, volatiles: string[]): string {
 
 function archivoDe(url: string): string {
   return url.replace(/^\/api\/reportes-admin\//, '').replace(/[^a-zA-Z0-9]+/g, '_') + '.json'
+}
+
+/** URLs operativas de Ibagué: listados completos y búsquedas de muestra. */
+async function urlsOperativas(): Promise<string[]> {
+  const urls: string[] = []
+  const [{ n: nCli }] = await Database.from('clientes').count('* as n')
+  for (let p = 1; p <= Math.ceil(Number(nCli) / 100) + 1; p++) {
+    urls.push(`/api/clientes?perPage=100&page=${p}`)
+  }
+  const [{ n: nVeh }] = await Database.from('vehiculos').count('* as n')
+  for (let p = 1; p <= Math.ceil(Number(nVeh) / 100) + 1; p++) {
+    urls.push(`/api/vehiculos?perPage=100&page=${p}`)
+  }
+  // Búsqueda: placas con turno en Ibagué, placas sin historial y teléfonos.
+  const conTurno = await Database.from('turnos_rtms')
+    .where('sede_id', 1)
+    .whereNotNull('placa')
+    .distinct('placa')
+    .orderBy('placa')
+    .limit(25)
+  const sinHistorial = await Database.from('vehiculos')
+    .whereNotExists((q) =>
+      q.from('turnos_rtms').whereColumn('turnos_rtms.placa', 'vehiculos.placa')
+    )
+    .orderBy('id')
+    .limit(25)
+    .select('placa')
+  for (const r of [...conTurno, ...sinHistorial] as any[]) {
+    urls.push(`/api/buscar?placa=${encodeURIComponent(r.placa)}`)
+  }
+  const tels = await Database.from('clientes')
+    .whereNotNull('telefono')
+    .orderBy('id')
+    .limit(25)
+    .select('telefono')
+  for (const r of tels as any[]) urls.push(`/api/buscar?telefono=${encodeURIComponent(r.telefono)}`)
+  // Cola de telemercadeo (depende de "hoy": ver MANIFIESTO_OPERATIVO).
+  for (const lista of ['POR_VENCER', 'CLIENTES']) {
+    for (let p = 1; p <= 3; p++) {
+      urls.push(`/api/telemercadeo/cola?lista=${lista}&page=${p}&per_page=50`)
+    }
+  }
+  return urls
 }
 
 /** URLs del snapshot. Parámetros dinámicos se eligen al capturar y quedan en el manifiesto. */
@@ -230,6 +278,29 @@ async function limpiar() {
   await Database.from('usuarios').whereIn('id', ids).delete()
 }
 
+async function capturarOperativo(pedir: (url: string) => Promise<{ status: number; body: Json }>) {
+  await fs.mkdir(DIR, { recursive: true })
+  const entradas: Entrada[] = []
+  for (const url of await urlsOperativas()) {
+    const a = await pedir(url)
+    const b = await pedir(url)
+    const volatiles = [...diferencias(canon(a.body), canon(b.body))]
+    entradas.push({ url, status: a.status, hash: hashDe(a.body, volatiles), volatiles })
+    await fs.writeFile(
+      path.join(DIR, 'op_' + archivoDe(url)),
+      JSON.stringify(canon(a.body), null, 1)
+    )
+  }
+  await fs.writeFile(
+    MANIFIESTO_OPERATIVO,
+    JSON.stringify({ capturado_at: new Date().toISOString(), entradas }, null, 2)
+  )
+  const no2xx = entradas.filter((e) => e.status >= 300)
+  console.log(
+    `[snapshot operativo] ${entradas.length} URLs; no-2xx: ${no2xx.map((e) => `${e.status} ${e.url}`).join(' | ') || 'ninguno'}`
+  )
+}
+
 test.group('Snapshot reportes Ibagué (opcional: SNAPSHOT_IBAGUE)', (group) => {
   group.each.timeout(600_000)
   let headers: Record<string, string> = {}
@@ -257,6 +328,11 @@ test.group('Snapshot reportes Ibagué (opcional: SNAPSHOT_IBAGUE)', (group) => {
     const pedir = async (url: string) => {
       const res = await client.get(url).headers(headers)
       return { status: res.status(), body: res.body() as Json }
+    }
+
+    if (MODO === 'capturar_operativo') {
+      await capturarOperativo(pedir)
+      return
     }
 
     if (MODO === 'capturar') {
@@ -312,6 +388,30 @@ test.group('Snapshot reportes Ibagué (opcional: SNAPSHOT_IBAGUE)', (group) => {
         }
       }
       assert.deepEqual(distintos, [], 'Reportes de Ibagué distintos al snapshot')
+
+      // Parte operativa: obligatoria si su manifiesto existe.
+      let manOp: { entradas: Entrada[] } | null = null
+      try {
+        manOp = JSON.parse(await fs.readFile(MANIFIESTO_OPERATIVO, 'utf8'))
+      } catch {
+        console.log(
+          '[snapshot] sin manifiesto operativo: capturarlo con SNAPSHOT_IBAGUE=capturar_operativo'
+        )
+      }
+      if (manOp) {
+        const distintosOp: string[] = []
+        for (const e of manOp.entradas) {
+          const r = await pedir(e.url)
+          if (r.status !== e.status || hashDe(r.body, e.volatiles) !== e.hash) {
+            distintosOp.push(`${e.url} (status ${e.status}→${r.status})`)
+            await fs.writeFile(
+              path.join(DIR, 'op_' + archivoDe(e.url).replace(/\.json$/, '.actual.json')),
+              JSON.stringify(canon(r.body), null, 1)
+            )
+          }
+        }
+        assert.deepEqual(distintosOp, [], 'Clientes/vehículos/búsqueda/cola de Ibagué distintos')
+      }
       return
     }
 

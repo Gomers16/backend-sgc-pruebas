@@ -61,8 +61,8 @@ test.group('Multi-sede 3h · importaciones', (group) => {
     gerB = await actor('GERENCIA', QA)
     archivo = app.tmpPath(`TECNOBASE_ms3h_${Date.now()}.csv`)
     await fs.mkdir(path.dirname(archivo), { recursive: true })
-    const encabezado = Array.from({ length: 50 }, (_, i) => `c${i}`).join(';')
-    await fs.writeFile(archivo, `${encabezado}\n${filaTecnobase()}\n`)
+    // Sin fila de encabezado: el importador procesa TODAS las filas como datos.
+    await fs.writeFile(archivo, filaTecnobase() + '\n')
   })
   group.teardown(async () => {
     await limpiar()
