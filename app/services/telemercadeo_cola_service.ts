@@ -13,6 +13,7 @@
 // criterio que store() de dateos: el último dateo liberado=0 por
 // placa/teléfono + servicio, con la vigencia de buildReserva()).
 
+import { aplicarSede, sedeSql } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
 import CaptacionDateo from '#models/captacion_dateo'
@@ -195,8 +196,10 @@ async function candidatosPorVencer(hoyISO: string, rtmId: number): Promise<FilaC
     .plus({ days: DIAS_POR_VENCER + 3 })
     .toISODate()!
 
-  const ultimoRtm = whereTurnoDaVigencia(
-    Database.from('turnos_rtms').where('turnos_rtms.servicio_id', rtmId)
+  // Multi-sede: la ventana RTM es por sede → último RTM de la placa EN LA SEDE ACTIVA.
+  const ultimoRtm = aplicarSede(
+    whereTurnoDaVigencia(Database.from('turnos_rtms').where('turnos_rtms.servicio_id', rtmId)),
+    'turnos_rtms.sede_id'
   )
     .select('turnos_rtms.placa')
     .max('turnos_rtms.fecha as fecha')
@@ -209,6 +212,8 @@ async function candidatosPorVencer(hoyISO: string, rtmId: number): Promise<FilaC
     })
     .leftJoin('vehiculos as v', 'v.placa', 'r.placa')
     .joinRaw('LEFT JOIN clientes AS c ON c.id = COALESCE(v.cliente_id, t.cliente_id)')
+    // sede: el turno de ese último RTM, en la sede activa (r ya es de la sede)
+    .whereRaw(`(t.id IS NULL OR ${sedeSql('t')})`)
     .whereBetween('r.fecha', [fechaDesde, fechaHasta])
     .groupBy('r.placa', 'r.fecha')
     .select('r.placa', 'r.fecha')
@@ -254,10 +259,11 @@ interface Exclusiones {
 
 /** Turno hoy (activo o finalizado, cualquier servicio): el vehículo ya está en la sede. */
 async function exclusionTurnoHoy(hoyISO: string, ex: Exclusiones) {
-  const rows = await Database.from('turnos_rtms')
-    .where('fecha', hoyISO)
-    .whereIn('estado', ['activo', 'finalizado'])
-    .select('placa', 'cliente_id')
+  // Multi-sede: "ya está en la sede" = turno de hoy en la sede activa.
+  const rows = await aplicarSede(
+    Database.from('turnos_rtms').where('fecha', hoyISO).whereIn('estado', ['activo', 'finalizado']),
+    'sede_id'
+  ).select('placa', 'cliente_id')
   for (const r of rows) {
     ex.placas.add(normPlaca(r.placa))
     if (r.cliente_id) ex.clientes.add(Number(r.cliente_id))
@@ -356,13 +362,14 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
   const porCliente = `SELECT t.cliente_id, MAX(t.fecha) AS f
     FROM turnos_rtms t
     WHERE t.estado = 'finalizado' AND ${sv('t')} AND t.cliente_id IS NOT NULL AND t.fecha < ?
+      AND ${sedeSql('t')}
     GROUP BY t.cliente_id`
   // (b) Turno finalizado sin cliente_id, ligado por placa al dueño actual.
   const porPlaca = `SELECT v.cliente_id, MAX(t.fecha) AS f
     FROM turnos_rtms t
     JOIN vehiculos v ON v.placa = t.placa
     WHERE t.estado = 'finalizado' AND ${sv('t')} AND t.cliente_id IS NULL
-      AND v.cliente_id IS NOT NULL AND t.fecha < ?
+      AND v.cliente_id IS NOT NULL AND t.fecha < ? AND ${sedeSql('t')}
     GROUP BY v.cliente_id`
   // (c) Ticket CONFIRMADA cuyo turno ya no existe (turno_id queda NULL por
   // ON DELETE SET NULL), por cliente_id o por documento.
@@ -371,13 +378,13 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
       SELECT f.cliente_id, DATE(f.fecha_pago) AS f
       FROM facturacion_tickets f
       WHERE f.estado = 'CONFIRMADA' AND f.cliente_id IS NOT NULL AND ${turnoNoExiste}
-        AND DATE(f.fecha_pago) < ?
+        AND DATE(f.fecha_pago) < ? AND ${sedeSql('f')}
       UNION ALL
       SELECT c2.id, DATE(f.fecha_pago)
       FROM facturacion_tickets f
       JOIN clientes c2 ON c2.doc_numero = f.doc_numero
       WHERE f.estado = 'CONFIRMADA' AND f.doc_numero <> '' AND ${turnoNoExiste}
-        AND DATE(f.fecha_pago) < ?
+        AND DATE(f.fecha_pago) < ? AND ${sedeSql('f')}
     ) x GROUP BY x.cliente_id`
   bindings.push(hoyISO, hoyISO, hoyISO, hoyISO)
 
@@ -385,9 +392,11 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
   // cliente o de cualquiera de sus placas.
   const turnoHoy = `SELECT t.cliente_id FROM turnos_rtms t
       WHERE t.fecha = ? AND t.estado IN ('activo', 'finalizado') AND t.cliente_id IS NOT NULL
+        AND ${sedeSql('t')}
     UNION
     SELECT v.cliente_id FROM turnos_rtms t JOIN vehiculos v ON v.placa = t.placa
-      WHERE t.fecha = ? AND t.estado IN ('activo', 'finalizado') AND v.cliente_id IS NOT NULL`
+      WHERE t.fecha = ? AND t.estado IN ('activo', 'finalizado') AND v.cliente_id IS NOT NULL
+        AND ${sedeSql('t')}`
   bindings.push(hoyISO, hoyISO)
 
   // Exclusión 2 — dateo RTM vigente. Como store(): por cada placa del
@@ -402,8 +411,9 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
       FROM captacion_dateos d
       JOIN (SELECT ${col} AS k, MAX(created_at) AS ca FROM captacion_dateos
             WHERE liberado = 0 AND servicio_id = ? AND ${col} IS NOT NULL AND ${col} <> ''
+              AND ${sedeSql('captacion_dateos')}
             GROUP BY ${col}) m ON m.k = d.${col} AND m.ca = d.created_at
-      WHERE d.liberado = 0 AND d.servicio_id = ?
+      WHERE d.liberado = 0 AND d.servicio_id = ? AND ${sedeSql('d')}
       GROUP BY d.${col}, d.created_at`
     const ultimoBindings = [...vig.bindings, rtmId, rtmId]
     const tel = telefonoSql('c.telefono')
@@ -567,8 +577,9 @@ async function paginaClientes(
 async function marcarRtmVigentes(filas: FilaCola[], rtmId: number) {
   const placas = [...new Set(filas.flatMap((f) => f.placas))]
   if (!placas.length) return
-  const ultimos = await whereTurnoDaVigencia(
-    Database.from('turnos_rtms').where('turnos_rtms.servicio_id', rtmId)
+  const ultimos = await aplicarSede(
+    whereTurnoDaVigencia(Database.from('turnos_rtms').where('turnos_rtms.servicio_id', rtmId)),
+    'turnos_rtms.sede_id'
   )
     .whereIn('turnos_rtms.placa', placas)
     .groupBy('turnos_rtms.placa')
@@ -600,8 +611,7 @@ async function marcarSeguimiento(filas: FilaCola[], agenteId: number | null) {
   if (!mapa.size) return
   for (const f of filas) {
     const candidatos = f.placas.map((p) => mapa.get(p)).filter((s): s is SeguimientoPlaca => !!s)
-    f.seguimiento =
-      candidatos.sort((a, b) => b.ultima_gestion.id - a.ultima_gestion.id)[0] ?? null
+    f.seguimiento = candidatos.sort((a, b) => b.ultima_gestion.id - a.ultima_gestion.id)[0] ?? null
   }
 }
 
