@@ -808,6 +808,7 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
       // Ticket APROBADO "sin comisión" para el asesor, antes de confirmar.
       antesDeConfirmar: async (t) => {
         const [ticketId] = await Database.table('tickets').insert({
+          sede_id: SEDE_ID,
           tipo_ticket_id: 1,
           titulo: `Excepción de Dateo ${PLACAS[15]} EDT-${RUN}`,
           estado: 'APROBADO',

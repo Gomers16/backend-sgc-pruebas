@@ -1,4 +1,6 @@
 // app/models/ticket.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, hasMany, hasOne } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasMany, HasOne } from '@adonisjs/lucid/types/relations'
@@ -13,7 +15,11 @@ import TicketDetalleExcepcionDateo from '#models/ticket_detalle_excepcion_dateo'
 // CERRADO existen en el ENUM de la BD; ningún flujo los asigna.
 export type TicketEstado = 'PENDIENTE' | 'APROBADO' | 'RECHAZADO' | 'RESUELTO' | 'CERRADO'
 
-export default class Ticket extends BaseModel {
+export default class Ticket extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3e, sede_id propio; el mixin la pone al crear.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'tickets'
 
   @column({ isPrimary: true })

@@ -1,4 +1,6 @@
 // app/models/ticket_evento.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -16,7 +18,10 @@ export type TipoTicketEvento =
  * las estadísticas salen de tickets/tickets_detalle_excepcion_dateo, porque
  * producción local (misma BD) no escribe eventos.
  */
-export default class TicketEvento extends BaseModel {
+export default class TicketEvento extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3e, hereda la sede del ticket.
+  static sedeVia = { atributo: 'ticketId', columna: 'ticket_id', tablaPadre: 'tickets' }
+
   public static table = 'ticket_eventos'
 
   @column({ isPrimary: true })

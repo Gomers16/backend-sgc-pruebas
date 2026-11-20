@@ -1,4 +1,6 @@
 // app/models/ticket_comentario.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -6,7 +8,10 @@ import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 import Ticket from '#models/ticket'
 import Usuario from '#models/usuario'
 
-export default class TicketComentario extends BaseModel {
+export default class TicketComentario extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3e, hereda la sede del ticket.
+  static sedeVia = { atributo: 'ticketId', columna: 'ticket_id', tablaPadre: 'tickets' }
+
   public static table = 'tickets_comentarios'
 
   @column({ isPrimary: true })
