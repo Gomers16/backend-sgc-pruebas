@@ -386,10 +386,17 @@ test.group('Tickets · Fase 7 cierre', (group) => {
     client,
     assert,
   }) => {
+    // Multi-sede Fase 5: se cuentan las filas GLOBALES (sede NULL); editar
+    // desde la sede de prueba crea su override, que se borra al final.
     const contar = async () => {
-      const filas = await Database.from('configuracion_ventana_ticket_global').count('* as n')
+      const filas = await Database.from('configuracion_ventana_ticket_global')
+        .whereNull('sede_id')
+        .count('* as n')
       return Number(filas[0].n)
     }
+    const overrideQaAntes = await Database.from('configuracion_ventana_ticket_global')
+      .where('sede_id', SEDE_ID)
+      .first()
     const antes = await contar()
 
     const g = await esperar(
@@ -412,6 +419,9 @@ test.group('Tickets · Fase 7 cierre', (group) => {
     const ok = await esperar(guardar('GERENCIA', actual), 200)
     assert.equal(ok.body().minutos_ventana, actual)
     assert.isAtMost(await contar(), 1)
+    if (!overrideQaAntes) {
+      await Database.from('configuracion_ventana_ticket_global').where('sede_id', SEDE_ID).delete()
+    }
   })
 
   test('ventana por asesor: crear, actualizar, null, borrar, inexistente → 400; el override decide dentro/fuera', async ({
