@@ -19,6 +19,7 @@ import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import type TurnoRtm from '#models/turno_rtm'
+import { aplicarSede } from '#services/sede_scope'
 
 export type ResultadoCertificacion = 'APROBADA' | 'RECHAZADA'
 export type EstadoVentanaSegundaVez =
@@ -202,7 +203,8 @@ export async function turnoIdEsSegundaVez(
 ): Promise<boolean> {
   if (!turnoId) return false
   const q = trx ? Database.from('turnos_rtms').useTransaction(trx) : Database.from('turnos_rtms')
-  const row = await q.where('id', turnoId).select('es_segunda_vez').first()
+  // Multi-sede: un turno de otra sede no se ve (no revela si es segunda vez).
+  const row = await aplicarSede(q.where('id', turnoId), 'sede_id').select('es_segunda_vez').first()
   return Boolean(row?.es_segunda_vez)
 }
 
@@ -227,7 +229,9 @@ export interface EvaluacionVentana {
  * cambiarlos).
  */
 async function contextoOrigen(origen: TurnoRtm) {
+  // sede: la segunda vez es por sede; solo cuentan turnos de la sede del origen
   const rows: FilaPosterior[] = await Database.from('turnos_rtms')
+    .where('sede_id', origen.sedeId)
     .where('placa', origen.placa)
     .where('servicio_id', origen.servicioId)
     .where('id', '>', origen.id)
@@ -304,10 +308,14 @@ export async function evaluarVentanaSegundaVez(
   ahora: DateTime,
   trx?: TransactionClientContract
 ): Promise<EvaluacionVentana | null> {
-  const candidato = await Database.from('turnos_rtms')
-    .where('placa', placa)
-    .where('servicio_id', servicioId)
-    .whereNotNull('ventana_segunda_vez_hasta')
+  // Multi-sede: la ventana más reciente de placa+servicio EN LA SEDE ACTIVA.
+  const candidato = await aplicarSede(
+    Database.from('turnos_rtms')
+      .where('placa', placa)
+      .where('servicio_id', servicioId)
+      .whereNotNull('ventana_segunda_vez_hasta'),
+    'sede_id'
+  )
     .orderBy('rechazado_at', 'desc')
     .orderBy('id', 'desc')
     .select('id')
@@ -365,7 +373,9 @@ export function serializarVentana(ev: EvaluacionVentana) {
 /** Otra segunda vez hija no cancelada del mismo origen (excluyendo `excluirId`). */
 export async function otroHijoActivo(t: TurnoRtm): Promise<number | null> {
   if (!t.turnoOrigenId) return null
+  // sede: hijas del mismo origen, en la sede del turno
   const row = await Database.from('turnos_rtms')
+    .where('sede_id', t.sedeId)
     .where('placa', t.placa)
     .where('servicio_id', t.servicioId)
     .where('es_segunda_vez', 1)
@@ -427,6 +437,7 @@ export async function haySegundaVezEnCurso(
   if (ventanas.some((v) => v.estado === 'ABIERTA')) return true
   const hijos = ventanas.map((v) => v.hijoActivoId).filter((id): id is number => !!id)
   if (hijos.length === 0) return false
+  // sede: ids de hijas ya evaluadas en la sede activa
   const enCurso = await Database.from('turnos_rtms')
     .whereIn('id', hijos)
     .where('estado', 'activo')
