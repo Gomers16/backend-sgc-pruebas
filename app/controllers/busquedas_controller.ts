@@ -10,6 +10,8 @@ import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
 import TurnoRtm from '#models/turno_rtm'
 import { buildReserva, cerrarDateosViejosPorPlacaTelefono } from '#services/reserva_dateo_service'
 import { haySegundaVezEnCurso, ventanasSegundaVezDePlaca } from '#services/segunda_vez_service'
+import { clienteVisible, sqlVehiculoVisible, vehiculoVisible } from '#services/visibilidad_sede'
+import { sedeSql } from '#services/sede_scope'
 
 type CanalSimple = 'FACHADA' | 'ASESOR' | 'TELE' | 'REDES'
 
@@ -155,21 +157,28 @@ export default class BusquedasController {
     let vehiculo: VehiculoInstance | null = null
     let cliente: ClienteInstance | null = null
 
+    // Multi-sede: vehículo y cliente son globales pero solo se muestran si
+    // tienen turnos o dateos en la sede activa (ver visibilidad_sede.ts).
     if (placa) {
       vehiculo = await Vehiculo.query()
         .where('placa', placa)
         .preload('clase')
         .preload('cliente')
         .first()
+      if (vehiculo && !(await vehiculoVisible(vehiculo.id))) vehiculo = null
       if (vehiculo?.clienteId) {
         // @ts-ignore (Lucid preloaded)
         cliente = (vehiculo as any).$preloaded?.cliente ?? null
+        if (cliente && !(await clienteVisible(cliente.id))) cliente = null
       }
     } else if (telefono) {
       cliente = await Cliente.query()
         .where('telefono', telefono)
-        .preload('vehiculos', (q) => q.preload('clase'))
+        .preload('vehiculos', (q) =>
+          q.whereRaw(sqlVehiculoVisible('vehiculos.id', 'vehiculos.placa')).preload('clase')
+        )
         .first()
+      if (cliente && !(await clienteVisible(cliente.id))) cliente = null
     }
 
     // 2) Último dateo por placa/teléfono (preload convenio)
@@ -269,11 +278,13 @@ export default class BusquedasController {
     }
 
     // 3) Sin dateo vigente → Detectar por prospecto/convenio y crear dateo automático
+    // sede: prospectos de la sede activa (o sin sede)
     const prospecto = await Prospecto.query()
       .where((q) => {
         if (placa) q.orWhere('placa', placa)
         if (telefono) q.orWhere('telefono', telefono!)
       })
+      .where((q) => q.whereRaw(sedeSql('prospectos.sede_id')).orWhereNull('prospectos.sede_id'))
       .orderByRaw('convenio_id IS NULL') // prioriza los que TENGAN convenio
       .orderBy('updated_at', 'desc')
       .first()
