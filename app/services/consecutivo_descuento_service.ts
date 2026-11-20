@@ -29,6 +29,7 @@ export function sqlConsecutivoDescuentoDelTurno(turnoIdCol: string): string {
   if (!COLUMNA_SQL_RE.test(turnoIdCol)) {
     throw new Error(`Columna inválida para consecutivo del descuento: ${turnoIdCol}`)
   }
+  // sede: por turno_id; el ticket siempre es de la sede de su turno (3b)
   return `(SELECT ftcd.consecutivo_descuento FROM facturacion_tickets ftcd
     WHERE ftcd.turno_id = ${turnoIdCol}
       AND ftcd.estado = 'CONFIRMADA'
@@ -44,6 +45,7 @@ export async function consecutivosDescuentoPorTurno(
   const out = new Map<number, string>()
   if (!ids.length) return out
 
+  // sede: por turno_id; el ticket siempre es de la sede de su turno (3b)
   const rows = (await Database.from('facturacion_tickets')
     .whereIn('turno_id', ids)
     .where('estado', 'CONFIRMADA')

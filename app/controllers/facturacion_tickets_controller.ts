@@ -30,6 +30,7 @@ import {
   type EscenarioCliente,
 } from '#services/comision_calculo_service'
 import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
+import { sedeParaEscritura } from '#services/sede_scope'
 import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
 import {
   construirComisionRTM,
@@ -429,11 +430,15 @@ export default class FacturacionTicketsController {
       }
     }
     const excluirId = toIntOrNull(request.input('excluir_id'))
+    // Multi-sede: el consecutivo es único por (sede, consecutivo) → se
+    // verifica en la sede donde se está facturando ("todas" → 400).
+    const sedeId = sedeParaEscritura()
     const q = FacturacionTicket.query()
       .where('consecutivo_descuento', parsed.valor)
       .orderBy('id', 'desc')
       .limit(10)
     if (excluirId) q.whereNot('id', excluirId)
+    if (sedeId) q.where('sede_id', sedeId)
     const rows = await q
 
     return {
@@ -472,6 +477,7 @@ export default class FacturacionTicketsController {
     }
 
     const trx = await Database.transaction()
+    let ticketRef: Pick<FacturacionTicket, 'id' | 'sedeId'> = { id: Number(params.id), sedeId: 0 }
     try {
       const ticket = await FacturacionTicket.query({ client: trx })
         .where('id', Number(params.id))
@@ -481,6 +487,7 @@ export default class FacturacionTicketsController {
         await trx.rollback()
         return response.notFound({ message: 'Ticket no encontrado' })
       }
+      ticketRef = ticket
       if (ticket.estado !== 'CONFIRMADA') {
         await trx.rollback()
         return response.conflict({
@@ -506,7 +513,7 @@ export default class FacturacionTicketsController {
         })
       }
 
-      const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, ticket.id, trx)
+      const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, ticket, trx)
       if (otro) {
         await trx.rollback()
         return response.conflict(conflictoConsecutivoDescuento(valorNuevo, otro))
@@ -536,7 +543,7 @@ export default class FacturacionTicketsController {
     } catch (error) {
       if (!trx.isCompleted) await trx.rollback()
       if (esErrorUnicoConsecutivoDescuento(error)) {
-        const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, Number(params.id))
+        const otro = await buscarConsecutivoDescuentoConfirmado(valorNuevo, ticketRef)
         return response.conflict(conflictoConsecutivoDescuento(valorNuevo, otro))
       }
       throw error
@@ -559,8 +566,13 @@ export default class FacturacionTicketsController {
 
     const turnoId = toIntOrNull(request.input('turno_id'))
     const dateoId = toIntOrNull(request.input('dateo_id'))
-    const sedeId = toIntOrNull(request.input('sede_id'))
     const servicioId = toIntOrNull(request.input('servicio_id'))
+
+    // Multi-sede: la sede del ticket es la sede activa (la pone el mixin; un
+    // sede_id en el body no decide nada) y el turno tiene que ser de esa sede.
+    if (turnoId && !(await TurnoRtm.find(turnoId))) {
+      return response.notFound({ message: 'Turno no encontrado' })
+    }
 
     // Segunda vez: sin facturación.
     if (await turnoIdEsSegundaVez(turnoId)) {
@@ -602,7 +614,6 @@ export default class FacturacionTicketsController {
 
     ticket.turnoId = turnoId
     ticket.dateoId = dateoId
-    ticket.sedeId = sedeId
     ticket.servicioId = servicioId
 
     if (servicioId && esServicioSimplificado) {
@@ -646,7 +657,6 @@ export default class FacturacionTicketsController {
       const turnSnap = turno as unknown as TurnoSnapshotReadable
       if (!ticket.placa && (turnSnap.placa || '').trim())
         ticket.placa = (turnSnap.placa || '').toUpperCase().replace(/\s+/g, '')
-      ticket.sedeId = ticket.sedeId || turnSnap.sedeId || null
       ticket.agenteId = ticket.agenteId || turnSnap.agenteCaptacionId || null
       ticket.servicioId = ticket.servicioId || turnSnap.servicioId || null
       await this.fillSnapshotsFromTurno(ticket, turno)
@@ -711,7 +721,6 @@ export default class FacturacionTicketsController {
       'placa',
       'total',
       'fecha_pago',
-      'sede_id',
       'agente_id',
       'prefijo',
       'consecutivo',
@@ -769,7 +778,7 @@ export default class FacturacionTicketsController {
       }
     }
 
-    if ('sede_id' in up) ticket.sedeId = toIntOrNull(up.sede_id)
+    // Multi-sede: sede_id no se edita (el ticket se queda en su sede).
     if ('agente_id' in up) ticket.agenteId = toIntOrNull(up.agente_id)
     if ('prefijo' in up) ticket.prefijo = nullIfEmpty(up.prefijo)
     if ('consecutivo' in up) ticket.consecutivo = nullIfEmpty(up.consecutivo)
@@ -853,7 +862,7 @@ export default class FacturacionTicketsController {
           })
         }
         if (parsed.valor) {
-          const otro = await buscarConsecutivoDescuentoConfirmado(parsed.valor, ticket.id)
+          const otro = await buscarConsecutivoDescuentoConfirmado(parsed.valor, ticket)
           if (otro) return response.conflict(conflictoConsecutivoDescuento(parsed.valor, otro))
         }
         ticket.consecutivoDescuento = parsed.valor
@@ -920,6 +929,14 @@ export default class FacturacionTicketsController {
 
     const newTurnoId = toIntOrNull(up.turno_id)
     const newDateoId = toIntOrNull(up.dateo_id)
+    // Multi-sede: solo se vincula un turno de la sede del ticket.
+    if (newTurnoId && !ticket.turnoId) {
+      const turnoNuevo = await TurnoRtm.query()
+        .where('id', newTurnoId)
+        .where('sede_id', ticket.sedeId ?? 0)
+        .first()
+      if (!turnoNuevo) return response.notFound({ message: 'Turno no encontrado' })
+    }
     // Segunda vez: sin facturación (ni vinculando el ticket a ella).
     if (await turnoIdEsSegundaVez(ticket.turnoId ?? newTurnoId)) {
       return response.conflict(conflictoTurnoSegundaVez('facturación'))
@@ -1013,15 +1030,7 @@ export default class FacturacionTicketsController {
       }
     }
 
-    // COMPLETAR desde turno
-    if (!ticket.sedeId && ticket.turnoId) {
-      const t = await TurnoRtm.find(ticket.turnoId)
-      if (t) {
-        const sedeIdFromTurno = (t as any)?.sedeId ?? (t as any)?.sede_id ?? null
-        if (sedeIdFromTurno) ticket.sedeId = sedeIdFromTurno
-      }
-    }
-
+    // COMPLETAR desde turno (la sede no: el ticket nace en la sede activa)
     if (!ticket.agenteId && ticket.turnoId) {
       const t = await TurnoRtm.find(ticket.turnoId)
       if (t) {
@@ -1057,10 +1066,7 @@ export default class FacturacionTicketsController {
             'El ticket tiene descuento: digita el consecutivo del descuento antes de confirmar.',
         })
       }
-      const otro = await buscarConsecutivoDescuentoConfirmado(
-        ticket.consecutivoDescuento,
-        ticket.id
-      )
+      const otro = await buscarConsecutivoDescuentoConfirmado(ticket.consecutivoDescuento, ticket)
       if (otro) {
         return response.conflict(conflictoConsecutivoDescuento(ticket.consecutivoDescuento, otro))
       }
@@ -1086,10 +1092,6 @@ export default class FacturacionTicketsController {
     if (!ticket.agenteId && ticket.dateoId) {
       const d = await CaptacionDateo.find(ticket.dateoId)
       if (d?.agenteId) ticket.agenteId = d.agenteId
-    }
-    if (!ticket.sedeId && ticket.turnoId) {
-      const t = await TurnoRtm.find(ticket.turnoId)
-      if (t?.sedeId) ticket.sedeId = (t as unknown as { sedeId: number | null }).sedeId ?? null
     }
     if (!ticket.servicioId && ticket.turnoId) {
       const t = await TurnoRtm.find(ticket.turnoId)
@@ -1123,10 +1125,7 @@ export default class FacturacionTicketsController {
       await ticket.save()
     } catch (err) {
       if (esErrorUnicoConsecutivoDescuento(err) && ticket.consecutivoDescuento) {
-        const otro = await buscarConsecutivoDescuentoConfirmado(
-          ticket.consecutivoDescuento,
-          ticket.id
-        )
+        const otro = await buscarConsecutivoDescuentoConfirmado(ticket.consecutivoDescuento, ticket)
         return response.conflict(conflictoConsecutivoDescuento(ticket.consecutivoDescuento, otro))
       }
       throw err
@@ -1355,6 +1354,7 @@ export default class FacturacionTicketsController {
     // Persistir el resultado en el turno para que la pestaña Continuidad lo
     // pueda mostrar sin recalcular (ver app/services/continuidad_service.ts).
     if (turnoActual?.id && (asesorConvenioIdReal || dateo.convenioId)) {
+      // sede: por id del turno del ticket, ya leído con el mixin en la sede activa
       await Database.from('turnos_rtms')
         .where('id', turnoActual.id)
         .update({ estado_continuidad: estadoContinuidad })
@@ -1405,6 +1405,7 @@ export default class FacturacionTicketsController {
       // dateo_id puesto a mano en el ticket). Sin importar el día. Un turno
       // cancelado no cuenta, y un dateo nuevo no tiene comisión previa.
       const turnoDelTicketId = ticket.turnoId ?? turnoActual?.id ?? null
+      // sede: a propósito sin filtro: un dateo ya pagado no se paga dos veces en ninguna sede
       const otroTurnoConDateoQuery = trx
         .from('turnos_rtms')
         .where('captacion_dateo_id', dateo.id)
@@ -1469,6 +1470,7 @@ export default class FacturacionTicketsController {
       // ESTE ticket). Nunca toca dateo.descuentoId (el pre-marcado original
       // del asesor) — son campos separados a propósito para poder comparar.
       if (ticket.descuentoId) {
+        // sede: por id del dateo del ticket (mismo turno, misma sede)
         await CaptacionDateo.query({ client: trx })
           .where('id', dateo.id)
           .update({
@@ -1585,11 +1587,13 @@ export default class FacturacionTicketsController {
     }
 
     const trx = await Database.transaction()
+    let ticketRef: Pick<FacturacionTicket, 'id' | 'sedeId'> = { id: ticketId, sedeId: 0 }
     try {
       const ticket = await FacturacionTicket.query({ client: trx })
         .where('id', ticketId)
         .forUpdate()
         .first()
+      if (ticket) ticketRef = ticket
       if (!ticket || ticket.estado !== 'CONFIRMADA') {
         await trx.rollback()
         return ticket
@@ -1619,6 +1623,7 @@ export default class FacturacionTicketsController {
       // Snapshot de caja en el dateo, alineado con el ticket editado (mismos
       // campos que escribe applyCommissionHook al confirmar).
       if (r.planComision.dateoId) {
+        // sede: por id del dateo del ticket (mismo turno, misma sede)
         await CaptacionDateo.query({ client: trx })
           .where('id', r.planComision.dateoId)
           .update({
@@ -1704,7 +1709,7 @@ export default class FacturacionTicketsController {
       if (!trx.isCompleted) await trx.rollback()
       const valor = nullIfEmpty(request.input('consecutivo_descuento'))?.toUpperCase()
       if (esErrorUnicoConsecutivoDescuento(error) && valor) {
-        const otro = await buscarConsecutivoDescuentoConfirmado(valor, ticketId)
+        const otro = await buscarConsecutivoDescuentoConfirmado(valor, ticketRef)
         return response.conflict(conflictoConsecutivoDescuento(valor, otro))
       }
       throw error
@@ -2075,15 +2080,17 @@ function errorConsecutivoDescuentoInvalido() {
   }
 }
 
+/** Otro ticket CONFIRMADA con ese consecutivo en la MISMA sede (único por sede). */
 async function buscarConsecutivoDescuentoConfirmado(
   valor: string,
-  excluirId: number,
+  ticket: Pick<FacturacionTicket, 'id' | 'sedeId'>,
   client?: TransactionClientContract
 ): Promise<FacturacionTicket | null> {
   return FacturacionTicket.query(client ? { client } : {})
     .where('consecutivo_descuento', valor)
     .where('estado', 'CONFIRMADA')
-    .whereNot('id', excluirId)
+    .where('sede_id', ticket.sedeId ?? 0)
+    .whereNot('id', ticket.id)
     .first()
 }
 
@@ -2266,7 +2273,7 @@ async function planearEdicionDescuento(
     }
     consecutivo = parsed.valor
     if (consecutivo !== antes.consecutivoDescuento) {
-      const otro = await buscarConsecutivoDescuentoConfirmado(consecutivo, ticket.id, trx)
+      const otro = await buscarConsecutivoDescuentoConfirmado(consecutivo, ticket, trx)
       if (otro) return fallo(409, conflictoConsecutivoDescuento(consecutivo, otro))
     }
   }
@@ -2346,6 +2353,7 @@ async function isContentDuplicate(t: FacturacionTicket): Promise<boolean> {
 
   const row = await FacturacionTicket.query()
     .whereNot('id', t.id || 0)
+    .where('sede_id', t.sedeId ?? 0)
     .where('placa', t.placa)
     .where('total', totalNum)
     .whereBetween('fecha_pago', [min!, max!])
