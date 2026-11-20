@@ -19,7 +19,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import TurnoRtm from '#models/turno_rtm'
 import AgenteCaptacion from '#models/agente_captacion'
 import Servicio from '#models/servicio'
-import { sedeParaEscritura } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
 
 // ─── Mapa TITULAR → nombre canónico ──────────────────────────────
 
@@ -263,7 +263,11 @@ async function buildCache(): Promise<Cache> {
     cache.agentes.set(a.nombre.trim().toUpperCase(), a.id)
   }
 
-  const convenios = await Database.from('convenios').select(['id', 'nombre'])
+  // Multi-sede: solo convenios de la sede activa (los agentes ya los filtra el mixin).
+  const convenios = await aplicarSede(Database.from('convenios'), 'sede_id').select([
+    'id',
+    'nombre',
+  ])
   for (const c of convenios as Array<{ id: number; nombre: string }>) {
     cache.convenios.set(String(c.nombre).trim().toUpperCase(), Number(c.id))
   }
@@ -278,7 +282,11 @@ async function buildCache(): Promise<Cache> {
   const svc = await Servicio.query().where('codigo_servicio', 'RTM').first()
   cache.servicioRtmId = svc?.id ?? null
 
-  const adminRow = await Database.from('usuarios').select('id').orderBy('id', 'asc').first()
+  // Multi-sede: funcionario = primer usuario de la sede activa (Ibagué: el mismo de antes).
+  const adminRow = await aplicarSede(Database.from('usuarios'), 'sede_id')
+    .select('id')
+    .orderBy('id', 'asc')
+    .first()
   cache.funcionarioIdDefault = (adminRow as { id: number } | null)?.id ?? 1
 
   return cache
