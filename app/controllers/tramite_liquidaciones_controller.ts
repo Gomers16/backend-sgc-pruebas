@@ -61,6 +61,10 @@ export default class TramiteLiquidacionesController {
   /** GET /tramites/:tramiteId/liquidacion */
   public async getByTramite({ params, response }: HttpContext) {
     try {
+      // Multi-sede: un trámite de otra sede (o inexistente) → 404.
+      if (!(await Tramite.find(Number(params.tramiteId)))) {
+        return response.notFound({ message: 'Trámite no encontrado' })
+      }
       const liquidacion = await TramiteLiquidacion.query()
         .where('tramite_id', Number(params.tramiteId))
         .first()
