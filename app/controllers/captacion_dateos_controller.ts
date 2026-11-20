@@ -1,6 +1,6 @@
 // app/controllers/captacion_dateos_controller.ts
 import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
-import { preferirConfigDeSede, sedeParaEscritura } from '#services/sede_scope'
+import { preferirConfigDeSede, sedeParaEscritura, configParaEditar } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import db from '@adonisjs/lucid/services/db'
@@ -199,7 +199,7 @@ export default class CaptacionDateosController {
       })
     }
 
-    let config = await preferirConfigDeSede(ConfiguracionReservaDateo.query()).first()
+    let config = await configParaEditar(ConfiguracionReservaDateo)
     if (!config) {
       config = await ConfiguracionReservaDateo.create({ horasExclusividad: horas } as any)
     } else {
@@ -247,7 +247,7 @@ export default class CaptacionDateosController {
       })
     }
 
-    let config = await preferirConfigDeSede(ConfiguracionRedateoGlobal.query()).first()
+    let config = await configParaEditar(ConfiguracionRedateoGlobal)
     if (!config) {
       config = await ConfiguracionRedateoGlobal.create({ maxRedateos } as any)
     } else {

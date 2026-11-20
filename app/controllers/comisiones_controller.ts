@@ -13,7 +13,7 @@ import Liquidacion, {
   type LiquidacionTipoPeriodo,
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
-import { aplicarSede, sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura, preferirConfigDeSede, configParaEditar } from '#services/sede_scope'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
   conflictoSinComisionTicket,
@@ -2083,7 +2083,7 @@ export default class ComisionesController {
     const valorDateoRecuperacionVehiculo = parseNullable(payload.valor_dateo_recuperacion_vehiculo)
     const valorDateoRecuperacionMoto = parseNullable(payload.valor_dateo_recuperacion_moto)
 
-    let config = await preferirConfigDeSede(ConfiguracionRecurrenciaGlobal.query()).first()
+    let config = await configParaEditar(ConfiguracionRecurrenciaGlobal)
 
     if (!config) {
       config = await ConfiguracionRecurrenciaGlobal.create({

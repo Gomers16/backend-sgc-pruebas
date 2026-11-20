@@ -1,6 +1,6 @@
 // app/controllers/tickets_excepcion_dateo_controller.ts
 import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
-import { sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
+import { sedeParaEscritura, configParaEditar } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
@@ -73,7 +73,7 @@ export default class TicketsExcepcionDateoController {
       })
     }
 
-    let config = await preferirConfigDeSede(ConfiguracionVentanaTicketGlobal.query()).first()
+    let config = await configParaEditar(ConfiguracionVentanaTicketGlobal)
     if (!config) {
       config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana } as any)
     } else {

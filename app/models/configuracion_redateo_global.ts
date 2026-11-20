@@ -8,6 +8,10 @@ export default class ConfiguracionRedateoGlobal extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  /** Multi-sede: NULL = configuración global; número = override de esa sede. */
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   /**
    * Máximo de veces que un mismo dateo puede re-datearse (fallback cuando
    * no hay override específico por asesor).

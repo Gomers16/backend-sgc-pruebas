@@ -8,6 +8,10 @@ export default class ConfiguracionRecurrenciaGlobal extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  /** Multi-sede: NULL = configuración global; número = override de esa sede. */
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   /**
    * Meses mínimos desde última visita para considerar RECURRENTE
    * < mesesMinimos → RECURRENTE (vino reciente)

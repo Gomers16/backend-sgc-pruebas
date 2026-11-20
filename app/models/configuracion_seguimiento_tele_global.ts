@@ -9,6 +9,10 @@ export default class ConfiguracionSeguimientoTeleGlobal extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  /** Multi-sede: NULL = configuración global; número = override de esa sede. */
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   @column({ columnName: 'max_seguimientos' })
   declare maxSeguimientos: number
 

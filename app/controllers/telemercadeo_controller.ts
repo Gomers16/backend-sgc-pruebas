@@ -1,7 +1,6 @@
 // app/controllers/telemercadeo_controller.ts
-import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura, configParaEditar } from '#services/sede_scope'
 import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
-import { preferirConfigDeSede } from '#services/sede_scope'
 import fs from 'node:fs'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
@@ -872,7 +871,7 @@ export default class TelemercadeoController {
       })
     }
     await getConfigSeguimientoTele()
-    const cfg = (await preferirConfigDeSede(ConfiguracionSeguimientoTeleGlobal.query()).first())!
+    const cfg = (await configParaEditar(ConfiguracionSeguimientoTeleGlobal))!
     if (max !== undefined) cfg.maxSeguimientos = max
     if (dias !== undefined) cfg.diasVigenciaCiclo = dias
     await cfg.save()

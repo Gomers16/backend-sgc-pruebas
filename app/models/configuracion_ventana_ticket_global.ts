@@ -8,6 +8,10 @@ export default class ConfiguracionVentanaTicketGlobal extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  /** Multi-sede: NULL = configuración global; número = override de esa sede. */
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   /**
    * Minutos desde turno.horaIngreso dentro de los cuales un ticket de
    * "Excepción de Dateo" no lleva penalización (fallback cuando no hay

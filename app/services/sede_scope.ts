@@ -295,3 +295,25 @@ export function claveCacheSede(): string {
   if (!s || s === 'sin_filtro' || s.todas || !s.sedeEscritura) return 'global'
   return `sede:${s.sedeEscritura}`
 }
+
+/**
+ * Fase 5 — fila de configuración (global con override por sede) que se
+ * EDITA desde la sede activa: el override de esa sede si existe; si no, una
+ * copia NUEVA (sin guardar) de la fila vigente con sede_id = sede activa,
+ * para que el save() cree el override y la global siga igual para las demás
+ * sedes. "todas" → 400. Sin contexto (bypass explícito) → la fila preferida.
+ * Devuelve null si la tabla está vacía (el llamador crea la fila).
+ */
+export async function configParaEditar<M extends { query: (o?: any) => any; new (): any }>(
+  modelo: M,
+  options?: any
+): Promise<InstanceType<M> | null> {
+  const sede = sedeParaEscritura()
+  const base = await preferirConfigDeSede(modelo.query(options)).first()
+  if (!base || sede === null || base.sedeId === sede) return base
+  const { id: _id, createdAt: _c, updatedAt: _u, ...resto } = base.$attributes
+  const copia = new modelo()
+  if (options?.client) copia.useTransaction(options.client)
+  copia.merge({ ...resto, sedeId: sede })
+  return copia
+}

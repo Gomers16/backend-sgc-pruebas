@@ -8,6 +8,10 @@ export default class ConfiguracionReservaDateo extends BaseModel {
   @column({ isPrimary: true })
   declare id: number
 
+  /** Multi-sede: NULL = configuración global; número = override de esa sede. */
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   /**
    * Horas de exclusividad de un dateo sobre una placa/teléfono antes de ser
    * consumido por un turno. Mientras esté vigente, otro asesor no puede
