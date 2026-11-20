@@ -1,4 +1,5 @@
 // app/controllers/tickets_controller.ts
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import Ticket from '#models/ticket'
 import TipoTicket from '#models/tipo_ticket'
@@ -284,6 +285,7 @@ export default class TicketsController {
 
     if (ticketId === null) return response.badRequest({ message: 'ticket_id es requerido' })
     if (!mensaje) return response.badRequest({ message: 'mensaje es requerido' })
+    sedeParaEscritura() // "todas" no escribe (400)
 
     const ticket = await Ticket.find(ticketId)
     if (!ticket) return response.notFound({ message: 'Ticket no encontrado' })
@@ -330,6 +332,7 @@ export default class TicketsController {
     if (!parsed.ok) return response.badRequest({ message: parsed.message })
     const f = parsed.filtros
 
+    // sede: aplicarSede(q, 't.sede_id') tras los filtros (abajo)
     const q = Database.from('tickets as t')
       .join('tipos_ticket as tt', 'tt.id', 't.tipo_ticket_id')
       .join('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 't.id')
@@ -344,6 +347,8 @@ export default class TicketsController {
       )
       .where('tt.codigo', 'EXCEPCION_DATEO')
     aplicarFiltrosTickets(q, f, 't', 'd')
+    // Multi-sede: solo tickets de la sede activa (al final: agrupa lo anterior).
+    aplicarSede(q, 't.sede_id')
     const filas = (await q
       .select(
         't.id',
@@ -497,6 +502,7 @@ export default class TicketsController {
   public async contadorPendientes({ response }: HttpContext) {
     const filas = (await Database.from('tickets as t')
       .join('tipos_ticket as tt', 'tt.id', 't.tipo_ticket_id')
+      .where((q) => aplicarSede(q, 't.sede_id'))
       .where('t.estado', 'PENDIENTE')
       .groupBy('tt.codigo')
       .select('tt.codigo')

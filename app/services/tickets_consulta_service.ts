@@ -169,6 +169,7 @@ export function aplicarFiltrosTickets(q: any, f: FiltrosTickets, t = 't', d = 'd
   if (f.placa) q.where(`${d}.placa`, 'like', `%${f.placa}%`)
   if (f.turnoId !== null) q.where(`${d}.turno_id`, f.turnoId)
   if (f.turnoNumero !== null) {
+    // sede: la consulta principal filtra la sede del ticket
     q.whereRaw(`${d}.turno_id IN (SELECT id FROM turnos_rtms WHERE turno_numero = ?)`, [
       f.turnoNumero,
     ])

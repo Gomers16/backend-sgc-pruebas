@@ -325,10 +325,12 @@ export async function guardarFotoComisionTicket(
   trx?: TransactionClientContract
 ): Promise<void> {
   const { default: Database } = await import('@adonisjs/lucid/services/db')
+  // sede: por el turno de la comisión (de la sede activa); su ticket es de esa sede
   const q = (trx ?? Database).from('tickets_detalle_excepcion_dateo')
   await q
     .where('turno_id', turnoId)
     .whereIn('ticket_id', (sub: any) =>
+      // sede: ídem (subconsulta de tickets aprobados del mismo turno)
       sub.from('tickets').where('estado', 'APROBADO').select('id')
     )
     .update({
@@ -371,6 +373,7 @@ export async function debeRespetarSinComision(
   )
   const detalle = await TicketDetalleExcepcionDateo.query()
     .where('turno_id', turnoId)
+    // sede: el detalle ya filtra la sede (mixin vía ticket)
     .whereHas('ticket', (q) => q.where('estado', 'APROBADO'))
     .first()
   if (!detalle) return ninguno

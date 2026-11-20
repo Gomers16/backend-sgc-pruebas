@@ -1,4 +1,5 @@
 // app/controllers/tickets_excepcion_dateo_controller.ts
+import { sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
@@ -193,6 +194,7 @@ export default class TicketsExcepcionDateoController {
    * por imagen) — este endpoint solo recibe las URLs resultantes.
    */
   public async crear({ request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const payload = request.only([
       'turno_id',
       'comercial_id',
@@ -327,6 +329,7 @@ export default class TicketsExcepcionDateoController {
 
       const yaExistePendiente = await TicketDetalleExcepcionDateo.query({ client: trx })
         .where('turno_id', turnoId)
+        // sede: el detalle ya filtra la sede del ticket (mixin vía ticket)
         .whereHas('ticket', (q) => q.where('estado', 'PENDIENTE'))
         .first()
       if (yaExistePendiente) {
@@ -502,6 +505,7 @@ export default class TicketsExcepcionDateoController {
    * decidirCasoComision(), compartida por ambos.
    */
   public async aprobar({ params, request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     // El ticket se bloquea (FOR UPDATE) antes de mirar su estado: dos
     // aprobaciones simultáneas se serializan y la segunda ve APROBADO → 409.
     const trx = await Database.transaction()
@@ -559,6 +563,14 @@ export default class TicketsExcepcionDateoController {
       if (!turno) {
         await trx.rollback()
         return response.notFound({ message: 'Turno del ticket no encontrado' })
+      }
+      // Multi-sede: ticket, turno y la comisión que nacerá de él, en la misma sede.
+      if (turno.sedeId !== ticket.sedeId) {
+        await trx.rollback()
+        return response.conflict({
+          code: 'TICKET_OTRA_SEDE',
+          message: 'El ticket y su turno no son de la misma sede.',
+        })
       }
       turno.useTransaction(trx)
 
@@ -845,6 +857,7 @@ export default class TicketsExcepcionDateoController {
   public async corregirConvenio(ctx: HttpContext, opciones: { simular?: boolean } = {}) {
     const { params, request, response, auth } = ctx
     const simular = opciones.simular === true
+    if (!simular) sedeParaEscritura() // "todas" no escribe (400)
 
     if (!Object.prototype.hasOwnProperty.call(request.all(), 'convenio_id')) {
       return response.badRequest({ message: 'convenio_id es requerido (null = sin convenio)' })
@@ -942,7 +955,15 @@ export default class TicketsExcepcionDateoController {
         })
       }
       const comision = comisiones[0] ?? null
+      // Multi-sede: la comisión asociada tiene que ser de la sede del ticket.
+      if (comision && comision.sedeId !== ticket.sedeId) {
+        return cortar(409, {
+          code: 'TICKET_OTRA_SEDE',
+          message: 'El ticket y su comisión no son de la misma sede.',
+        })
+      }
       if (comision) {
+        // sede: por id de una comisión ya leída con el mixin
         const enLiquidacion = await trx
           .from('liquidacion_detalle')
           .where('comision_id', comision.id)
@@ -1141,6 +1162,7 @@ export default class TicketsExcepcionDateoController {
    * No toca turno ni dateo ni comisión.
    */
   public async rechazar({ params, request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const motivo = (request.input('motivo') as string | undefined)?.trim()
     if (!motivo) return response.badRequest({ message: 'motivo es requerido' })
 

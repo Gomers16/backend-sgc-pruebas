@@ -51,10 +51,11 @@ export interface TicketOrigenComision {
 /** Condición SQL: la comisión (alias `c`) viene de un ticket aprobado; `soloSin` = con algún "sin comisión". */
 export function sqlComisionDeTicket(c: string, soloSin: boolean): string {
   const sin = soloSin ? ` AND (${sqlFlagAsesor('d')} = 0 OR ${sqlFlagConvenio('d')} = 0)` : ''
+  // sede: correlacionada con la comisión; ticket y dateo de la misma sede que ella
   return (
     `EXISTS (SELECT 1 FROM captacion_dateos cdo` +
     ` JOIN tickets_detalle_excepcion_dateo d ON d.turno_id = cdo.consumido_turno_id` +
-    ` JOIN tickets tko ON tko.id = d.ticket_id AND tko.estado = 'APROBADO'` +
+    ` JOIN tickets tko ON tko.id = d.ticket_id AND tko.estado = 'APROBADO' AND tko.sede_id = cdo.sede_id` +
     ` WHERE cdo.id = ${c}.captacion_dateo_id${sin})`
   )
 }
@@ -82,9 +83,12 @@ export async function ticketsOrigenPorDateo(
   const ids = [...new Set(dateoIds.filter((x): x is number => !!x))]
   const out = new Map<number, TicketOrigenComision>()
   if (!ids.length) return out
+  // sede: por ids de dateos ya filtrados por sede; ticket de la misma sede del dateo
   const filas = (await Database.from('captacion_dateos as cd')
     .join('tickets_detalle_excepcion_dateo as d', 'd.turno_id', 'cd.consumido_turno_id')
-    .join('tickets as t', 't.id', 'd.ticket_id')
+    .join('tickets as t', (j) =>
+      j.on('t.id', '=', 'd.ticket_id').andOn('t.sede_id', '=', 'cd.sede_id')
+    )
     .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id')
     .leftJoin('usuarios as u', 'u.id', 'd.aprobado_por_id')
     .whereIn('cd.id', ids)
@@ -149,6 +153,7 @@ export async function dejadoDePagarComision(
   dateo: { agenteId: number | null; convenioId: number | null } | null
 ): Promise<TicketOrigenComision['dejado_de_pagar']> {
   if (!origen.marca) return null
+  // sede: por id de ticket ya resuelto en la sede activa
   const foto = await Database.from('tickets_detalle_excepcion_dateo')
     .where('ticket_id', origen.ticket_id)
     .select('monto_asesor_calculado', 'monto_convenio_calculado')
@@ -204,6 +209,7 @@ export async function conflictoSinComisionTicket(
   montos: { montoAsesor?: number; montoConvenio?: number }
 ): Promise<ConflictoSinComision | null> {
   if (!turnoId) return null
+  // sede: por el turno (de la sede activa) del que se edita la comisión
   const d = (await Database.from('tickets_detalle_excepcion_dateo as d')
     .join('tickets as t', 't.id', 'd.ticket_id')
     .where('d.turno_id', turnoId)
@@ -289,11 +295,13 @@ export async function registrarExcepcionSinComision(
     .map((c) => `${c} = ${c === 'monto_asesor' ? p.montos.montoAsesor : p.montos.montoConvenio}`)
     .join(', ')
   const linea = `[Excepción ticket #${p.conflicto.ticketId}] ${p.accion}: ${valores} — confirmado por ${p.usuarioNombre} el ${fecha}`
+  // sede: por id de una comisión ya leída con el mixin
   const actual = await cliente
     .from('comisiones')
     .where('id', p.comisionId)
     .select('observacion')
     .first()
+  // sede: por id de una comisión ya leída con el mixin
   await cliente
     .from('comisiones')
     .where('id', p.comisionId)

@@ -46,6 +46,7 @@ const fechaSql = (v: unknown) => (v instanceof Date ? v.toISOString() : v ? Stri
  * código que no escribe eventos, como producción local sobre la misma BD).
  */
 export async function lineaDeTiempoTicket(ticketId: number): Promise<EventoLineaTiempo[]> {
+  // sede: por id de un ticket ya leído con el mixin
   const guardados = await Database.from('ticket_eventos as e')
     .leftJoin('usuarios as u', 'u.id', 'e.usuario_id')
     .where('e.ticket_id', ticketId)
@@ -62,6 +63,7 @@ export async function lineaDeTiempoTicket(ticketId: number): Promise<EventoLinea
   }))
   const tiene = (tipo: TipoTicketEvento) => eventos.some((e) => e.tipo === tipo)
 
+  // sede: por id de un ticket ya leído con el mixin
   const t = await Database.from('tickets as t')
     .leftJoin('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 't.id')
     .leftJoin('usuarios as uc', 'uc.id', 't.creado_por_id')
@@ -146,6 +148,7 @@ export async function lineaDeTiempoTicket(ticketId: number): Promise<EventoLinea
   const conEvento = new Set(
     eventos.filter((e) => e.tipo === 'COMENTARIO').map((e) => Number(e.datos?.comentario_id))
   )
+  // sede: por id de un ticket ya leído con el mixin
   const comentarios = await Database.from('tickets_comentarios as c')
     .leftJoin('usuarios as u', 'u.id', 'c.usuario_id')
     .where('c.ticket_id', ticketId)

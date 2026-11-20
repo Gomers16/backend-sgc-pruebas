@@ -35,6 +35,7 @@ export async function puedeVerTicket(ticket: Ticket, usuario: Usuario): Promise<
   if (rolesResuelve.includes(rol)) return true
 
   const { default: Database } = await import('@adonisjs/lucid/services/db')
+  // sede: por id de un ticket ya leído con el mixin
   const comercialDelTicket = await Database.from('tickets_detalle_excepcion_dateo as d')
     .join('agentes_captacions as a', 'a.id', 'd.comercial_id')
     .where('d.ticket_id', ticket.id)

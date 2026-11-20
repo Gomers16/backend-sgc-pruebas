@@ -25,6 +25,7 @@
 //  El cálculo por ticket (en proceso + estimación de convenio) se limita a
 //  LIMITE_CALCULO_POR_TICKET filas; la respuesta avisa si se truncó.
 
+import { aplicarSede } from '#services/sede_scope'
 import Database from '@adonisjs/lucid/services/db'
 import {
   calcularComision,
@@ -121,11 +122,13 @@ const redondear = (v: number) => Math.round(v * 100) / 100
 
 /** Base común: tickets de Excepción de Dateo con su detalle, filtrados. */
 function base(f: FiltrosTickets) {
+  // sede: aplicarSede(…, 't.sede_id') en el return
   const q = Database.from('tickets as t')
     .join('tipos_ticket as tt', 'tt.id', 't.tipo_ticket_id')
     .join('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 't.id')
     .where('tt.codigo', 'EXCEPCION_DATEO')
-  return aplicarFiltrosTickets(q, f, 't', 'd')
+  // Multi-sede: solo tickets de la sede activa (al final: agrupa los filtros).
+  return aplicarSede(aplicarFiltrosTickets(q, f, 't', 'd'), 't.sede_id')
 }
 
 /** Última comisión real (no config) del dateo vinculado al turno del ticket. */
