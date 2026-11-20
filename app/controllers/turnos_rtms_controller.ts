@@ -247,6 +247,7 @@ export default class TurnosRtmController {
       }
       if (agenteId) query.where('agente_captacion_id', Number(agenteId))
       if (agenteTipo) {
+        // sede: filtro sobre la consulta principal, que ya filtra el mixin
         query.whereHas('agenteCaptacion', (q) => q.where('tipo', String(agenteTipo)))
       }
       if (clienteId) query.where('cliente_id', Number(clienteId))
@@ -2320,6 +2321,7 @@ export default class TurnosRtmController {
       }
       if (agenteId) q.where('agente_captacion_id', Number(agenteId))
       if (agenteTipo) {
+        // sede: filtro sobre la consulta principal, que ya filtra el mixin
         q.whereHas('agenteCaptacion', (qq) => qq.where('tipo', String(agenteTipo)))
       }
 

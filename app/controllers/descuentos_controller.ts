@@ -209,7 +209,9 @@ export default class DescuentosController {
       if (placa) query.where('placa_turno', placa).orWhere('placa', placa)
       if (asesorId) {
         // Filtra por el agente del dateo — requiere subquery via turno → dateo → agente
+        // sede: filtro sobre la consulta principal, que ya filtra el mixin
         query.whereHas('turno', (tq) => {
+          // sede: filtro sobre la consulta principal, que ya filtra el mixin
           tq.whereHas('captacionDateo', (dq) => {
             dq.where('agente_id', asesorId)
           })
