@@ -389,6 +389,7 @@ export default class ClientesController {
       .clone()
       .leftJoin('servicios as s', 's.id', 't.servicio_id')
       .leftJoin('sedes as se', 'se.id', 't.sede_id')
+      // sede: t2 correlacionada con t.sede_id (t ya filtrado por la sede activa)
       .joinRaw(
         `LEFT JOIN captacion_dateos as cd ON cd.id = COALESCE(
   t.captacion_dateo_id,
@@ -475,11 +476,13 @@ export default class ClientesController {
     const hasta = request.input('hasta')
     const estado = request.input('estado')
 
+    // sede: aplicarSede(q, 't.sede_id') tras armar la consulta (abajo)
     let q = db
       .from('turnos_rtms as t')
       .leftJoin('vehiculos as v', 'v.id', 't.vehiculo_id')
       .leftJoin('servicios as s', 's.id', 't.servicio_id')
       .leftJoin('sedes as se', 'se.id', 't.sede_id')
+      // sede: t2 correlacionada con t.sede_id (t ya filtrado por la sede activa)
       .joinRaw(
         `LEFT JOIN captacion_dateos as cd ON cd.id = COALESCE(
   t.captacion_dateo_id,
