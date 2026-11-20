@@ -1,4 +1,6 @@
 // app/controllers/telemercadeo_controller.ts
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
+import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import { preferirConfigDeSede } from '#services/sede_scope'
 import fs from 'node:fs'
 import type { HttpContext } from '@adonisjs/core/http'
@@ -84,7 +86,8 @@ const paginacion = (request: HttpContext['request']) => {
 
 const fechaISO = (v: unknown): string | null => {
   if (!v) return null
-  const dt = v instanceof Date ? DateTime.fromJSDate(v) : DateTime.fromSQL(String(v), { zone: ZONA_TELE })
+  const dt =
+    v instanceof Date ? DateTime.fromJSDate(v) : DateTime.fromSQL(String(v), { zone: ZONA_TELE })
   return dt.isValid ? dt.setZone(ZONA_TELE).toISO() : null
 }
 const fechaDia = (v: unknown): string | null => {
@@ -96,8 +99,16 @@ const fechaDia = (v: unknown): string | null => {
 const parseMesAnio = (mesRaw: unknown, anioRaw: unknown) => {
   const hoy = DateTime.now().setZone(ZONA_TELE)
   const mes = mesRaw === undefined || mesRaw === null || mesRaw === '' ? hoy.month : Number(mesRaw)
-  const anio = anioRaw === undefined || anioRaw === null || anioRaw === '' ? hoy.year : Number(anioRaw)
-  if (!Number.isInteger(mes) || mes < 1 || mes > 12 || !Number.isInteger(anio) || anio < 2020 || anio > 2100) {
+  const anio =
+    anioRaw === undefined || anioRaw === null || anioRaw === '' ? hoy.year : Number(anioRaw)
+  if (
+    !Number.isInteger(mes) ||
+    mes < 1 ||
+    mes > 12 ||
+    !Number.isInteger(anio) ||
+    anio < 2020 ||
+    anio > 2100
+  ) {
     return { error: 'mes (1-12) y anio inválidos' as const }
   }
   return { mes, anio }
@@ -167,7 +178,9 @@ export default class TelemercadeoController {
    * Agente cuyo historial se consulta: un asesor siempre el suyo (aunque
    * mande agente_id); SUPER_ADMIN/GERENCIA el que pidan (o todos).
    */
-  private async alcance(ctx: HttpContext): Promise<{ agenteId: number | null } | { error: number; message: string }> {
+  private async alcance(
+    ctx: HttpContext
+  ): Promise<{ agenteId: number | null } | { error: number; message: string }> {
     const rol = await rolDe(ctx.auth)
     if (ROLES_CONTROL.includes(rol)) {
       const raw = ctx.request.input('agente_id')
@@ -200,6 +213,7 @@ export default class TelemercadeoController {
       rango = r
     }
 
+    // sede: aplicarSede(q, 'g.sede_id') tras los filtros (abajo)
     const q = Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
@@ -209,7 +223,8 @@ export default class TelemercadeoController {
       .leftJoin('clientes as cl', 'cl.id', 'g.cliente_id')
 
     if (alc.agenteId !== null) q.where('g.agente_id', alc.agenteId)
-    if (rango) q.where('g.created_at', '>=', rango.inicioSql).where('g.created_at', '<', rango.finSql)
+    if (rango)
+      q.where('g.created_at', '>=', rango.inicioSql).where('g.created_at', '<', rango.finSql)
 
     const placa = normalizarPlacaTele(request.input('placa'))
     if (placa) q.where('g.placa', 'like', `%${placa.replace(/[\\%_]/g, '\\$&')}%`)
@@ -240,9 +255,13 @@ export default class TelemercadeoController {
       q.where('c.abierto_key', 1)
         .whereRaw('g.numero_en_ciclo = c.numero_gestiones')
         .whereIn('g.resultado', ['SIN_RESPUESTA', 'VOLVER_A_LLAMAR', 'INTERESADO'])
-        .where((w) => w.whereNull('g.proximo_contacto_at').orWhere('g.proximo_contacto_at', '<=', hoy))
+        .where((w) =>
+          w.whereNull('g.proximo_contacto_at').orWhere('g.proximo_contacto_at', '<=', hoy)
+        )
     }
 
+    // Multi-sede: solo gestiones de la sede activa (al final: agrupa lo anterior).
+    aplicarSede(q, 'g.sede_id')
     const { page, perPage } = paginacion(request)
     const [{ total }] = await q.clone().count('* as total')
     const rows = await q
@@ -271,7 +290,9 @@ export default class TelemercadeoController {
 
     const totalN = Number(total)
     return response.ok({
-      data: rows.map((r: any) => this.serializarGestion(r, maxPorAgente.get(Number(r.agente_id)) ?? 3)),
+      data: rows.map((r: any) =>
+        this.serializarGestion(r, maxPorAgente.get(Number(r.agente_id)) ?? 3)
+      ),
       meta: {
         total: totalN,
         current_page: page,
@@ -316,7 +337,11 @@ export default class TelemercadeoController {
   /** Lectura de una gestión con el mismo alcance que el listado. */
   private async gestionVisible(ctx: HttpContext, id: number) {
     const rol = await rolDe(ctx.auth)
-    const row = await Database.from('telemercadeo_gestiones').where('id', id).first()
+    // Multi-sede: una gestión de otra sede → 404.
+    const row = await aplicarSede(
+      Database.from('telemercadeo_gestiones').where('id', id),
+      'sede_id'
+    ).first()
     if (!row) return { error: 404, message: 'Gestión no encontrada' } as const
     if (ROLES_CONTROL.includes(rol)) return { row }
     const agente = await agenteTelemercadeoDeUsuario(ctx.auth.user!.id)
@@ -331,6 +356,7 @@ export default class TelemercadeoController {
     const id = Number(ctx.params.id)
     const vis = await this.gestionVisible(ctx, id)
     if ('error' in vis) return ctx.response.status(vis.error!).send({ message: vis.message })
+    // sede: por id de una gestión ya validada en la sede activa (gestionVisible)
     const r = await Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
@@ -362,7 +388,8 @@ export default class TelemercadeoController {
     const vis = await this.gestionVisible(ctx, Number(ctx.params.id))
     if ('error' in vis) return ctx.response.status(vis.error!).send({ message: vis.message })
     const ruta = vis.row.evidencia_ruta
-    if (!esRutaEvidenciaTele(ruta)) return ctx.response.notFound({ message: 'Evidencia no disponible' })
+    if (!esRutaEvidenciaTele(ruta))
+      return ctx.response.notFound({ message: 'Evidencia no disponible' })
     const abs = rutaAbsolutaEvidencia(ruta)
     if (!fs.existsSync(abs)) return ctx.response.notFound({ message: 'Evidencia no disponible' })
     ctx.response.header('Cache-Control', 'private, no-store')
@@ -374,6 +401,7 @@ export default class TelemercadeoController {
    * (rol COMERCIAL) y siempre a su nombre. 201 nueva / 200 reenvío idempotente.
    */
   public async registrar({ request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const agente = await agenteTelemercadeoDeUsuario(auth.user!.id)
     if (!agente) {
       return response.forbidden({
@@ -381,18 +409,22 @@ export default class TelemercadeoController {
         message: 'Solo los asesores de Telemercadeo pueden registrar gestiones.',
       })
     }
-    const res = await registrarGestion(agente, auth.user!.id, request.only([
-      'placa',
-      'telefono',
-      'servicio_id',
-      'medio',
-      'origen_id',
-      'resultado',
-      'evidencia_ruta',
-      'observacion',
-      'proximo_contacto_at',
-      'idempotency_key',
-    ]) as any)
+    const res = await registrarGestion(
+      agente,
+      auth.user!.id,
+      request.only([
+        'placa',
+        'telefono',
+        'servicio_id',
+        'medio',
+        'origen_id',
+        'resultado',
+        'evidencia_ruta',
+        'observacion',
+        'proximo_contacto_at',
+        'idempotency_key',
+      ]) as any
+    )
     if (!res.ok) return response.status(res.status).send(res.body)
 
     const avisos = await avisosGestion({
@@ -401,6 +433,7 @@ export default class TelemercadeoController {
       servicioId: res.gestion.servicioId,
       agenteId: agente.id,
     })
+    // sede: por id de la gestión recién creada en la sede activa
     const r = await Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
@@ -464,11 +497,13 @@ export default class TelemercadeoController {
           .select('id', 'nombre', 'telefono', 'doc_tipo', 'doc_numero')
           .first()
       : null
-    const telefono = normalizarTelefonoTele(request.input('telefono')) ?? normalizarTelefonoTele(cliente?.telefono)
+    const telefono =
+      normalizarTelefonoTele(request.input('telefono')) ?? normalizarTelefonoTele(cliente?.telefono)
 
     const estado = await estadoSeguimiento(placa, servicioId, agente?.id ?? null)
     const gestionesCiclo = estado.ciclo_id
-      ? await Database.from('telemercadeo_gestiones as g')
+      ? // sede: gestiones de un ciclo de la sede activa (estadoSeguimiento usa el mixin)
+        await Database.from('telemercadeo_gestiones as g')
           .join('agentes_captacions as a', 'a.id', 'g.agente_id')
           .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
           .where('g.ciclo_id', estado.ciclo_id)
@@ -489,14 +524,21 @@ export default class TelemercadeoController {
       placa,
       servicio_id: servicioId,
       vehiculo: vehiculo
-        ? { id: vehiculo.id, marca: vehiculo.marca ?? null, linea: vehiculo.linea ?? null, modelo: vehiculo.modelo ?? null }
+        ? {
+            id: vehiculo.id,
+            marca: vehiculo.marca ?? null,
+            linea: vehiculo.linea ?? null,
+            modelo: vehiculo.modelo ?? null,
+          }
         : null,
       cliente: cliente
         ? {
             id: cliente.id,
             nombre: cliente.nombre,
             telefono: cliente.telefono ?? null,
-            documento: cliente.doc_numero ? [cliente.doc_tipo, cliente.doc_numero].filter(Boolean).join(' ') : null,
+            documento: cliente.doc_numero
+              ? [cliente.doc_tipo, cliente.doc_numero].filter(Boolean).join(' ')
+              : null,
           }
         : null,
       seguimiento: estado,
@@ -563,6 +605,7 @@ export default class TelemercadeoController {
       .join('servicios as s', 's.id', 'g.servicio_id')
       .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id')
       .leftJoin('clientes as cl', 'cl.id', 'g.cliente_id')
+      .where((q) => aplicarSede(q, 'g.sede_id'))
       .where('g.created_at', '>=', r.inicioSql)
       .where('g.created_at', '<', r.finSql)
       .orderBy('g.created_at', 'asc')
@@ -595,7 +638,14 @@ export default class TelemercadeoController {
     const pct = (v: number | null) => (v === null ? '—' : `${v}%`)
 
     const ws = wb.addWorksheet('Resumen')
-    ws.columns = [{ width: 34 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 16 }]
+    ws.columns = [
+      { width: 34 },
+      { width: 14 },
+      { width: 14 },
+      { width: 14 },
+      { width: 14 },
+      { width: 16 },
+    ]
     ws.addRow([`Telemercadeo — Resumen (${r.desde} a ${r.hasta})`]).font = { bold: true, size: 13 }
     if (truncado) ws.addRow([avisoTruncado]).font = { bold: true, color: { argb: 'FFC00000' } }
     ws.addRow([])
@@ -607,7 +657,8 @@ export default class TelemercadeoController {
     ws.addRow(['Turnos logrados', t.turnos, pct(t.tasa_turno_sobre_gestiones)])
     ws.addRow([])
     negrita(ws.addRow(['Por medio de contacto', 'Gestiones', 'Dateos', 'Exitosos']))
-    for (const m of res.por_medio) ws.addRow([MEDIO_LABEL[m.medio] ?? m.medio, m.gestiones, m.dateos, m.exitosos])
+    for (const m of res.por_medio)
+      ws.addRow([MEDIO_LABEL[m.medio] ?? m.medio, m.gestiones, m.dateos, m.exitosos])
     ws.addRow([])
     negrita(ws.addRow(['Por canal de origen', 'Gestiones', 'Dateos', 'Exitosos', 'Conversión']))
     for (const o of res.por_origen) {
@@ -615,53 +666,111 @@ export default class TelemercadeoController {
     }
     ws.addRow([])
     negrita(ws.addRow(['Por resultado', 'Gestiones']))
-    for (const x of res.por_resultado) ws.addRow([RESULTADO_LABEL[x.resultado] ?? x.resultado, x.gestiones])
+    for (const x of res.por_resultado)
+      ws.addRow([RESULTADO_LABEL[x.resultado] ?? x.resultado, x.gestiones])
 
     const wa = wb.addWorksheet('Por asesor')
     wa.columns = [
-      { width: 32 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 },
-      { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 12 },
+      { width: 32 },
+      { width: 12 },
+      { width: 10 },
+      { width: 10 },
+      { width: 10 },
+      { width: 14 },
+      { width: 14 },
+      { width: 14 },
+      { width: 14 },
+      { width: 12 },
     ]
     negrita(
       wa.addRow([
-        'Asesor', 'Gestiones', 'Dateos', 'Exitosos', 'Turnos', 'Conversión',
-        'Meta exitosos', 'Avance', 'Faltante', 'Semáforo',
+        'Asesor',
+        'Gestiones',
+        'Dateos',
+        'Exitosos',
+        'Turnos',
+        'Conversión',
+        'Meta exitosos',
+        'Avance',
+        'Faltante',
+        'Semáforo',
       ])
     )
     for (const a of res.por_asesor) {
       const m = a.metas.exitosos
       wa.addRow([
-        a.nombre, a.gestiones, a.dateos, a.exitosos, a.turnos, pct(a.tasa_exito_sobre_gestiones),
-        m.meta ?? 'Sin meta', m.meta === null ? '—' : pct(m.pct), m.faltante ?? '—',
+        a.nombre,
+        a.gestiones,
+        a.dateos,
+        a.exitosos,
+        a.turnos,
+        pct(a.tasa_exito_sobre_gestiones),
+        m.meta ?? 'Sin meta',
+        m.meta === null ? '—' : pct(m.pct),
+        m.faltante ?? '—',
         m.semaforo === 'SIN_META' ? 'Sin meta' : m.semaforo,
       ])
     }
 
     const wd = wb.addWorksheet('Gestiones')
     wd.columns = [
-      { width: 18 }, { width: 26 }, { width: 10 }, { width: 26 }, { width: 14 }, { width: 8 },
-      { width: 16 }, { width: 18 }, { width: 18 }, { width: 6 }, { width: 10 }, { width: 14 }, { width: 40 },
+      { width: 18 },
+      { width: 26 },
+      { width: 10 },
+      { width: 26 },
+      { width: 14 },
+      { width: 8 },
+      { width: 16 },
+      { width: 18 },
+      { width: 18 },
+      { width: 6 },
+      { width: 10 },
+      { width: 14 },
+      { width: 40 },
     ]
     if (truncado) wd.addRow([avisoTruncado]).font = { bold: true, color: { argb: 'FFC00000' } }
     negrita(
       wd.addRow([
-        'Fecha', 'Asesor', 'Placa', 'Cliente', 'Teléfono', 'Servicio', 'Medio', 'Origen',
-        'Resultado', 'Seg.', 'Dateo', 'Estado dateo', 'Observación',
+        'Fecha',
+        'Asesor',
+        'Placa',
+        'Cliente',
+        'Teléfono',
+        'Servicio',
+        'Medio',
+        'Origen',
+        'Resultado',
+        'Seg.',
+        'Dateo',
+        'Estado dateo',
+        'Observación',
       ])
     )
     for (const g of detalle) {
       const f = fechaISO(g.created_at)
       wd.addRow([
         f ? DateTime.fromISO(f).setZone(ZONA_TELE).toFormat('dd/LL/yyyy HH:mm') : '',
-        g.agente_nombre, g.placa, g.cliente_nombre ?? '', g.telefono ?? '', g.codigo_servicio ?? '',
-        MEDIO_LABEL[g.medio] ?? g.medio, g.origen_nombre, RESULTADO_LABEL[g.resultado] ?? g.resultado,
-        Number(g.numero_en_ciclo), g.captacion_dateo_id ?? '', g.dateo_resultado ?? '', g.observacion ?? '',
+        g.agente_nombre,
+        g.placa,
+        g.cliente_nombre ?? '',
+        g.telefono ?? '',
+        g.codigo_servicio ?? '',
+        MEDIO_LABEL[g.medio] ?? g.medio,
+        g.origen_nombre,
+        RESULTADO_LABEL[g.resultado] ?? g.resultado,
+        Number(g.numero_en_ciclo),
+        g.captacion_dateo_id ?? '',
+        g.dateo_resultado ?? '',
+        g.observacion ?? '',
       ])
     }
 
     const buffer = await wb.xlsx.writeBuffer()
     const nombre = `Telemercadeo_${r.desde.replace(/-/g, '')}_a_${r.hasta.replace(/-/g, '')}.xlsx`
-    response.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response.header(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
     response.header('Content-Disposition', `attachment; filename="${nombre}"`)
     if (truncado) response.header('X-Detalle-Truncado', String(maxDetalle))
     return response.send(Buffer.from(buffer as ArrayBuffer))
@@ -676,6 +785,7 @@ export default class TelemercadeoController {
 
   /** PUT /api/telemercadeo/metas { mes, anio, metas: [{ asesor_id, meta_gestiones, meta_dateos, meta_exitosos }] } */
   public async guardarMetas({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const ma = parseMesAnio(request.input('mes'), request.input('anio'))
     if ('error' in ma) return response.badRequest({ message: ma.error })
     const res = await guardarMetas(ma.mes, ma.anio, request.input('metas'))
@@ -685,10 +795,13 @@ export default class TelemercadeoController {
 
   /** POST /api/telemercadeo/metas/copiar { desde_mes, desde_anio, hacia_mes, hacia_anio, sobrescribir } */
   public async copiarMetas({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const desde = parseMesAnio(request.input('desde_mes'), request.input('desde_anio'))
     const hacia = parseMesAnio(request.input('hacia_mes'), request.input('hacia_anio'))
     if ('error' in desde || 'error' in hacia) {
-      return response.badRequest({ message: 'desde_mes/desde_anio y hacia_mes/hacia_anio son obligatorios y válidos' })
+      return response.badRequest({
+        message: 'desde_mes/desde_anio y hacia_mes/hacia_anio son obligatorios y válidos',
+      })
     }
     if (!request.input('desde_mes') || !request.input('hacia_mes')) {
       return response.badRequest({ message: 'desde_mes y hacia_mes son obligatorios' })
@@ -696,11 +809,18 @@ export default class TelemercadeoController {
     const sobrescribir = [true, 'true', 1, '1'].includes(request.input('sobrescribir'))
     const res = await copiarMetas(desde, hacia, sobrescribir)
     if ('error' in res) return response.badRequest({ message: res.error })
-    return response.ok({ mes: hacia.mes, anio: hacia.anio, copiadas: res.copiadas, omitidas: res.omitidas, data: res.data })
+    return response.ok({
+      mes: hacia.mes,
+      anio: hacia.anio,
+      copiadas: res.copiadas,
+      omitidas: res.omitidas,
+      data: res.data,
+    })
   }
 
   /** POST /api/telemercadeo/ciclos/:id/autorizar-extra { motivo } */
   public async autorizarExtra({ params, request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const res = await autorizarExtra(Number(params.id), auth.user!.id, request.input('motivo'))
     if (!res.ok) return response.status(res.status).send(res.body)
     const autorizaciones = await Database.from('telemercadeo_ciclo_autorizaciones as x')
@@ -727,12 +847,17 @@ export default class TelemercadeoController {
   /** GET /api/telemercadeo/config/max-seguimientos */
   public async configGet({ response }: HttpContext) {
     const cfg = await getConfigSeguimientoTele()
-    return response.ok({ max_seguimientos: cfg.maxSeguimientos, dias_vigencia_ciclo: cfg.diasVigenciaCiclo })
+    return response.ok({
+      max_seguimientos: cfg.maxSeguimientos,
+      dias_vigencia_ciclo: cfg.diasVigenciaCiclo,
+    })
   }
 
   /** POST /api/telemercadeo/config/max-seguimientos { max_seguimientos?, dias_vigencia_ciclo? } */
   public async configUpsert({ request, response }: HttpContext) {
-    const entero = (v: unknown) => (v === undefined || v === null || v === '' ? undefined : Math.trunc(Number(v)))
+    sedeParaEscritura() // "todas" no escribe (400)
+    const entero = (v: unknown) =>
+      v === undefined || v === null || v === '' ? undefined : Math.trunc(Number(v))
     const max = entero(request.input('max_seguimientos'))
     const dias = entero(request.input('dias_vigencia_ciclo'))
     if (max === undefined && dias === undefined) {
@@ -742,19 +867,26 @@ export default class TelemercadeoController {
       return response.badRequest({ message: 'max_seguimientos debe ser un entero entre 1 y 50' })
     }
     if (dias !== undefined && (!Number.isFinite(dias) || dias <= 0 || dias > 365)) {
-      return response.badRequest({ message: 'dias_vigencia_ciclo debe ser un entero entre 1 y 365' })
+      return response.badRequest({
+        message: 'dias_vigencia_ciclo debe ser un entero entre 1 y 365',
+      })
     }
     await getConfigSeguimientoTele()
     const cfg = (await preferirConfigDeSede(ConfiguracionSeguimientoTeleGlobal.query()).first())!
     if (max !== undefined) cfg.maxSeguimientos = max
     if (dias !== undefined) cfg.diasVigenciaCiclo = dias
     await cfg.save()
-    return response.ok({ max_seguimientos: cfg.maxSeguimientos, dias_vigencia_ciclo: cfg.diasVigenciaCiclo })
+    return response.ok({
+      max_seguimientos: cfg.maxSeguimientos,
+      dias_vigencia_ciclo: cfg.diasVigenciaCiclo,
+    })
   }
 
   /** GET /api/telemercadeo/config/max-seguimientos/asesores */
   public async configAsesoresIndex({ response }: HttpContext) {
-    const configs = await ConfiguracionSeguimientoTeleAsesor.query().preload('asesor')
+    const configs = await ConfiguracionSeguimientoTeleAsesor.query()
+      .whereRaw(sqlAsesorDeLaSede('asesor_id'))
+      .preload('asesor')
     return response.ok({
       data: configs.map((c) => ({
         id: c.id,
@@ -767,10 +899,12 @@ export default class TelemercadeoController {
 
   /** POST /api/telemercadeo/config/max-seguimientos/asesores { asesor_id, max_seguimientos } (null = usa el global) */
   public async configAsesoresUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const asesorId = Number(request.input('asesor_id'))
     if (!Number.isInteger(asesorId) || asesorId <= 0) {
       return response.badRequest({ message: 'asesor_id es requerido' })
     }
+    // sede: el asesor ya se validó en la sede activa (estadoAgenteEnSede, abajo/arriba)
     const agente = await Database.from('agentes_captacions')
       .where('id', asesorId)
       .where('tipo', TIPO_AGENTE_TELE)
@@ -787,17 +921,33 @@ export default class TelemercadeoController {
         })
       }
     }
+    {
+      const visAsesor = await estadoAgenteEnSede(Number(asesorId))
+      if (visAsesor === 'otra') {
+        return response.conflict({
+          code: 'AGENTE_OTRA_SEDE',
+          message: 'El asesor pertenece a otra sede.',
+        })
+      }
+      if (visAsesor === 'no') return response.notFound({ message: 'Asesor no encontrado' })
+    }
     let cfg = await ConfiguracionSeguimientoTeleAsesor.query().where('asesor_id', asesorId).first()
-    if (!cfg) cfg = await ConfiguracionSeguimientoTeleAsesor.create({ asesorId, maxSeguimientos: max })
+    if (!cfg)
+      cfg = await ConfiguracionSeguimientoTeleAsesor.create({ asesorId, maxSeguimientos: max })
     else {
       cfg.maxSeguimientos = max
       await cfg.save()
     }
-    return response.ok({ id: cfg.id, asesor_id: cfg.asesorId, max_seguimientos: cfg.maxSeguimientos })
+    return response.ok({
+      id: cfg.id,
+      asesor_id: cfg.asesorId,
+      max_seguimientos: cfg.maxSeguimientos,
+    })
   }
 
   /** DELETE /api/telemercadeo/config/max-seguimientos/asesores/:id */
   public async configAsesoresDelete({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const cfg = await ConfiguracionSeguimientoTeleAsesor.find(params.id)
     if (!cfg) return response.notFound({ message: 'Configuración no encontrada' })
     await cfg.delete()
@@ -807,6 +957,7 @@ export default class TelemercadeoController {
   /** GET /api/telemercadeo/asesores — agentes de Telemercadeo (para filtros y metas). */
   public async asesores({ response }: HttpContext) {
     const rows = await Database.from('agentes_captacions')
+      .where((q) => aplicarSede(q, 'agentes_captacions.sede_id'))
       .where('tipo', TIPO_AGENTE_TELE)
       .orderBy('nombre')
       .select('id', 'nombre', 'activo', 'usuario_id')

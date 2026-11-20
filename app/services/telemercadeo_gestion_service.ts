@@ -12,6 +12,7 @@
 //  - Evidencia: ruta privada uploads/telemercadeo/AAAA/MM/<cuid>.<ext>.
 //  - Vínculo gestión ↔ dateo dentro de la transacción de store().
 
+import { aplicarSede, sedeSql } from '#services/sede_scope'
 import { preferirConfigDeSede } from '#services/sede_scope'
 import fs from 'node:fs'
 import { DateTime } from 'luxon'
@@ -131,13 +132,17 @@ async function hayTurnoFinalizadoDesde(
   desdeISO: string,
   client?: TransactionClientContract
 ): Promise<boolean> {
-  const row = await (client ?? Database)
-    .from('turnos_rtms')
-    .where('placa', placa)
-    .where('servicio_id', servicioId)
-    .where('estado', 'finalizado')
-    .where('es_segunda_vez', 0)
-    .where('fecha', '>=', desdeISO)
+  // Multi-sede: el ciclo es de la sede; solo cuenta una visita en esa sede.
+  const row = await aplicarSede(
+    (client ?? Database)
+      .from('turnos_rtms')
+      .where('placa', placa)
+      .where('servicio_id', servicioId)
+      .where('estado', 'finalizado')
+      .where('es_segunda_vez', 0)
+      .where('fecha', '>=', desdeISO),
+    'sede_id'
+  )
     .select('id')
     .first()
   return !!row
@@ -256,8 +261,12 @@ export async function avisosGestion(p: {
   let rtmVigente: AvisosGestion['rtm_vigente'] = null
   const servicio = await Database.from('servicios').where('id', p.servicioId).first()
   if (String(servicio?.codigo_servicio ?? '').toUpperCase() === 'RTM') {
-    const ultimoRtm = await whereTurnoDaVigencia(
-      Database.from('turnos_rtms').where('placa', p.placa).where('servicio_id', p.servicioId)
+    // Multi-sede: la ventana RTM es por sede.
+    const ultimoRtm = await aplicarSede(
+      whereTurnoDaVigencia(
+        Database.from('turnos_rtms').where('placa', p.placa).where('servicio_id', p.servicioId)
+      ),
+      'sede_id'
     )
       .orderBy('fecha', 'desc')
       .select('fecha')
@@ -314,11 +323,15 @@ async function servicioRtmId(): Promise<number | null> {
 /** Validación de la entrada (sin BD salvo catálogos). */
 async function validarEntrada(e: EntradaGestion) {
   const placa = normalizarPlacaTele(e.placa)
-  if (!RE_PLACA.test(placa)) return falla(400, { code: 'PLACA_INVALIDA', message: 'Placa inválida' })
+  if (!RE_PLACA.test(placa))
+    return falla(400, { code: 'PLACA_INVALIDA', message: 'Placa inválida' })
 
   const medio = String(e.medio ?? '').toUpperCase() as MedioGestion
   if (!MEDIOS_GESTION.includes(medio)) {
-    return falla(400, { code: 'MEDIO_INVALIDO', message: `medio debe ser ${MEDIOS_GESTION.join(', ')}` })
+    return falla(400, {
+      code: 'MEDIO_INVALIDO',
+      message: `medio debe ser ${MEDIOS_GESTION.join(', ')}`,
+    })
   }
 
   const resultado = String(e.resultado ?? '').toUpperCase() as ResultadoGestion
@@ -342,10 +355,13 @@ async function validarEntrada(e: EntradaGestion) {
     servicioId = await servicioRtmId()
   } else {
     const sid = Number(e.servicio_id)
-    const s = Number.isInteger(sid) ? await Database.from('servicios').where('id', sid).first() : null
+    const s = Number.isInteger(sid)
+      ? await Database.from('servicios').where('id', sid).first()
+      : null
     servicioId = s ? sid : null
   }
-  if (!servicioId) return falla(400, { code: 'SERVICIO_INVALIDO', message: 'servicio_id no existe' })
+  if (!servicioId)
+    return falla(400, { code: 'SERVICIO_INVALIDO', message: 'servicio_id no existe' })
 
   if (!esRutaEvidenciaTele(e.evidencia_ruta)) {
     return falla(400, {
@@ -354,11 +370,16 @@ async function validarEntrada(e: EntradaGestion) {
     })
   }
   if (!fs.existsSync(rutaAbsolutaEvidencia(e.evidencia_ruta))) {
-    return falla(400, { code: 'EVIDENCIA_NO_EXISTE', message: 'La evidencia no existe en el servidor' })
+    return falla(400, {
+      code: 'EVIDENCIA_NO_EXISTE',
+      message: 'La evidencia no existe en el servidor',
+    })
   }
 
   const observacion =
-    e.observacion === undefined || e.observacion === null ? null : String(e.observacion).trim() || null
+    e.observacion === undefined || e.observacion === null
+      ? null
+      : String(e.observacion).trim() || null
   if (observacion && observacion.length > OBSERVACION_MAX) {
     return falla(400, {
       code: 'OBSERVACION_LARGA',
@@ -367,10 +388,17 @@ async function validarEntrada(e: EntradaGestion) {
   }
 
   let proximo: DateTime | null = null
-  if (e.proximo_contacto_at !== undefined && e.proximo_contacto_at !== null && e.proximo_contacto_at !== '') {
+  if (
+    e.proximo_contacto_at !== undefined &&
+    e.proximo_contacto_at !== null &&
+    e.proximo_contacto_at !== ''
+  ) {
     proximo = DateTime.fromISO(String(e.proximo_contacto_at).substring(0, 10), { zone: ZONA_TELE })
     if (!proximo.isValid) {
-      return falla(400, { code: 'FECHA_INVALIDA', message: 'proximo_contacto_at debe ser AAAA-MM-DD' })
+      return falla(400, {
+        code: 'FECHA_INVALIDA',
+        message: 'proximo_contacto_at debe ser AAAA-MM-DD',
+      })
     }
   }
 
@@ -568,7 +596,10 @@ export async function autorizarExtra(cicloId: number, usuarioId: number, motivoR
   }
   const trx = await Database.transaction()
   try {
-    const ciclo = await TelemercadeoCiclo.query({ client: trx }).where('id', cicloId).forUpdate().first()
+    const ciclo = await TelemercadeoCiclo.query({ client: trx })
+      .where('id', cicloId)
+      .forUpdate()
+      .first()
     if (!ciclo) {
       await trx.rollback()
       return falla(404, { code: 'CICLO_NO_ENCONTRADO', message: 'Ciclo no encontrado' })
@@ -579,12 +610,15 @@ export async function autorizarExtra(cicloId: number, usuarioId: number, motivoR
     }
     ciclo.extrasAutorizados += 1
     await ciclo.useTransaction(trx).save()
-    await trx.insertQuery().table('telemercadeo_ciclo_autorizaciones').insert({
-      ciclo_id: ciclo.id,
-      usuario_id: usuarioId,
-      motivo,
-      created_at: DateTime.now().toFormat('yyyy-LL-dd HH:mm:ss'),
-    })
+    await trx
+      .insertQuery()
+      .table('telemercadeo_ciclo_autorizaciones')
+      .insert({
+        ciclo_id: ciclo.id,
+        usuario_id: usuarioId,
+        motivo,
+        created_at: DateTime.now().toFormat('yyyy-LL-dd HH:mm:ss'),
+      })
     await trx.commit()
     return { ok: true as const, ciclo }
   } catch (err) {
@@ -613,7 +647,8 @@ export async function prepararDateoDesdeGestion(
     })
   }
   const gestion = await TelemercadeoGestion.find(gestionId)
-  if (!gestion) return falla(404, { code: 'GESTION_NO_ENCONTRADA', message: 'Gestión no encontrada' })
+  if (!gestion)
+    return falla(404, { code: 'GESTION_NO_ENCONTRADA', message: 'Gestión no encontrada' })
   if (gestion.agenteId !== agente.id) {
     return falla(403, { code: 'GESTION_AJENA', message: 'La gestión no es tuya.' })
   }
@@ -698,7 +733,9 @@ export async function seguimientoPorPlacas(
   const ultimas = (await Database.from('telemercadeo_gestiones as g')
     .joinRaw(
       `JOIN (SELECT MAX(id) AS id FROM telemercadeo_gestiones
-             WHERE placa IN (${placas.map(() => '?').join(',')}) GROUP BY placa) m ON m.id = g.id`,
+             WHERE placa IN (${placas.map(() => '?').join(',')})
+               AND ${sedeSql('telemercadeo_gestiones')}
+             GROUP BY placa) m ON m.id = g.id`,
       placas
     )
     .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id')
@@ -724,11 +761,13 @@ export async function seguimientoPorPlacas(
 
   const aDT = (v: unknown) =>
     v instanceof Date ? DateTime.fromJSDate(v) : DateTime.fromSQL(String(v), { zone: ZONA_TELE })
-  const minApertura = ultimas
-    .map((u) => fechaBogota(aDT(u.ciclo_created_at)))
-    .sort()[0]
-  const turnos = (await Database.from('turnos_rtms')
-    .whereIn('placa', ultimas.map((u) => u.placa))
+  const minApertura = ultimas.map((u) => fechaBogota(aDT(u.ciclo_created_at))).sort()[0]
+  // sede: visitas de la sede activa (aplicarSede abajo)
+  const turnos = (await aplicarSede(Database.from('turnos_rtms'), 'sede_id')
+    .whereIn(
+      'placa',
+      ultimas.map((u) => u.placa)
+    )
     .where('estado', 'finalizado')
     .where('es_segunda_vez', 0)
     .where('fecha', '>=', minApertura)
@@ -738,7 +777,9 @@ export async function seguimientoPorPlacas(
   const ultimoTurno = new Map<string, string>(
     turnos.map((t) => [
       `${t.placa}|${t.servicio_id}`,
-      t.fecha instanceof Date ? DateTime.fromJSDate(t.fecha).toISODate()! : String(t.fecha).substring(0, 10),
+      t.fecha instanceof Date
+        ? DateTime.fromJSDate(t.fecha).toISODate()!
+        : String(t.fecha).substring(0, 10),
     ])
   )
 

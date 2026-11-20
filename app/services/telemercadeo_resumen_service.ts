@@ -15,6 +15,7 @@
 // Semáforo por ritmo: el avance se compara contra la meta prorrateada a los
 // días transcurridos del periodo (un mes en curso no aparece en rojo el día 3).
 
+import { aplicarSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
 import { mesesEnRango } from '#services/meta_asesor_service'
@@ -122,12 +123,14 @@ const aConteos = (r: any): Conteos => ({
 })
 
 function base(r: Rango, agenteId: number | null) {
+  // sede: aplicarSede en el return
   const q = Database.from('telemercadeo_gestiones as g')
     .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id')
     .where('g.created_at', '>=', r.inicioSql)
     .where('g.created_at', '<', r.finSql)
   if (agenteId !== null) q.where('g.agente_id', agenteId)
-  return q
+  // Multi-sede: solo gestiones de la sede activa.
+  return aplicarSede(q, 'g.sede_id')
 }
 
 const tasa = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : null)
@@ -197,7 +200,9 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
     .groupBy('g.origen_id')
     .select('g.origen_id')
     .select(Database.raw(SUMAS))
-  const origenes = await Database.from('telemercadeo_origenes').orderBy('orden').select('id', 'codigo', 'nombre')
+  const origenes = await Database.from('telemercadeo_origenes')
+    .orderBy('orden')
+    .select('id', 'codigo', 'nombre')
 
   const porAgente = await base(r, agenteId)
     .groupBy('g.agente_id')
@@ -207,6 +212,7 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
     porAgente.map((x: any) => [Number(x.agente_id), aConteos(x)])
   )
 
+  // sede: aplicarSede(agentesQ) antes de ejecutar (abajo)
   const agentesQ = Database.from('agentes_captacions')
     .where((q) => {
       q.where('tipo', TIPO_AGENTE_TELE)
@@ -215,6 +221,8 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
     .select('id', 'nombre', 'activo')
     .orderBy('nombre')
   if (agenteId !== null) agentesQ.where('id', agenteId)
+  // Multi-sede: asesores de la sede activa (al final: agrupa el OR de arriba).
+  aplicarSede(agentesQ, 'agentes_captacions.sede_id')
   const agentes = await agentesQ
 
   const fraccion = fraccionTranscurrida(r)
@@ -287,9 +295,11 @@ const metaNum = (v: unknown): number | null | 'invalido' => {
 
 export async function listarMetas(mes: number, anio: number) {
   const agentes = await Database.from('agentes_captacions')
+    .where((q) => aplicarSede(q, 'agentes_captacions.sede_id'))
     .where('tipo', TIPO_AGENTE_TELE)
     .select('id', 'nombre', 'activo')
     .orderBy('nombre')
+  // sede: metas de los asesores listados arriba (de la sede activa)
   const filas = await Database.from('meta_telemercadeo_asesor').where({ mes, anio })
   return agentes.map((a: any) => {
     const f = filas.find((x: any) => Number(x.asesor_id) === Number(a.id))
@@ -324,7 +334,9 @@ export async function guardarMetas(mes: number, anio: number, filasRaw: unknown)
     filas.push({ asesorId, g, d, e })
   }
   const ids = [...new Set(filas.map((f) => f.asesorId))]
+  // Multi-sede: solo asesores de la sede activa (uno de otra sede → error).
   const validos = await Database.from('agentes_captacions')
+    .where((q) => aplicarSede(q, 'agentes_captacions.sede_id'))
     .whereIn('id', ids)
     .where('tipo', TIPO_AGENTE_TELE)
     .select('id')
@@ -335,7 +347,10 @@ export async function guardarMetas(mes: number, anio: number, filasRaw: unknown)
   await Database.transaction(async (trx) => {
     for (const f of filas) {
       if (f.g === null && f.d === null && f.e === null) {
-        await trx.from('meta_telemercadeo_asesor').where({ asesor_id: f.asesorId, mes, anio }).delete()
+        await trx
+          .from('meta_telemercadeo_asesor')
+          .where({ asesor_id: f.asesorId, mes, anio })
+          .delete()
         continue
       }
       await trx.rawQuery(
@@ -363,12 +378,15 @@ export async function copiarMetas(
   if (desde.mes === hacia.mes && desde.anio === hacia.anio) {
     return { error: 'El mes de origen y el de destino son el mismo' }
   }
+  // Multi-sede: copia solo las metas de los asesores de la sede activa.
   const origen = await Database.from('meta_telemercadeo_asesor')
     .join('agentes_captacions as a', 'a.id', 'meta_telemercadeo_asesor.asesor_id')
+    .where((q) => aplicarSede(q, 'a.sede_id'))
     .where('a.tipo', TIPO_AGENTE_TELE)
     .where({ mes: desde.mes, anio: desde.anio })
     .select('meta_telemercadeo_asesor.*')
   const existentes = new Set(
+    // sede: solo importa contra las de origen (de la sede activa)
     (
       await Database.from('meta_telemercadeo_asesor')
         .where({ mes: hacia.mes, anio: hacia.anio })

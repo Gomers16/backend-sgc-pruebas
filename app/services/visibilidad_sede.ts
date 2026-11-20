@@ -97,3 +97,21 @@ export async function tieneHistorialFueraDeSede(
   const [t, d] = await Promise.all([turnos.select('id').first(), dateos.select('id').first()])
   return !!t || !!d
 }
+
+/** Condición SQL: `col` (id de asesor) es un agente de la sede activa. */
+export function sqlAsesorDeLaSede(colAsesor: string): string {
+  if (!scopeObligatorio()) return '1=1'
+  const c = /^[a-z_]+(\.[a-z_]+)?$/.test(colAsesor) ? colAsesor : null
+  if (!c) throw new Error(`visibilidad_sede: columna inválida "${colAsesor}"`)
+  return `${c} IN (SELECT avis.id FROM agentes_captacions avis WHERE ${sedeSql('avis')})`
+}
+
+/** ¿El agente existe en la sede activa ('ok'), en otra ('otra') o no existe ('no')? */
+export async function estadoAgenteEnSede(agenteId: number): Promise<'ok' | 'otra' | 'no'> {
+  // sede: a propósito sin filtro, para distinguir "de otra sede" (409) de "no existe"
+  const fila = await db.from('agentes_captacions').where('id', agenteId).select('sede_id').first()
+  if (!fila) return 'no'
+  const s = scopeObligatorio()
+  if (!s) return 'ok'
+  return s.sedeIds.includes(Number(fila.sede_id)) ? 'ok' : 'otra'
+}

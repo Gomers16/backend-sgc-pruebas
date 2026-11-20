@@ -1,4 +1,5 @@
 // app/controllers/comisiones_controller.ts
+import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
@@ -2122,7 +2123,9 @@ export default class ComisionesController {
     )
 
     const asesorId = request.input('asesorId') as number | undefined
-    const query = ConfiguracionRecurrenciaAsesor.query().preload('asesor')
+    const query = ConfiguracionRecurrenciaAsesor.query()
+      .whereRaw(sqlAsesorDeLaSede('asesor_id'))
+      .preload('asesor')
     if (asesorId) query.where('asesor_id', asesorId)
 
     const configs = await query
@@ -2175,6 +2178,13 @@ export default class ComisionesController {
     const tipoVehiculo = String(payload.tipo_vehiculo || 'AMBOS').toUpperCase()
     if (!['MOTO', 'VEHICULO', 'AMBOS'].includes(tipoVehiculo))
       return response.badRequest({ message: 'tipo_vehiculo debe ser MOTO, VEHICULO o AMBOS' })
+    {
+      const visAsesor = await estadoAgenteEnSede(Number(asesorId))
+      if (visAsesor === 'otra') {
+        return response.conflict({ code: 'AGENTE_OTRA_SEDE', message: 'El asesor pertenece a otra sede.' })
+      }
+      if (visAsesor === 'no') return response.notFound({ message: 'Asesor no encontrado' })
+    }
 
     let config = await ConfiguracionRecurrenciaAsesor.query()
       .where('asesor_id', asesorId)

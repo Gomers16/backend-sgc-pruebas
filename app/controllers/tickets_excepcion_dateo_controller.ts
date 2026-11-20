@@ -1,4 +1,5 @@
 // app/controllers/tickets_excepcion_dateo_controller.ts
+import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import { sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
@@ -93,7 +94,9 @@ export default class TicketsExcepcionDateoController {
     )
 
     const asesorId = request.input('asesorId') as number | undefined
-    const query = ConfiguracionVentanaTicketAsesor.query().preload('asesor')
+    const query = ConfiguracionVentanaTicketAsesor.query()
+      .whereRaw(sqlAsesorDeLaSede('asesor_id'))
+      .preload('asesor')
     if (asesorId) query.where('asesor_id', asesorId)
 
     const configs = await query
@@ -141,6 +144,16 @@ export default class TicketsExcepcionDateoController {
             'minutos_ventana debe ser un número entero mayor a 0, o null para usar el global',
         })
       }
+    }
+    {
+      const visAsesor = await estadoAgenteEnSede(Number(asesorId))
+      if (visAsesor === 'otra') {
+        return response.conflict({
+          code: 'AGENTE_OTRA_SEDE',
+          message: 'El asesor pertenece a otra sede.',
+        })
+      }
+      if (visAsesor === 'no') return response.notFound({ message: 'Asesor no encontrado' })
     }
 
     let config = await ConfiguracionVentanaTicketAsesor.query().where('asesor_id', asesorId).first()
