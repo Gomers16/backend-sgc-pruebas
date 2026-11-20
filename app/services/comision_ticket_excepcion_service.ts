@@ -12,6 +12,7 @@
 //    beneficiarios y montos, y fuerza a $0 lo que gerencia decidió.
 
 import Database from '@adonisjs/lucid/services/db'
+import { aplicarSede } from '#services/sede_scope'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import type Comision from '#models/comision'
 import type CaptacionDateo from '#models/captacion_dateo'
@@ -205,11 +206,12 @@ export async function comisionDelTicketExcepcion(turnoId: number): Promise<{
   monto_asesor: number | null
   monto_convenio: number | null
 } | null> {
-  const turno = await Database.from('turnos_rtms')
-    .where('id', turnoId)
+  // Multi-sede: un turno de otra sede no existe aquí.
+  const turno = await aplicarSede(Database.from('turnos_rtms').where('id', turnoId), 'sede_id')
     .select('captacion_dateo_id')
     .first()
   if (!turno?.captacion_dateo_id) return null
+  // sede: por el dateo de un turno de la sede activa
   const c = await Database.from('comisiones')
     .where('captacion_dateo_id', turno.captacion_dateo_id)
     .where('tipo_servicio', 'RTM')
@@ -226,6 +228,7 @@ export async function comisionDelTicketExcepcion(turnoId: number): Promise<{
       monto_convenio: null,
     }
   }
+  // sede: por id de una comisión de la sede activa
   const liq = await Database.from('liquidacion_detalle').where('comision_id', c.id).first()
   return {
     id: Number(c.id),

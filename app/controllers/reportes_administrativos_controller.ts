@@ -1,6 +1,7 @@
 // app/controllers/reportes_administrativos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
+import { aplicarSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import ExcelJS from 'exceljs'
 import PdfkitTable from 'pdfkit-table'
@@ -2766,6 +2767,7 @@ export default class ReportesAdministrativosController {
   private async computeDescuentosPorTipo(fechaInicio: string, fechaFin: string) {
     const rows = (await Database.from('facturacion_tickets as ft')
       .join('descuentos as d', 'd.id', 'ft.descuento_id')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
       .whereNotNull('ft.descuento_id')
@@ -3046,6 +3048,7 @@ export default class ReportesAdministrativosController {
 
     // ===== KPIs globales (siempre sin filtro de estado) =====
     const resumenRows = (await Database.from('comisiones')
+      .where((q) => aplicarSede(q, 'comisiones.sede_id'))
       .where('es_config', false)
       .where('tipo_servicio', 'RTM')
       .whereRaw('DATE(fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
@@ -3071,6 +3074,7 @@ export default class ReportesAdministrativosController {
     }
 
     // ===== Tab 1: Asesor Comercial =====
+    // sede: aplicarSede(qComerciales) antes de ejecutar (abajo)
     const qComerciales = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .where('c.es_config', false)
@@ -3079,6 +3083,7 @@ export default class ReportesAdministrativosController {
       .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
     if (estado) qComerciales.where('c.estado', estado)
 
+    aplicarSede(qComerciales, 'c.sede_id')
     const comercialesRows = (await qComerciales
       .select('a.id as asesor_id', 'a.nombre as asesor_nombre')
       .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
@@ -3096,6 +3101,7 @@ export default class ReportesAdministrativosController {
     }))
 
     // ===== Tab 2: Asesor Convenio =====
+    // sede: aplicarSede(qAsesoresConvenio) antes de ejecutar (abajo)
     const qAsesoresConvenio = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
@@ -3105,6 +3111,7 @@ export default class ReportesAdministrativosController {
       .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
     if (estado) qAsesoresConvenio.where('c.estado', estado)
 
+    aplicarSede(qAsesoresConvenio, 'c.sede_id')
     const asesoresConvenioRows = (await qAsesoresConvenio
       .select('a.id as asesor_id', 'a.nombre as asesor_nombre', 'conv.nombre as convenio_nombre')
       .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
@@ -3128,6 +3135,7 @@ export default class ReportesAdministrativosController {
 
     // ===== Tab 3: Convenio (solo asesor comercial referenciando un convenio —
     // los asesores tipo ASESOR_CONVENIO ya están en el Tab 2, no se duplican aquí) =====
+    // sede: aplicarSede(qConvenios) antes de ejecutar (abajo)
     const qConvenios = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .join('convenios as conv', 'conv.id', 'c.convenio_id')
@@ -3137,6 +3145,7 @@ export default class ReportesAdministrativosController {
       .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
     if (estado) qConvenios.where('c.estado', estado)
 
+    aplicarSede(qConvenios, 'c.sede_id')
     const conveniosRows = (await qConvenios
       .select(
         'conv.id as convenio_id',
@@ -3200,6 +3209,7 @@ export default class ReportesAdministrativosController {
 
     const estado = (request.input('estado') as string | undefined) || null
 
+    // sede: aplicarSede(query) antes de ejecutar (abajo)
     const query = Database.from('comisiones as c')
       .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
       .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
@@ -3214,6 +3224,7 @@ export default class ReportesAdministrativosController {
     if (convenioId) query.where('c.convenio_id', convenioId)
     if (estado) query.where('c.estado', estado)
 
+    aplicarSede(query, 'c.sede_id')
     const rows = (await query
       .select(
         't.placa',
@@ -3325,6 +3336,7 @@ export default class ReportesAdministrativosController {
       : []
 
     // ===== Asesor Comercial =====
+    // sede: aplicarSede(qComerciales) antes de ejecutar (abajo)
     const qComerciales = Database.from('comisiones as c').join(
       'agentes_captacions as a',
       'a.id',
@@ -3333,6 +3345,7 @@ export default class ReportesAdministrativosController {
     aplicarFiltrosComunes(qComerciales)
     qComerciales.where('a.tipo', 'ASESOR_COMERCIAL')
 
+    aplicarSede(qComerciales, 'c.sede_id')
     const comercialesRows = (await qComerciales
       .select('a.id as asesor_id', 'a.nombre as asesor_nombre')
       .select(Database.raw('GROUP_CONCAT(DISTINCT c.estado) as estados'))
@@ -3358,12 +3371,14 @@ export default class ReportesAdministrativosController {
     }))
 
     // ===== Asesor Convenio =====
+    // sede: aplicarSede(qAsesoresConvenio) antes de ejecutar (abajo)
     const qAsesoresConvenio = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
     aplicarFiltrosComunes(qAsesoresConvenio)
     qAsesoresConvenio.where('a.tipo', 'ASESOR_CONVENIO')
 
+    aplicarSede(qAsesoresConvenio, 'c.sede_id')
     const asesoresConvenioRows = (await qAsesoresConvenio
       .select(
         'a.id as asesor_id',
@@ -3401,12 +3416,14 @@ export default class ReportesAdministrativosController {
 
     // ===== Convenio (solo asesor comercial referenciando un convenio —
     // los asesores tipo ASESOR_CONVENIO ya están arriba, no se duplican) =====
+    // sede: aplicarSede(qConvenios) antes de ejecutar (abajo)
     const qConvenios = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .join('convenios as conv', 'conv.id', 'c.convenio_id')
     aplicarFiltrosComunes(qConvenios)
     qConvenios.where('a.tipo', 'ASESOR_COMERCIAL')
 
+    aplicarSede(qConvenios, 'c.sede_id')
     const conveniosRows = (await qConvenios
       .select(
         'conv.id as convenio_id',
@@ -3466,6 +3483,7 @@ export default class ReportesAdministrativosController {
   private baseFacturacionRtmPorCanal(fechaInicio: string, fechaFin: string) {
     return joinCanalReporte(
       Database.from('facturacion_tickets as ft')
+        .where((q) => aplicarSede(q, 'ft.sede_id'))
         .where('ft.estado', 'CONFIRMADA')
         .where('ft.servicio_codigo', 'RTM')
         .whereRaw('DATE(ft.created_at) BETWEEN ? AND ?', [fechaInicio, fechaFin])
@@ -3506,6 +3524,7 @@ export default class ReportesAdministrativosController {
   private async computeLiquidacionRtmData(fechaInicio: string, fechaFin: string) {
     // ===== Resumen general (solo RTM, basado en comisiones — sin cambios) =====
     const resumenRows = (await Database.from('comisiones')
+      .where((q) => aplicarSede(q, 'comisiones.sede_id'))
       .where('es_config', false)
       .where('tipo_servicio', 'RTM')
       .whereRaw('DATE(fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
@@ -3592,6 +3611,7 @@ export default class ReportesAdministrativosController {
       .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
       .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
+      .where((q) => aplicarSede(q, 'c.sede_id'))
       .whereIn('c.id', ids)
       .select(
         'c.id as comision_id',
@@ -3718,6 +3738,7 @@ export default class ReportesAdministrativosController {
           .andOnVal('c.es_config', false)
           .andOnVal('c.estado', '!=', 'ANULADA')
       })
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
       .where('d.codigo', codigo)
@@ -3848,6 +3869,7 @@ export default class ReportesAdministrativosController {
       .join('captacion_dateos as cd', 'cd.id', 'c.captacion_dateo_id')
       .join('turnos_rtms as t', 't.id', 'cd.consumido_turno_id')
       .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
+      .where((q) => aplicarSede(q, 'c.sede_id'))
       .where('c.es_config', false)
       .where('c.tipo_servicio', 'RTM')
       .whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [fechaInicio, fechaFin])
@@ -4452,6 +4474,7 @@ export default class ReportesAdministrativosController {
       .first()
     if (!liquidacion) return response.notFound({ message: 'Liquidación no encontrada' })
 
+    // sede: la liquidación ya se leyó con el mixin (404 si es de otra sede)
     const detalle = (await Database.from('liquidacion_detalle as ld')
       .join('comisiones as c', 'c.id', 'ld.comision_id')
       .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')

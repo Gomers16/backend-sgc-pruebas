@@ -973,6 +973,7 @@ export async function planearRecalculoComision(
     }
   }
 
+  // sede: por id de una comisión ya leída con el mixin
   const filasLiquidacion = (await (trx ?? Database)
     .from('liquidacion_detalle')
     .where('comision_id', comision.id)
@@ -1198,6 +1199,7 @@ export async function ajustesEdicionFacturaPorComision(
   const ids = Array.from(new Set(comisionIds.filter((id) => Number(id) > 0)))
   const out = new Map<number, AjusteEdicionFactura>()
   if (!ids.length) return out
+  // sede: por ids de comisiones ya leídas con el mixin
   const rows = (await Database.from('facturacion_descuento_ediciones')
     .whereIn('comision_id', ids)
     .whereIn('comision_accion', ['RECALCULADA', 'AJUSTADA_TRAS_PAGO'])

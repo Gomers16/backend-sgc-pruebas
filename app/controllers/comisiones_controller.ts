@@ -12,7 +12,7 @@ import Liquidacion, {
   type LiquidacionTipoPeriodo,
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
-import { sedeParaEscritura } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
   conflictoSinComisionTicket,
@@ -62,6 +62,7 @@ function parseNullable(v: any): number | null {
 /** Turno del dateo de la comisión (donde vive el ticket de Excepción de Dateo). */
 async function turnoDeComision(c: Comision): Promise<number | null> {
   if (!c.captacionDateoId) return null
+  // sede: por id del dateo de una comisión ya leída con el mixin
   const d = await Database.from('captacion_dateos')
     .where('id', c.captacionDateoId)
     .select('consumido_turno_id')
@@ -392,6 +393,7 @@ export default class ComisionesController {
     // 🆕 Filtro por placa (busca en el turno vinculado al dateo)
     if (placa) {
       const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+      // sede: filtro sobre la consulta principal, que ya filtra el mixin
       query.whereHas('dateo', (dq) => {
         dq.whereHas('turno', (tq) => {
           tq.whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placaNorm])
@@ -402,6 +404,7 @@ export default class ComisionesController {
     // 🆕 Filtro por tipo de asesor/convenio (antes solo se aplicaba en el
     // frontend sobre la página ya paginada, rompiendo la paginación server-side)
     if (tipoAsesor === 'ASESOR_COMERCIAL' || tipoAsesor === 'ASESOR_CONVENIO') {
+      // sede: filtro sobre la consulta principal, que ya filtra el mixin
       query.whereHas('asesor', (aq) => aq.where('tipo', tipoAsesor))
     } else if (tipoAsesor === 'CONVENIO') {
       query.whereNotNull('convenio_id')
@@ -461,6 +464,7 @@ export default class ComisionesController {
     const origen = request.input('origen') as string | undefined
 
     const baseQuery = () => {
+      // sede: aplicarSede() al final de baseQuery
       const q = Database.from('comisiones')
         .where((qb) => qb.where('es_config', false).orWhereNull('es_config'))
         .where('tipo_servicio', 'RTM')
@@ -499,7 +503,8 @@ export default class ComisionesController {
       if (origen === 'con_ticket') q.whereRaw(sqlComisionDeTicket('comisiones', false))
       else if (origen === 'sin_comision_ticket') q.whereRaw(sqlComisionDeTicket('comisiones', true))
 
-      return q
+      // Multi-sede: solo comisiones de la sede activa (al final: agrupa lo anterior).
+      return aplicarSede(q, 'comisiones.sede_id')
     }
 
     // Mismo cálculo de "monto total" que valor_total en mapComisionToDto
@@ -578,6 +583,7 @@ export default class ComisionesController {
       descuentosQuery.where('tipo_vehiculo', tipoVehiculo.toUpperCase())
     if (placa) {
       const placaNorm = placa.replace(/[\s-]/g, '').toUpperCase()
+      // sede: filtro sobre la consulta principal, que ya filtra el mixin
       descuentosQuery.whereHas('dateo', (dq) => {
         dq.whereHas('turno', (tq) => {
           tq.whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placaNorm])
@@ -585,6 +591,7 @@ export default class ComisionesController {
       })
     }
     if (tipoAsesor === 'ASESOR_COMERCIAL' || tipoAsesor === 'ASESOR_CONVENIO') {
+      // sede: filtro sobre la consulta principal, que ya filtra el mixin
       descuentosQuery.whereHas('asesor', (aq) => aq.where('tipo', tipoAsesor))
     } else if (tipoAsesor === 'CONVENIO') {
       descuentosQuery.whereNotNull('convenio_id')
@@ -1254,6 +1261,7 @@ export default class ComisionesController {
     const convenioId = request.input('convenioId') as number | undefined
     const tipoCaptacion = request.input('tipoCaptacion') as string | undefined // 🆕
 
+    // sede: aplicarSede(query, 'c.sede_id') antes de ejecutar (abajo)
     const query = Database.from('comisiones as c')
       .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
       .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
@@ -1286,6 +1294,8 @@ export default class ComisionesController {
     if (convenioId) query.where('c.convenio_id', convenioId)
     if (tipoCaptacion === 'NUEVO_DIRECTO') query.whereNull('c.convenio_id')
     else if (tipoCaptacion === 'CONVENIO') query.whereNotNull('c.convenio_id')
+    // Multi-sede: solo comisiones de la sede activa.
+    aplicarSede(query, 'c.sede_id')
 
     const rows = (await query
       .select(

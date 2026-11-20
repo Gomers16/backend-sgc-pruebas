@@ -1,5 +1,6 @@
 // app/services/meta_comercial_rtm_service.ts
 import Database from '@adonisjs/lucid/services/db'
+import { aplicarSede } from '#services/sede_scope'
 
 export type ConteoRtmAsesor = { rtmMotos: number; rtmVehiculos: number }
 
@@ -23,6 +24,7 @@ export async function contarUnidadesRtmPorAsesor(opts: {
   /** Universo de asesores permitidos (uso de Súper Informe). */
   asesorIds?: number[]
 }): Promise<Map<number, ConteoRtmAsesor>> {
+  // sede: aplicarSede(baseQ) antes de ejecutar (abajo)
   const baseQ = Database.from('comisiones')
     .where((q) => {
       q.where('es_config', false).orWhereNull('es_config')
@@ -37,6 +39,8 @@ export async function contarUnidadesRtmPorAsesor(opts: {
   if (opts.asesorId) baseQ.andWhere('asesor_id', opts.asesorId)
   if (opts.asesorIds && opts.asesorIds.length > 0) baseQ.whereIn('asesor_id', opts.asesorIds)
 
+  // Multi-sede: solo comisiones de la sede activa.
+  aplicarSede(baseQ, 'comisiones.sede_id')
   const rows = (await baseQ
     .select('asesor_id')
     .select(Database.raw("SUM(CASE WHEN tipo_vehiculo = 'MOTO' THEN 1 ELSE 0 END) AS rtm_motos"))
@@ -78,6 +82,7 @@ export async function contarUnidadesRtmPorAsesorPorDia(opts: {
   fechaFin: string
   asesorIds?: number[] | null
 }): Promise<Map<string, Map<number, ConteoRtmAsesor>>> {
+  // sede: aplicarSede(baseQ) antes de ejecutar (abajo)
   const baseQ = Database.from('comisiones')
     .where((q) => {
       q.where('es_config', false).orWhereNull('es_config')
@@ -89,6 +94,8 @@ export async function contarUnidadesRtmPorAsesorPorDia(opts: {
 
   if (opts.asesorIds && opts.asesorIds.length > 0) baseQ.whereIn('asesor_id', opts.asesorIds)
 
+  // Multi-sede: solo comisiones de la sede activa.
+  aplicarSede(baseQ, 'comisiones.sede_id')
   const rows = (await baseQ
     .select(Database.raw("DATE_FORMAT(fecha_calculo, '%Y-%m-%d') as dia"))
     .select('asesor_id')
@@ -134,6 +141,7 @@ export async function contarUnidadesRtmPorAsesorConDesgloseConvenio(opts: {
   fechaFin?: string | null
   asesorIds?: number[]
 }): Promise<Map<number, ConteoRtmAsesorConvenio>> {
+  // sede: aplicarSede(baseQ) antes de ejecutar (abajo)
   const baseQ = Database.from('comisiones')
     .where((q) => {
       q.where('es_config', false).orWhereNull('es_config')
@@ -147,6 +155,8 @@ export async function contarUnidadesRtmPorAsesorConDesgloseConvenio(opts: {
   }
   if (opts.asesorIds && opts.asesorIds.length > 0) baseQ.whereIn('asesor_id', opts.asesorIds)
 
+  // Multi-sede: solo comisiones de la sede activa.
+  aplicarSede(baseQ, 'comisiones.sede_id')
   const rows = (await baseQ
     .select('asesor_id')
     .select(Database.raw('SUM(CASE WHEN convenio_id IS NULL THEN 1 ELSE 0 END) AS directos'))
@@ -198,6 +208,7 @@ export async function contarUnidadesRtmPorConvenio(opts: {
   fechaInicio?: string | null
   fechaFin?: string | null
 }): Promise<Map<string, number>> {
+  // sede: aplicarSede(baseQ) antes de ejecutar (abajo)
   const baseQ = Database.from('comisiones as c')
     .join('convenios as conv', 'conv.id', 'c.convenio_id')
     .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
@@ -212,6 +223,8 @@ export async function contarUnidadesRtmPorConvenio(opts: {
     baseQ.whereRaw('DATE(c.fecha_calculo) BETWEEN ? AND ?', [opts.fechaInicio, opts.fechaFin])
   }
 
+  // Multi-sede: solo comisiones de la sede activa.
+  aplicarSede(baseQ, 'c.sede_id')
   const rows = (await baseQ
     .select('conv.nombre as convenio_nombre')
     .count('* as total_vehiculos')
