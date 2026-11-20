@@ -1,3 +1,4 @@
+import { sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import app from '@adonisjs/core/services/app'
@@ -110,6 +111,7 @@ export default class LiquidacionPagosController {
 
   /** POST /tramites/liquidacion/:tramiteLiquidacionId/pago */
   public async registrarPago({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     try {
       const liquidacion = await TramiteLiquidacion.query()
         .where('id', Number(params.tramiteLiquidacionId))

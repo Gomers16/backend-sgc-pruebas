@@ -1,3 +1,4 @@
+import { sedeParaEscritura } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import type { HttpContext } from '@adonisjs/core/http'
 import TramiteChecklist from '#models/tramite_checklist'
@@ -52,8 +53,11 @@ export default class TramiteChecklistsController {
 
   /** PUT /tramites/checklist */
   public async upsert({ request, response }: HttpContext) {
+    // Multi-sede: el checklist es de la sede activa ("todas" → 400); el
+    // sedeId del body no decide nada.
+    const sedeActiva = sedeParaEscritura()
     try {
-      const sedeId = Number(request.input('sedeId'))
+      const sedeId = sedeActiva ?? Number(request.input('sedeId'))
       const fecha = request.input('fecha') as string
       const turnoNumero = Number(request.input('turnoNumero'))
 

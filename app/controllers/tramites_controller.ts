@@ -132,6 +132,7 @@ export default class TramitesController {
 
   /** POST /tramites  — crear desde ventanilla */
   public async store({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const trx = await Database.transaction()
     try {
       const raw = request.only([
@@ -259,6 +260,7 @@ export default class TramitesController {
 
   /** POST /tramites/:turnoNumero/agregar — agrega un trámite a un turno existente */
   public async agregarATurno({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const trx = await Database.transaction()
     try {
       const turnoNumero = Number(params.turnoNumero)
@@ -371,6 +373,7 @@ export default class TramitesController {
 
   /** PUT /tramites/:id  — categorizar / actualizar */
   public async update({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     try {
       // FIX 5: usuarioId se eliminó — llegaba al body pero nunca se procesaba
       const raw = request.only([
@@ -453,6 +456,7 @@ export default class TramitesController {
 
   /** POST /tramites/:id/pago */
   public async registrarPago({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     try {
       const tramite = await Tramite.find(Number(params.id))
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })

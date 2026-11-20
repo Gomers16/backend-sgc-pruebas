@@ -1,3 +1,4 @@
+import { sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import ExcelJS from 'exceljs'
 import app from '@adonisjs/core/services/app'
@@ -209,6 +210,7 @@ export default class FormulariosRuntController {
 
   /** PUT /tramites/:tramiteId/formulario-runt */
   public async upsert({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     try {
       const tramite = await Tramite.find(Number(params.tramiteId))
       if (!tramite) return response.notFound({ message: 'Trámite no encontrado' })
