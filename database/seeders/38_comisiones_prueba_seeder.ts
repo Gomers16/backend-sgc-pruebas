@@ -203,6 +203,7 @@ export default class ComisionesPruebaSeeder extends BaseSeeder {
         // ===== Dateo consumido (mismo turno, mismo canal/convenio que la comisión) =====
         const dateo = await CaptacionDateo.create(
           {
+            sedeId: turno.sedeId, // multi-sede: el dateo es de la sede de su turno
             canal: spec.canal,
             agenteId: spec.asesorId,
             placa: turno.placa,

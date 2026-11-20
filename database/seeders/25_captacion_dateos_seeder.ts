@@ -4,6 +4,8 @@ import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
 import CaptacionDateo, { type Canal } from '#models/captacion_dateo'
+import { sinFiltroDeSede } from '#services/sede_scope'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import AsesorConvenioAsignacion from '#models/asesor_convenio_asignacion'
@@ -38,7 +40,15 @@ function makePlateSet(total: number): string[] {
 }
 
 export default class CaptacionDateosSeeder extends BaseSeeder {
+  // Multi-sede: sede explícita SEED_SEDE=<id> (obligatoria; la 2, Bogotá,
+  // prohibida). Sin request no hay sede activa: corre sin filtro y cada
+  // dateo lleva la sede declarada.
   public async run() {
+    const sede = sedeDeSeeder('25_captacion_dateos_seeder')
+    await sinFiltroDeSede(async () => await this.sembrar(sede))
+  }
+
+  private async sembrar(sede: number) {
     const trx = await db.transaction()
 
     try {
@@ -117,7 +127,7 @@ export default class CaptacionDateosSeeder extends BaseSeeder {
       const useNextPhone = () => telefonos[idx] ?? telefonos[telefonos.length - 1]
 
       const pushRow = (row: Partial<CaptacionDateo>) => {
-        payloads.push(row)
+        payloads.push({ ...row, sedeId: sede })
         idx++
       }
 

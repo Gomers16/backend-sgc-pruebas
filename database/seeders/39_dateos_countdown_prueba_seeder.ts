@@ -11,6 +11,7 @@
 // Idempotente: si ya existe un dateo con placa CDX001, no vuelve a insertar.
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import { sinFiltroDeSede } from '#services/sede_scope'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -22,11 +23,13 @@ import TurnoRtm from '#models/turno_rtm'
 export default class DateosCountdownPruebaSeeder extends BaseSeeder {
   // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
   // cada registro, así que corre sin filtro de sede de forma explícita.
+  // Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
   async run() {
-    await sinFiltroDeSede(async () => await this.sembrar())
+    const sede = sedeDeSeeder('39_dateos_countdown_prueba_seeder')
+    await sinFiltroDeSede(async () => await this.sembrar(sede))
   }
 
-  private async sembrar() {
+  private async sembrar(sede: number) {
     const trx = await db.transaction()
 
     try {
@@ -58,6 +61,7 @@ export default class DateosCountdownPruebaSeeder extends BaseSeeder {
 
       // ===== Turno real libre (sin dateo asignado) para el escenario "consumido" =====
       const turnoLibre = await TurnoRtm.query({ client: trx })
+        .where('sede_id', sede)
         .whereNull('captacion_dateo_id')
         .orderBy('id', 'asc')
         .first()
@@ -120,6 +124,7 @@ export default class DateosCountdownPruebaSeeder extends BaseSeeder {
       for (const fila of filas) {
         await CaptacionDateo.create(
           {
+            sedeId: sede,
             canal: 'ASESOR_COMERCIAL',
             agenteId: asesor.id,
             convenioId: null,
