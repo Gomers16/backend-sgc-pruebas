@@ -183,6 +183,11 @@ const COLUMNA_RE = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/
  * Fragmento SQL "alias.sede_id IN (1,2)" con la sede activa. Los ids son
  * enteros validados, así que van en línea (sin bindings). Con bypass
  * devuelve "1=1". `columna` puede ser un alias ('t') o 'alias.columna'.
+ *
+ * Es solo el fragmento: el SQL que lo usa debe ponerlo en AND con sus OR
+ * agrupados ("WHERE (a OR b) AND <sedeSql>"); "a OR b AND <sedeSql>" deja
+ * pasar la rama "a" de otra sede. Sobre un query builder, preferir
+ * aplicarSede(), que agrupa solo.
  */
 export function sedeSql(aliasOColumna: string): string {
   if (!COLUMNA_RE.test(aliasOColumna)) {
@@ -195,7 +200,14 @@ export function sedeSql(aliasOColumna: string): string {
   return `${col} IN (${s.sedeIds.map((n) => Math.trunc(n)).join(',')})`
 }
 
-/** Aplica el filtro de sede a un query builder (db.from / Model.query / trx.from). */
+/**
+ * Aplica el filtro de sede a un query builder (db.from / Model.query / trx.from).
+ * Antes agrupa los where que ya tiene (wrapExisting() de Lucid; en un builder
+ * knex puro, sus _statements): si no, un orWhere suelto quedaría
+ * "a OR b AND sede_id IN (...)" y la rama "a" traería filas de otra sede.
+ * Un orWhere agregado DESPUÉS de aplicarSede() sí se lo saltaría: el filtro
+ * va al final de la consulta (o con sus OR propios ya agrupados).
+ */
 export function aplicarSede<Q extends { whereIn: (c: string, v: number[]) => unknown }>(
   qb: Q,
   columna: string
@@ -204,8 +216,26 @@ export function aplicarSede<Q extends { whereIn: (c: string, v: number[]) => unk
     throw new SedeScopeError(`aplicarSede: columna inválida "${columna}"`, 500)
   }
   const s = scopeObligatorio()
-  if (s) qb.whereIn(columna, s.sedeIds)
+  if (!s) return qb
+  agruparWheres(qb)
+  qb.whereIn(columna, s.sedeIds)
   return qb
+}
+
+function agruparWheres(qb: unknown) {
+  const q = qb as any
+  if (typeof q.wrapExisting === 'function') {
+    q.wrapExisting() // Lucid (DatabaseQueryBuilder / ModelQueryBuilder)
+    return
+  }
+  const st = q?._statements
+  if (!Array.isArray(st)) return
+  const wheres = st.filter((x: any) => x.grouping === 'where')
+  if (!wheres.some((x: any) => x.bool === 'or')) return
+  q._statements = st.filter((x: any) => x.grouping !== 'where')
+  q.where(function (this: any) {
+    this._statements.push(...wheres)
+  })
 }
 
 /** Sede donde se escribe (crear/editar). Error si no hay o si es "todas". */

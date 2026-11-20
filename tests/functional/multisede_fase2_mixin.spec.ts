@@ -4,7 +4,13 @@ import { BaseModel, belongsTo, column, hasMany } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasMany } from '@adonisjs/lucid/types/relations'
 import Database from '@adonisjs/lucid/services/db'
 import { SedeScoped } from '#models/mixins/sede_scoped'
-import { conSede, permitirConsultasSinContexto, sinFiltroDeSede } from '#services/sede_scope'
+import {
+  aplicarSede,
+  conSede,
+  permitirConsultasSinContexto,
+  sedeSql,
+  sinFiltroDeSede,
+} from '#services/sede_scope'
 
 // Multi-sede Fase 2 — comportamiento del mixin SedeScoped con Lucid real.
 // Tablas propias del test (zz_ms2_padres / zz_ms2_hijos), creadas y
@@ -204,6 +210,77 @@ test.group('Multi-sede Fase 2 · mixin SedeScoped', (group) => {
     assert.isAtLeast(b.length, 2)
     const c = await sinFiltroDeSede(() => Padre.create({ nombre: 'BYPASS', sedeId: 2 }))
     assert.equal(c.sedeId, 2) // con bypass se respeta lo que trae
+  })
+
+  test('aplicarSede: un orWhere previo a nivel superior no se salta la sede', async ({
+    assert,
+  }) => {
+    const nombres = (filas: any[]) => filas.map((f) => f.nombre).sort()
+    // db.from(): "nombre = B OR nombre = A" + sede 1 → solo A.
+    const crudo = await conSede([1], async () =>
+      aplicarSede(
+        Database.from('zz_ms2_padres').where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE'),
+        'sede_id'
+      ).select('nombre')
+    )
+    assert.deepEqual(nombres(crudo), ['P-IBAGUE'])
+    // Dentro de una transacción (trx.from) igual.
+    const trx = await Database.transaction()
+    try {
+      const enTrx = await conSede([1], async () =>
+        aplicarSede(
+          trx.from('zz_ms2_padres').where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE'),
+          'sede_id'
+        ).select('nombre')
+      )
+      assert.deepEqual(nombres(enTrx), ['P-IBAGUE'])
+    } finally {
+      await trx.rollback()
+    }
+    // Builder knex puro (sin la pila de where de Lucid).
+    const knex = Database.connection().getReadClient()
+    const enKnex = await conSede([1], async () =>
+      aplicarSede(
+        knex('zz_ms2_padres').where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE'),
+        'sede_id'
+      ).select('nombre')
+    )
+    assert.deepEqual(nombres(enKnex), ['P-IBAGUE'])
+    // Modelo SIN mixin (Model.query()) con aplicarSede explícito.
+    const conModelo = await conSede([1], async () =>
+      aplicarSede(
+        Padre.querySinSede().where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE'),
+        'sede_id'
+      )
+    )
+    assert.deepEqual(nombres(conModelo), ['P-IBAGUE'])
+  })
+
+  test('sedeSql en SQL crudo: el fragmento va en AND con el OR agrupado', async ({ assert }) => {
+    // sedeSql() devuelve solo el fragmento; el SQL que lo usa debe agrupar sus
+    // OR (así lo hacen todos los usos actuales, p. ej. visibilidad_sede.ts).
+    const filas = await conSede([1], async () => {
+      const [r] = await Database.rawQuery(
+        `SELECT nombre FROM zz_ms2_padres p
+          WHERE (p.nombre = 'P-BOGOTA' OR p.nombre = 'P-IBAGUE') AND ${sedeSql('p')}`
+      )
+      return r as any[]
+    })
+    assert.deepEqual(
+      filas.map((f) => f.nombre),
+      ['P-IBAGUE']
+    )
+    // whereRaw(sedeSql) sobre un builder con OR suelto: usar aplicarSede().
+    const builder = await conSede([1], async () =>
+      Database.from('zz_ms2_padres')
+        .where((q) => q.where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE'))
+        .whereRaw(sedeSql('zz_ms2_padres'))
+        .select('nombre')
+    )
+    assert.deepEqual(
+      builder.map((f: any) => f.nombre),
+      ['P-IBAGUE']
+    )
   })
 
   test('LÍMITE update/delete masivo por query: no pasan por hooks', async ({ assert }) => {
