@@ -23,7 +23,6 @@
     "app/controllers/continuidad_overrides_controller.ts::turnos_rtms": 2,
     "app/controllers/convenios_controller.ts::asesor_convenio_asignaciones": 1,
     "app/controllers/convenios_controller.ts::convenios": 2,
-    "app/controllers/facturacion_tickets_controller.ts::turnos_rtms": 2,
     "app/controllers/historico_dateo_rtm_controller.ts::convenios": 1,
     "app/controllers/historico_dateo_rtm_controller.ts::turnos_rtms": 1,
     "app/controllers/historico_dateo_rtm_controller.ts::usuarios": 1,
@@ -64,7 +63,6 @@
     "app/services/comision_ticket_excepcion_service.ts::turnos_rtms": 1,
     "app/services/comision_ticket_service.ts::facturacion_descuento_ediciones": 1,
     "app/services/comision_ticket_service.ts::liquidacion_detalle": 1,
-    "app/services/consecutivo_descuento_service.ts::facturacion_tickets": 2,
     "app/services/continuidad_service.ts::captacion_dateos": 1,
     "app/services/continuidad_service.ts::continuidad_overrides": 1,
     "app/services/continuidad_service.ts::turnos_rtms": 1,
@@ -132,7 +130,6 @@
     "app/controllers/captacion_dateos_controller.ts::Prospecto": 2,
     "app/controllers/comisiones_controller.ts::CaptacionDateo": 2,
     "app/controllers/convenios_controller.ts::AsesorConvenioAsignacion": 1,
-    "app/controllers/facturacion_tickets_controller.ts::CaptacionDateo": 2,
     "app/controllers/historico_dateo_rtm_controller.ts::CaptacionDateo": 1,
     "app/controllers/prospectos_controller.ts::Prospecto": 1,
     "app/controllers/turnos_rtms_controller.ts::CaptacionDateo": 1
