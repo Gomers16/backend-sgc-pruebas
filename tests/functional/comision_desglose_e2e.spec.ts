@@ -80,6 +80,7 @@ test.group('Comisiones: desglose del motor = previsualización = guardado = GET'
   /** Ticket RTM (CONFIRMADA por la API salvo `sinConfirmar`) con dateo del caso. */
   async function crearTicket(client: any, placa: string, caso: Caso, sinConfirmar = false) {
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: caso === 'CONVENIO_SELF' ? 'ASESOR_CONVENIO' : 'ASESOR_COMERCIAL',
       agenteId: caso === 'CONVENIO_SELF' ? convenioAsesor.id : AGENTE_COMERCIAL_ID,
       convenioId: caso === 'SIN_CONVENIO' ? null : convenio.id,

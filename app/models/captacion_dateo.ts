@@ -1,6 +1,8 @@
 // app/models/captacion_dateo.ts
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, beforeSave, computed } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import AgenteCaptacion from '#models/agente_captacion'
@@ -54,7 +56,12 @@ function normalizePhone(v?: string | null) {
   return v ? v.replace(/\D/g, '') : (v ?? null)
 }
 
-export default class CaptacionDateo extends BaseModel {
+export default class CaptacionDateo extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3c): sede_id propio; el mixin la pone al crear. Exclusividad,
+  // recurrencia y ventana de un dateo valen solo dentro de su sede.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'captacion_dateos'
 
   @column({ isPrimary: true })

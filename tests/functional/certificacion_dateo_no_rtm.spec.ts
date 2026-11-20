@@ -56,6 +56,7 @@ test.group('Certificación · dateo de servicios no RTM', (group) => {
       estado: 'activo',
     } as any)
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'FACHADA',
       origen: 'UI',
       placa,

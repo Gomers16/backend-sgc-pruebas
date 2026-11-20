@@ -629,6 +629,7 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert,
   }) => {
     const d = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       origen: 'UI',
       placa: 'TLG016',
@@ -824,6 +825,7 @@ test.group('Telemercadeo · gestiones', (group) => {
     for (const r of [g1, g2, g3]) r.assertStatus(201)
 
     const d = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'TELE',
       origen: 'UI',
       placa: 'TLG020',

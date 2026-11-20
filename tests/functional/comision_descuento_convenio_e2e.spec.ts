@@ -135,6 +135,7 @@ test.group(
       const escenario = o.escenario ?? 'NUEVO'
       const self = o.caso === 'CONVENIO_SELF'
       const dateo = await CaptacionDateo.create({
+        sedeId: SEDE_ID,
         canal: self ? 'ASESOR_CONVENIO' : 'ASESOR_COMERCIAL',
         agenteId: self ? convenioAsesor.id : AGENTE_COMERCIAL_ID,
         convenioId: o.caso === 'SIN_CONVENIO' ? null : convenio.id,

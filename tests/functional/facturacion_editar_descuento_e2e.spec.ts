@@ -112,6 +112,7 @@ test.group('Facturación: editar el descuento de un ticket confirmado', (group) 
     let turno: TurnoRtm | null = null
     if (opts.dateo) {
       dateo = await CaptacionDateo.create({
+        sedeId: SEDE_ID,
         canal: 'ASESOR_COMERCIAL',
         agenteId: AGENTE_COMERCIAL_ID,
         convenioId: opts.dateo === 'CONVENIO_COMERCIAL' ? convenio.id : null,

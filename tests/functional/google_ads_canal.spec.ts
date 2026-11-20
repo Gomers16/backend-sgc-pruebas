@@ -105,6 +105,7 @@ test.group('Google ADS · canal de captación', (group) => {
     assert,
   }) => {
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'FACHADA',
       origen: 'UI',
       placa: P.BUSCAR,

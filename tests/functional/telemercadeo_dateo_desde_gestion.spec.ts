@@ -227,6 +227,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     // gestión a otro dateo y suelta el bloqueo.
     const g = await gestion(client, 'TLG113')
     const [otroId] = await Database.table('captacion_dateos').insert({
+      sede_id: SEDE_ID,
       canal: 'TELE',
       agente_id: teleA.id,
       placa: 'TLG114',
@@ -283,6 +284,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
   }) => {
     const g = await gestion(client, 'TLG115')
     const [dateoId] = await Database.table('captacion_dateos').insert({
+      sede_id: SEDE_ID,
       canal: 'TELE',
       agente_id: teleA.id,
       placa: 'TLG115',
@@ -359,6 +361,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
   }) => {
     const g = await gestion(client, 'TLG108')
     const [viejoId] = await Database.table('captacion_dateos').insert({
+      sede_id: SEDE_ID,
       canal: 'TELE',
       agente_id: teleA.id,
       placa: 'TLG108',

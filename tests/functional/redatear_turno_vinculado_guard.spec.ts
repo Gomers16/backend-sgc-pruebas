@@ -70,6 +70,7 @@ test.group('Guard: no permitir re-dateo si el dateo ya tiene un turno vinculado'
 
   async function crearDateoEnRedatear(placa: string) {
     return CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       origen: 'UI',
       agenteId: AGENTE_ID,
@@ -212,6 +213,7 @@ test.group('Guard: no permitir re-dateo si el dateo ya tiene un turno vinculado'
     // con un turno ACTIVO que ya lo referencia por captacion_dateo_id (el
     // escenario de carrera descrito en el reporte).
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       origen: 'UI',
       agenteId: AGENTE_ID,

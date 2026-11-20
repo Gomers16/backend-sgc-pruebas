@@ -105,6 +105,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     let dateoId: number | null = null
     if (o.dateoCanal) {
       const d = await CaptacionDateo.create({
+        sedeId: SEDE_ID,
         canal: o.dateoCanal,
         origen: 'UI',
         placa,
@@ -745,6 +746,7 @@ test.group('Cédula convenio en Excel de liquidación', (group) => {
       estado: 'finalizado',
     } as any)
     const [dateoId] = await Database.table('captacion_dateos').insert({
+      sede_id: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       origen: 'UI',
       placa,

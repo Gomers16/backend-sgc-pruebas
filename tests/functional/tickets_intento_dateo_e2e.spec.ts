@@ -407,6 +407,7 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
     const turno = await turnoDirecto(P.DIFERIDO, true)
     // Dateo como los que dejaba aprobar() antes de la Fase 3.
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       agenteId: asesorConvenio.id,
       convenioId: null,

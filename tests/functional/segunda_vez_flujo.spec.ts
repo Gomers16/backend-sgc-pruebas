@@ -224,6 +224,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     const origen = await origenRechazado(P.DIA1, { horas: 24, canal: 'FACHADA' })
     // Dateo del origen (ya consumido) y uno PENDIENTE que no debe consumirse.
     const dateoOrigen = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'FACHADA',
       origen: 'UI',
       placa: P.DIA1,
@@ -234,6 +235,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     origen.captacionDateoId = dateoOrigen.id
     await origen.save()
     const dateoPendiente = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'FACHADA',
       origen: 'UI',
       placa: P.DIA1,
@@ -611,6 +613,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     const convenio = await Database.from('convenios').select('id').first()
     assert.exists(convenio, 'se necesita al menos un convenio en la BD')
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       origen: 'UI',
       placa: P.CONTINUIDAD,

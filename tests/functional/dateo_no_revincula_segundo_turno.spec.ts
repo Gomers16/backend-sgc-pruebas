@@ -45,6 +45,7 @@ test.group('Dateo consumido: no se re-vincula ni se paga dos veces', (group) => 
 
   function crearDateo(placa: string, servicioId: number, extra: Record<string, unknown> = {}) {
     return CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       agenteId: AGENTE_COMERCIAL_ID,
       placa,

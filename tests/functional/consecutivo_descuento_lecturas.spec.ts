@@ -63,6 +63,7 @@ test.group('Consecutivo del descuento en lecturas (comisiones, dateos, reportes)
 
   async function crearDateoConTurno(placa: string, turnoNumero: number) {
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       agenteId: AGENTE_COMERCIAL_ID,
       convenioId: null,

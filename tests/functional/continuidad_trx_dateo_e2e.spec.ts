@@ -64,6 +64,7 @@ test.group('Continuidad · transacción opcional', (group) => {
 
   async function dateo(placa: string, convenioId: number, turnoId: number | null = null) {
     return CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       agenteId: asesorConvenio.id,
       convenioId,

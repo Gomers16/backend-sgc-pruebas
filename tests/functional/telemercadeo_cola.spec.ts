@@ -145,6 +145,7 @@ test.group('Telemercadeo · cola de trabajo', (group) => {
     } = {}
   ) {
     const d = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'FACHADA',
       origen: 'UI',
       placa,

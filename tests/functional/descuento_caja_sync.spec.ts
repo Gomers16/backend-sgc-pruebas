@@ -116,6 +116,7 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
     client,
   }) => {
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       agenteId: AGENTE_COMERCIAL_ID,
       convenioId: null,
@@ -180,6 +181,7 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
     client,
   }) => {
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       agenteId: convenioAsesor.id,
       convenioId: convenio.id,
@@ -246,6 +248,7 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
   }) => {
     // Este dateo SÍ tenía algo pre-marcado (AVANCE) por el asesor comercial.
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_COMERCIAL',
       agenteId: AGENTE_COMERCIAL_ID,
       convenioId: convenio.id,
@@ -353,6 +356,7 @@ test.group('Sincronización descuento real en caja (dateo <-> comisión)', (grou
     // un monto real (valor_carro/valor_moto del catálogo), no 0, dando una
     // aserción de monto más fuerte que un descuento meramente informativo.
     const dateo = await CaptacionDateo.create({
+      sedeId: SEDE_ID,
       canal: 'ASESOR_CONVENIO',
       agenteId: convenioAsesor.id,
       convenioId: convenio.id,
