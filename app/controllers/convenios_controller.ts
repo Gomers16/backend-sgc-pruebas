@@ -416,9 +416,12 @@ export default class ConveniosController {
 
       const asesor = await AgenteCaptacion.find(asesorId, { client: trx })
       if (!asesor) {
-        await trx.rollback()
         // Multi-sede: asesor de otra sede → 409 explícito.
-        if (await AgenteCaptacion.querySinSede({ client: trx }).where('id', asesorId).first()) {
+        const deOtraSede = await AgenteCaptacion.querySinSede({ client: trx })
+          .where('id', asesorId)
+          .first()
+        await trx.rollback()
+        if (deOtraSede) {
           return response.conflict({
             code: 'AGENTE_OTRA_SEDE',
             message: 'El asesor pertenece a otra sede que el convenio.',
@@ -464,7 +467,9 @@ export default class ConveniosController {
       await trx.commit()
       return { ok: true, asignacionId: nueva.id }
     } catch (e) {
-      await Database.rollbackGlobalTransaction()
+      // Antes: Database.rollbackGlobalTransaction() (no hay transacción
+      // global) tapaba el error real con un 500 distinto.
+      if (!trx.isCompleted) await trx.rollback()
       throw e
     }
   }

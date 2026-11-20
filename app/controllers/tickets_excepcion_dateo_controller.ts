@@ -129,7 +129,16 @@ export default class TicketsExcepcionDateoController {
     const asesorId = Number(payload.asesor_id)
     if (!asesorId) return response.badRequest({ message: 'asesor_id es requerido' })
     const asesor = await AgenteCaptacion.find(asesorId)
-    if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
+    if (!asesor) {
+      // Multi-sede: asesor de otra sede → 409 explícito.
+      if ((await estadoAgenteEnSede(Number(asesorId))) === 'otra') {
+        return response.conflict({
+          code: 'AGENTE_OTRA_SEDE',
+          message: 'El asesor pertenece a otra sede.',
+        })
+      }
+      return response.badRequest({ message: 'asesor_id no existe' })
+    }
 
     let minutosVentana: number | null = null
     if (
