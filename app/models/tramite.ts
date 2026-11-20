@@ -1,4 +1,6 @@
 // app/models/tramite.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, hasOne } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasOne } from '@adonisjs/lucid/types/relations'
@@ -31,7 +33,9 @@ export type TipoTramite =
 
 export type EstadoTramite = 'en_espera' | 'en_atencion' | 'completado' | 'cancelado'
 
-export default class Tramite extends BaseModel {
+export default class Tramite extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3f, sede_id propio; el mixin la pone al crear.
+
   public static table = 'tramites'
 
   @column({ isPrimary: true })

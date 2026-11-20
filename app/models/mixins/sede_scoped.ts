@@ -58,8 +58,47 @@ export interface SedeVia {
   atributo: string
   /** Columna FK al padre (p. ej. 'turno_id'). */
   columna: string
-  /** Tabla del padre, que sí tiene sede_id (p. ej. 'turnos_rtms'). */
+  /** Tabla del padre, que tiene sede_id (p. ej. 'turnos_rtms') o hereda vía `padre`. */
   tablaPadre: string
+  /**
+   * Si el padre TAMPOCO tiene sede_id: cómo llega él a la suya (cadena de
+   * herencia; p. ej. liquidacion_pagos → tramite_liquidaciones → tramites).
+   */
+  padre?: { columna: string; tablaPadre: string; padre?: SedeVia['padre'] }
+}
+
+/** Condición SQL "tabla.columna IN (SELECT …)" siguiendo la cadena hasta sede_id. */
+function sqlVia(
+  tabla: string,
+  columna: string,
+  tablaPadre: string,
+  padre: SedeVia['padre'],
+  ids: string
+): string {
+  const condPadre = padre
+    ? sqlVia(tablaPadre, padre.columna, padre.tablaPadre, padre.padre, ids)
+    : `${tablaPadre}.sede_id IN (${ids})`
+  return `${tabla}.${columna} IN (SELECT ${tablaPadre}.id FROM ${tablaPadre} WHERE ${condPadre})`
+}
+
+/** Sede del registro padre `id` siguiendo la cadena (null si no existe). */
+async function sedeDelPadre(
+  cliente: any,
+  tablaPadre: string,
+  id: number,
+  padre: SedeVia['padre']
+): Promise<number | null> {
+  if (!padre) {
+    const fila = await cliente.from(tablaPadre).where('id', id).select('sede_id').first()
+    return fila ? Number(fila.sede_id) : null
+  }
+  const fila = await cliente.from(tablaPadre).where('id', id).select(padre.columna).first()
+  if (!fila || !fila[padre.columna]) return null
+  return sedeDelPadre(cliente, padre.tablaPadre, Number(fila[padre.columna]), padre.padre)
+}
+
+function viaValida(v: { columna: string; tablaPadre: string; padre?: SedeVia['padre'] }): boolean {
+  return IDENT.test(v.columna) && IDENT.test(v.tablaPadre) && (!v.padre || viaValida(v.padre))
 }
 
 const IDENT = /^[a-z_][a-z0-9_]*$/
@@ -97,9 +136,7 @@ function filtrar(
   // Ids enteros validados por la resolución de la sede: van en línea.
   const ids = s.sedeIds.length ? s.sedeIds.map((n) => Math.trunc(n)).join(',') : 'NULL'
   if (via) {
-    ;(query as any).whereRaw(
-      `${tabla}.${via.columna} IN (SELECT ${via.tablaPadre}.id FROM ${via.tablaPadre} WHERE ${via.tablaPadre}.sede_id IN (${ids}))`
-    )
+    ;(query as any).whereRaw(sqlVia(tabla, via.columna, via.tablaPadre, via.padre, ids))
   } else if (globalSi) {
     // Filas globales (sede NULL que cumplen la condición) visibles desde toda sede.
     ;(query as any).whereRaw(
@@ -139,7 +176,7 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
       super.boot()
       const modelo = this as unknown as typeof ConSede & { table: string }
       const via = modelo.sedeVia
-      if (via && (!IDENT.test(via.columna) || !IDENT.test(via.tablaPadre))) {
+      if (via && !viaValida(via)) {
         throw new Error(`SedeScoped: sedeVia inválido en ${modelo.name}`)
       }
       const globalSi = modelo.sedeGlobalSi
@@ -181,12 +218,13 @@ export function SedeScoped<T extends NormalizeConstructor<typeof BaseModel>>(sup
         }
         // Hijo: el padre tiene que ser de la sede activa.
         const cliente = instancia.$trx ?? db
-        const padre = await cliente
-          .from(via.tablaPadre)
-          .where('id', instancia[via.atributo] ?? 0)
-          .select('sede_id')
-          .first()
-        if (!padre || Number(padre.sede_id) !== s.sedeEscritura) {
+        const sedePadre = await sedeDelPadre(
+          cliente,
+          via.tablaPadre,
+          Number(instancia[via.atributo] ?? 0),
+          via.padre
+        )
+        if (sedePadre !== s.sedeEscritura) {
           throw new SedeScopeError('Registro padre no encontrado en la sede activa.', 404)
         }
       })

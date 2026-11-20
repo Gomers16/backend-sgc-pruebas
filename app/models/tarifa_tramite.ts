@@ -1,7 +1,11 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
 
-export default class TarifaTramite extends BaseModel {
+export default class TarifaTramite extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3f, tarifas de trámites POR SEDE (decisión 2026-11-19).
+
   public static table = 'tarifas_tramites'
 
   @column({ isPrimary: true })

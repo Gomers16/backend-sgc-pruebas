@@ -1,5 +1,6 @@
 // database/seeders/27_tarifas_tramites_seeder.ts
 // Tarifas según Resolución 000005 del 02 ENE 2026 — Secretaría de Movilidad de Ibagué
+import { sinFiltroDeSede } from '#services/sede_scope'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import TarifaTramite from '#models/tarifa_tramite'
 
@@ -155,7 +156,13 @@ const TARIFAS = [
 ] as const
 
 export default class TarifasTramitesSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; las tarifas declaran su
+  // sede (Ibagué) en cada fila, así que corre sin filtro de forma explícita.
   public async run() {
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     for (const t of TARIFAS) {
       // Tarifas de Ibagué (sede 1): desde multi-sede las tarifas de trámites
       // son por sede (migración 1811000000005).

@@ -1,9 +1,13 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 import Sede from '#models/sede'
 
-export default class TramiteChecklist extends BaseModel {
+export default class TramiteChecklist extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3f, sede_id propio.
+
   public static table = 'tramite_checklists'
 
   @column({ isPrimary: true })

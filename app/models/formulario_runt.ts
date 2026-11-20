@@ -1,3 +1,5 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -54,7 +56,10 @@ export type ImportacionTipo =
   | 'lugar'
   | 'codigo'
 
-export default class FormularioRunt extends BaseModel {
+export default class FormularioRunt extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3f, hereda la sede del trámite.
+  static sedeVia = { atributo: 'tramiteId', columna: 'tramite_id', tablaPadre: 'tramites' }
+
   public static table = 'formularios_runt'
 
   @column({ isPrimary: true })

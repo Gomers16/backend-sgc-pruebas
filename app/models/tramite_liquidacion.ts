@@ -1,10 +1,15 @@
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo, hasMany } from '@adonisjs/lucid/orm'
 import type { BelongsTo, HasMany } from '@adonisjs/lucid/types/relations'
 import Tramite from '#models/tramite'
 import LiquidacionPago from '#models/liquidacion_pago'
 
-export default class TramiteLiquidacion extends BaseModel {
+export default class TramiteLiquidacion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: 3f, hereda la sede del trámite.
+  static sedeVia = { atributo: 'tramiteId', columna: 'tramite_id', tablaPadre: 'tramites' }
+
   public static table = 'tramite_liquidaciones'
 
   @column({ isPrimary: true })

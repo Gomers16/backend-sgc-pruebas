@@ -11,6 +11,8 @@
 //   Turno C: 1 abono $40.000 "Efectivo"                    → parcial ($55k saldo)
 //            2 pagos $200k "Transferencia" + $480k "Efectivo" → pagado
 //            0 pagos, liquidación vacía (T-C3) → probar rechazo 422
+import { sinFiltroDeSede } from '#services/sede_scope'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -22,7 +24,9 @@ import TramiteLiquidacion from '#models/tramite_liquidacion'
 import Usuario from '#models/usuario'
 import Servicio from '#models/servicio'
 
-const SEDE_ID = 1
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
 const HOY     = DateTime.local().setZone('America/Bogota').startOf('day')
 
 const mkCodigo = (idx: number) => {
@@ -32,7 +36,14 @@ const mkCodigo = (idx: number) => {
 }
 
 export default class TramitesDemoSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
   public async run() {
+    SEDE_ID = sedeDeSeeder('30_tramites_demo_seeder')
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       // ── Prerrequisitos ────────────────────────────────────────────────────

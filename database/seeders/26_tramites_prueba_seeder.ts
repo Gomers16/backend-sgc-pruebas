@@ -1,4 +1,6 @@
 // database/seeders/26_tramites_prueba_seeder.ts
+import { sinFiltroDeSede } from '#services/sede_scope'
+import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -8,7 +10,9 @@ import FormularioRunt from '#models/formulario_runt'
 import Usuario from '#models/usuario'
 import Servicio from '#models/servicio'
 
-const SEDE_ID = 1
+// Sede explícita: SEED_SEDE=<id> (obligatoria; la 2, Bogotá, prohibida).
+// Se fija al inicio de run() con sedeDeSeeder(); ver database/helpers/sede_seeder.ts.
+let SEDE_ID = 0
 const HOY = DateTime.local().setZone('America/Bogota').startOf('day')
 
 // ── Datos de prueba: 18 trámites, uno por cada tipo ─────────────────────────
@@ -576,7 +580,14 @@ const DATOS = [
 ] as const
 
 export default class TramitesPruebaSeeder extends BaseSeeder {
+  // Multi-sede: sin request no hay sede activa; el seeder declara la suya en
+  // cada registro, así que corre sin filtro de sede de forma explícita.
   public async run() {
+    SEDE_ID = sedeDeSeeder('26_tramites_prueba_seeder')
+    await sinFiltroDeSede(async () => await this.sembrar())
+  }
+
+  private async sembrar() {
     const trx = await db.transaction()
     try {
       // ── Obtener usuario y servicio de referencia ──────────────────────
