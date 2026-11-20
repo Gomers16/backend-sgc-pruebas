@@ -1,4 +1,5 @@
 // app/controllers/agentes_captacion_controller.ts
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -244,6 +245,7 @@ export default class AgentesCaptacionController {
         return response.unauthorized({ message: 'Usuario no autenticado' })
       }
 
+      // sede: el agente del PROPIO usuario (identidad)
       const userAgenteRow = await db
         .from('agentes_captacions')
         .where('usuario_id', auth.user.id)
@@ -277,7 +279,8 @@ export default class AgentesCaptacionController {
       return response.unauthorized({ message: 'No autenticado' })
     }
 
-    const row = await AgenteCaptacion.query()
+    // Multi-sede: el agente del PROPIO usuario es identidad (se ve en cualquier sede activa).
+    const row = await AgenteCaptacion.querySinSede()
       .where('agentes_captacions.usuario_id', auth.user.id)
       .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
       .leftJoin('contratos', function () {
@@ -310,6 +313,7 @@ export default class AgentesCaptacionController {
 
   /** POST /agentes-captacion */
   public async store({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     let {
       tipo,
       nombre,
@@ -349,6 +353,24 @@ export default class AgentesCaptacionController {
       if (exists) return response.conflict({ message: 'Documento ya existe' })
     }
 
+    // Multi-sede: el agente nace en la sede activa; su usuario tiene que ser
+    // de esa misma sede (trabajar en 2 sedes = 2 agentes).
+    if (usuarioId) {
+      // sede: usuario por id, para comparar su sede con la activa
+      const usuarioAgente = await db
+        .from('usuarios')
+        .where('id', usuarioId)
+        .select('sede_id')
+        .first()
+      const sedeActiva = sedeParaEscritura()
+      if (sedeActiva && usuarioAgente && Number(usuarioAgente.sede_id) !== sedeActiva) {
+        return response.conflict({
+          code: 'USUARIO_OTRA_SEDE',
+          message: 'El usuario del agente es de otra sede.',
+        })
+      }
+    }
+
     const created = await AgenteCaptacion.create({
       tipo,
       nombre: String(nombre).trim(),
@@ -364,6 +386,7 @@ export default class AgentesCaptacionController {
 
   /** PUT /agentes-captacion/:id */
   public async update({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const item = await AgenteCaptacion.find(params.id)
     if (!item) return response.notFound({ message: 'Agente no encontrado' })
 
@@ -434,9 +457,11 @@ export default class AgentesCaptacionController {
 
   /** DELETE /agentes-captacion/:id */
   public async destroy({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const item = await AgenteCaptacion.find(params.id)
     if (!item) return response.notFound({ message: 'Agente no encontrado' })
 
+    // sede: dateos del agente (ya validado en la sede activa)
     const [{ total }] = await db
       .from('captacion_dateos')
       .where('agente_id', params.id)
@@ -547,6 +572,7 @@ export default class AgentesCaptacionController {
 
     const cols = selectRaw.length ? selectRaw : ['id', 'nombre', 'tipo']
 
+    // sede: aplicarSede(query) antes de ejecutar (abajo)
     let query = db
       .from('agentes_captacions')
       .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
@@ -563,6 +589,8 @@ export default class AgentesCaptacionController {
     if (tipo && TIPOS.has(tipo)) {
       query = query.where('agentes_captacions.tipo', tipo)
     }
+    // Multi-sede: solo agentes de la sede activa.
+    query = aplicarSede(query, 'agentes_captacions.sede_id')
 
     const rows = await query
 
@@ -578,7 +606,10 @@ export default class AgentesCaptacionController {
   public async conveniosByAgente({ params, request }: HttpContext) {
     const asesorId = Number(params.id)
     const vigente = String(request.input('vigente', '1')) === '1'
+    // Multi-sede: un asesor de otra sede no tiene convenios aquí.
+    if (!(await AgenteCaptacion.find(asesorId))) return []
 
+    // sede: convenios de un asesor de la sede activa (asignaciones de su sede)
     const rows = await db
       .from('convenios')
       .join('asesor_convenio_asignaciones as aca', 'aca.convenio_id', 'convenios.id')

@@ -1,6 +1,7 @@
 // app/controllers/prospectos_controller.ts
 // ✅ CORREGIDO: Permite que SUPER_ADMIN cree prospectos para cualquier asesor
 
+import { sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import db from '@adonisjs/lucid/services/db'
@@ -214,6 +215,7 @@ export default class ProspectosController {
 
   /** POST /api/prospectos  (placa requerida pero YA NO única) */
   public async store({ request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const body = request.only([
       'placa',
       'telefono',
@@ -372,6 +374,7 @@ export default class ProspectosController {
 
   /** PATCH /api/prospectos/:id  (YA NO valida duplicados) */
   public async update({ request, params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const id = Number(params.id)
     const prospecto = await Prospecto.find(id)
     if (!prospecto) return response.notFound({ message: 'Prospecto no encontrado' })
@@ -586,6 +589,7 @@ export default class ProspectosController {
     if (vigente !== undefined) {
       if (vigente) {
         query.whereExists((sub) => {
+          // sede: correlacionada con el prospecto (ya filtrado por el mixin)
           sub
             .from('asesor_prospecto_asignaciones')
             .whereColumn('asesor_prospecto_asignaciones.prospecto_id', 'prospectos.id')
@@ -594,6 +598,7 @@ export default class ProspectosController {
         })
       } else {
         query.whereNotExists((sub) => {
+          // sede: correlacionada con el prospecto (ya filtrado por el mixin)
           sub
             .from('asesor_prospecto_asignaciones')
             .whereColumn('asesor_prospecto_asignaciones.prospecto_id', 'prospectos.id')
@@ -605,6 +610,7 @@ export default class ProspectosController {
 
     if (asesorId) {
       query.whereExists((sub) => {
+        // sede: correlacionada con el prospecto (ya filtrado por el mixin)
         sub
           .from('asesor_prospecto_asignaciones')
           .whereColumn('asesor_prospecto_asignaciones.prospecto_id', 'prospectos.id')
@@ -692,11 +698,25 @@ export default class ProspectosController {
 
   /** POST /api/prospectos/:id/asignar */
   public async asignar({ params, request, auth, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const prospectoId = Number(params.id)
     const asesorId = Number(request.input('asesor_id') ?? request.input('asesorId'))
     const motivoFin = request.input('motivo_fin') as string | undefined
     if (!prospectoId || !asesorId)
       return response.badRequest({ message: 'prospecto_id y asesor_id son requeridos' })
+    // Multi-sede: prospecto y asesor de la sede activa (asesor de otra sede → 409).
+    if (!(await Prospecto.find(prospectoId))) {
+      return response.notFound({ message: 'Prospecto no encontrado' })
+    }
+    if (!(await AgenteCaptacion.find(asesorId))) {
+      if (await AgenteCaptacion.querySinSede().where('id', asesorId).first()) {
+        return response.conflict({
+          code: 'AGENTE_OTRA_SEDE',
+          message: 'El asesor pertenece a otra sede.',
+        })
+      }
+      return response.badRequest({ message: 'asesor_id no existe' })
+    }
 
     const trx = await db.transaction()
     try {
@@ -736,6 +756,7 @@ export default class ProspectosController {
 
   /** POST /api/prospectos/:id/retirar */
   public async retirar({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const prospectoId = Number(params.id)
     const motivo = request.input('motivo') as string | undefined
 
@@ -758,6 +779,7 @@ export default class ProspectosController {
 
   /** POST /api/prospectos/:id/datear */
   public async datear({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const prospectoId = Number(params.id)
     if (!Number.isFinite(prospectoId)) {
       return response.badRequest({ message: 'ID inválido' })
@@ -823,9 +845,11 @@ export default class ProspectosController {
       // 2️⃣ Archivar TODOS los prospectos duplicados con la misma placa
       const placaNormalizada = prospecto.placa?.replace(/[\s-]/g, '').toUpperCase()
       if (placaNormalizada) {
+        // sede: solo duplicados de la sede del prospecto (o sin sede)
         await Prospecto.query({ client: trx })
           .where('archivado', false)
           .whereRaw("REPLACE(REPLACE(UPPER(placa), '-', ''), ' ', '') = ?", [placaNormalizada])
+          .where((q) => q.where('sede_id', prospecto.sedeId ?? 0).orWhereNull('sede_id'))
           .update({ archivado: true })
       }
 

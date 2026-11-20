@@ -1,4 +1,5 @@
 // app/Controllers/Http/convenios_controller.ts
+import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
@@ -143,6 +144,7 @@ export default class ConveniosController {
 
   /** POST /convenios */
   public async store({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const {
       nombre,
       tipo = 'PERSONA',
@@ -251,6 +253,7 @@ export default class ConveniosController {
 
   /** PUT /convenios/:id */
   public async update({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const c = await Convenio.find(params.id)
     if (!c) return response.notFound({ message: 'Convenio no encontrado' })
 
@@ -392,6 +395,7 @@ export default class ConveniosController {
    * body: { asesorId | asesor_id | agente_captacion_id }
    */
   public async asignarAsesor({ params, request, response, auth }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const trx = await Database.transaction()
     try {
       const conv = await Convenio.find(params.id, { client: trx })
@@ -413,6 +417,13 @@ export default class ConveniosController {
       const asesor = await AgenteCaptacion.find(asesorId, { client: trx })
       if (!asesor) {
         await trx.rollback()
+        // Multi-sede: asesor de otra sede → 409 explícito.
+        if (await AgenteCaptacion.querySinSede({ client: trx }).where('id', asesorId).first()) {
+          return response.conflict({
+            code: 'AGENTE_OTRA_SEDE',
+            message: 'El asesor pertenece a otra sede que el convenio.',
+          })
+        }
         return response.badRequest({ message: 'asesorId no existe' })
       }
 
@@ -428,6 +439,7 @@ export default class ConveniosController {
       }
 
       // Cerrar la vigente
+      // sede: asignaciones del convenio (ya validado en la sede activa)
       await AsesorConvenioAsignacion.query({ client: trx })
         .where('convenio_id', conv.id)
         .where('activo', true)
@@ -459,6 +471,7 @@ export default class ConveniosController {
 
   /** POST /convenios/:id/retirar-asesor  body: { motivo? } */
   public async retirarAsesor({ params, request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { motivo } = request.only(['motivo'])
 
     const asign = await AsesorConvenioAsignacion.query()
@@ -515,6 +528,9 @@ export default class ConveniosController {
     const limit =
       Number.isFinite(limitPedido) && limitPedido > 0 ? Math.min(limitPedido, 200) : null
 
+    // Multi-sede: un asesor de otra sede no tiene convenios aquí.
+    if (!(await AgenteCaptacion.find(asesorId))) return response.ok([])
+    // sede: asignaciones de un asesor de la sede activa
     const filasAsignadas = await Database.from('asesor_convenio_asignaciones')
       .where('asesor_id', asesorId)
       .where('activo', true)
@@ -524,6 +540,7 @@ export default class ConveniosController {
 
     if (!incluirNoAsignados && asignados.size === 0) return response.ok([])
 
+    // sede: aplicarSede(query) antes de ejecutar (abajo)
     const query = Database.from('convenios as c')
       .where('c.activo', true)
       .select('c.id', 'c.nombre', 'c.establecimiento')
@@ -539,6 +556,8 @@ export default class ConveniosController {
     }
     query.orderBy('c.nombre', 'asc').orderBy('c.id', 'asc')
     if (limit !== null) query.limit(limit)
+    // Multi-sede: solo convenios de la sede activa.
+    aplicarSede(query, 'c.sede_id')
 
     const rows = await query
     return response.ok(
@@ -570,6 +589,7 @@ export default class ConveniosController {
 
     const rows = await Database.from('convenios')
       .select(cols)
+      .where((q) => aplicarSede(q, 'convenios.sede_id'))
       .where('activo', true)
       .where((qb) => {
         qb.whereNull('estado').orWhereRaw("UPPER(TRIM(estado)) IN ('ACTIVO', 'ACTIVA')")
