@@ -1,8 +1,10 @@
 // app/Controllers/Http/vehiculos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
-import Vehiculo from 'app/models/vehiculo.js'
-import ClaseVehiculo from 'app/models/clase_vehiculos.js'
-import Cliente from 'app/models/cliente.js'
+// Imports por alias (#models): 'app/models/*.js' no resuelve en runtime y
+// toda la ruta /api/vehiculos respondía 500.
+import Vehiculo from '#models/vehiculo'
+import ClaseVehiculo from '#models/clase_vehiculos'
+import Cliente from '#models/cliente'
 
 function normalizePlaca(raw?: string) {
   if (!raw) return ''
