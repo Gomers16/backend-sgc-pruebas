@@ -54,10 +54,23 @@ export interface SedeVia {
 
 const IDENT = /^[a-z_][a-z0-9_]*$/
 
+/**
+ * Agrupa los where que ya tiene la consulta en un paréntesis (API pública de
+ * Lucid wrapExisting()) antes de agregar el filtro: si no, una consulta con
+ * OR a nivel superior quedaría "a OR b AND sede_id IN (...)" y la rama "a"
+ * se saltaría la sede. Test: "orWhere a nivel superior" en
+ * tests/functional/multisede_fase2_mixin.spec.ts.
+ */
+function agruparWheres(query: Qb) {
+  const q = query as any
+  if (typeof q.wrapExisting === 'function') q.wrapExisting()
+}
+
 function filtrar(query: Qb, tabla: string, columna: string, via: SedeVia | null) {
   if (query[SIN_SEDE] || query[YA_FILTRADO]) return
   const s = scopeObligatorio()
   if (!s) return // bypass explícito
+  agruparWheres(query)
   if (via) {
     // Ids enteros validados por la resolución de la sede: van en línea.
     const ids = s.sedeIds.length ? s.sedeIds.map((n) => Math.trunc(n)).join(',') : 'NULL'

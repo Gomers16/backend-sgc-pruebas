@@ -112,6 +112,36 @@ test.group('Multi-sede Fase 2 · mixin SedeScoped', (group) => {
     )
   })
 
+  test('orWhere a nivel superior: el OR no se salta el filtro de sede', async ({ assert }) => {
+    // Sin agrupar: "nombre = A OR nombre = B AND sede_id IN (1)" devolvería
+    // P-BOGOTA por la primera rama.
+    const filas = await conSede(
+      [1],
+      async () => await Padre.query().where('nombre', 'P-BOGOTA').orWhere('nombre', 'P-IBAGUE')
+    )
+    assert.deepEqual(
+      filas.map((p) => p.nombre),
+      ['P-IBAGUE']
+    )
+    const pag = await conSede(
+      [1],
+      async () =>
+        await Padre.query()
+          .where('nombre', 'P-BOGOTA')
+          .orWhere('nombre', 'P-IBAGUE')
+          .paginate(1, 10)
+    )
+    assert.equal(pag.total, 1)
+    const hijos = await conSede(
+      [1],
+      async () => await Hijo.query().where('nombre', 'H2-BOGOTA').orWhere('nombre', 'H1-IBAGUE')
+    )
+    assert.deepEqual(
+      hijos.map((h) => h.nombre),
+      ['H1-IBAGUE']
+    )
+  })
+
   test('preload: la relación también se filtra por sede', async ({ assert }) => {
     const [padre] = await conSede(
       [1],
