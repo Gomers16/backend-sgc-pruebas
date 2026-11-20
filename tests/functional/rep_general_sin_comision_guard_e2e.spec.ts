@@ -123,6 +123,7 @@ test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep G
     const turnoId = resTurno.body().id as number
 
     const facturacion = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-REPGENERAL-GUARD-${placa}-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',

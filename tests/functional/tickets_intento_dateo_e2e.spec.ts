@@ -91,6 +91,7 @@ test.group('Tickets · Fase 3 convenio desde el dateo', (group) => {
 
   async function facturacionConfirmada(turnoId: number, placa: string) {
     const f = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-TKIN-${placa}-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',

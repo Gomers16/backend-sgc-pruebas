@@ -487,6 +487,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     tStore.assertBodyContains({ code: 'TURNO_SEGUNDA_VEZ' })
 
     const ticketLibre = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `tst-sv-b1-libre-${Date.now()}`,
       filePath: '/tmp/tst-sv-b1-libre.png',
       estado: 'BORRADOR',
@@ -500,6 +501,7 @@ test.group('Segunda vez · flujo B1', (group) => {
     tUpdate.assertBodyContains({ code: 'TURNO_SEGUNDA_VEZ' })
 
     const ticketSv = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `tst-sv-b1-sv-${Date.now()}`,
       filePath: '/tmp/tst-sv-b1-sv.png',
       estado: 'BORRADOR',

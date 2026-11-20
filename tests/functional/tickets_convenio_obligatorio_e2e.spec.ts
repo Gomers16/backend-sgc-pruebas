@@ -116,6 +116,7 @@ test.group('Tickets · convenio obligatorio (crear y aprobar)', (group) => {
 
   async function facturacionConfirmada(turnoId: number, placa: string) {
     const f = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-TKCV-${placa}-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',

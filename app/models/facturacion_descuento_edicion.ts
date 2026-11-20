@@ -4,6 +4,8 @@
 // FacturacionTicketsController.update, modo edición con motivo_edicion).
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import FacturacionTicket from '#models/facturacion_ticket'
@@ -28,7 +30,14 @@ const decimal = {
   consume: (v: unknown) => (v === null || v === undefined ? null : Number(v)),
 }
 
-export default class FacturacionDescuentoEdicion extends BaseModel {
+export default class FacturacionDescuentoEdicion extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3b): sin sede_id propio; hereda la del ticket de facturación.
+  static sedeVia = {
+    atributo: 'facturacionTicketId',
+    columna: 'facturacion_ticket_id',
+    tablaPadre: 'facturacion_tickets',
+  }
+
   public static table = 'facturacion_descuento_ediciones'
 
   @column({ isPrimary: true })

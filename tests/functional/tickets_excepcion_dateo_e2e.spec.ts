@@ -187,6 +187,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     // Fixture: turno ya facturado y confirmado (para probar la rama que SÍ
     // genera comisión en el paso de aprobar).
     const facturacion = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',
@@ -293,6 +294,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     assert.isTrue(bodyVentana.dentroVentana, 'Turno reciente: debe quedar dentro de ventana')
 
     const facturacion = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-DENTRO-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',
@@ -358,6 +360,7 @@ test.group('E2E manual - flujo completo Tickets Internos / Excepción de Dateo',
     const { turnoId } = await crearTurnoYRechazo(client, assert, PLACA_SIN_COMISION, '00:05')
 
     const facturacion = await FacturacionTicket.create({
+      sedeId: SEDE_ID,
       hash: `TEST-HASH-SINCOM-${Date.now()}`,
       filePath: 'test/fake.jpg',
       estado: 'CONFIRMADA',

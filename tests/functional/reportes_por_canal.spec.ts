@@ -149,6 +149,7 @@ test.group('Reportes por canal (¿Cómo se enteró de nosotros?)', (group) => {
     }
   ) {
     const [id] = await Database.table('facturacion_tickets').insert({
+      sede_id: SEDE_ID,
       hash: `gzc-${randomUUID()}`,
       file_path: 'tests/gzc.png',
       estado: 'CONFIRMADA',

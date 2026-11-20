@@ -4,12 +4,21 @@
 // CONFIRMADA (ver FacturacionTicketsController.corregirConsecutivoDescuento).
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 import FacturacionTicket from '#models/facturacion_ticket'
 import Usuario from '#models/usuario'
 
-export default class FacturacionConsecutivoDescuentoCambio extends BaseModel {
+export default class FacturacionConsecutivoDescuentoCambio extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3b): sin sede_id propio; hereda la del ticket de facturación.
+  static sedeVia = {
+    atributo: 'facturacionTicketId',
+    columna: 'facturacion_ticket_id',
+    tablaPadre: 'facturacion_tickets',
+  }
+
   public static table = 'facturacion_consecutivo_descuento_cambios'
 
   @column({ isPrimary: true })

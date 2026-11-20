@@ -117,6 +117,7 @@ test.group('Telemercadeo · cola de trabajo', (group) => {
   ) {
     seq++
     await Database.table('facturacion_tickets').insert({
+      sede_id: SEDE_ID,
       hash: `TLM-${Date.now()}-${seq}`,
       file_path: 'tests/telemercadeo.jpg',
       estado: 'CONFIRMADA',

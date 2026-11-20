@@ -11,13 +11,16 @@ import Servicio from '#models/servicio'
 import Cliente from '#models/cliente'
 import Vehiculo from '#models/vehiculo'
 import Descuento from '#models/descuento'
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 
 export type FactEstado = 'BORRADOR' | 'OCR_LISTO' | 'LISTA_CONFIRMAR' | 'CONFIRMADA' | 'REVERTIDA'
 export type FormaPago = 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'MIXTO'
 export type DocTipo = 'CC' | 'NIT'
 
-export default class FacturacionTicket extends BaseModel {
+export default class FacturacionTicket extends compose(BaseModel, SedeScoped) {
+  // Multi-sede (3b): sede_id propio; el mixin la pone al crear.
   public static table = 'facturacion_tickets'
 
   @column({ isPrimary: true })
