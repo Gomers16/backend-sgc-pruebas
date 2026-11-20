@@ -1,4 +1,5 @@
 // app/controllers/captacion_dateos_controller.ts
+import { preferirConfigDeSede, sedeParaEscritura } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import db from '@adonisjs/lucid/services/db'
@@ -171,7 +172,7 @@ export default class CaptacionDateosController {
       '#models/configuracion_reserva_dateo'
     )
 
-    let config = await ConfiguracionReservaDateo.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionReservaDateo.query()).first()
     if (!config) {
       config = await ConfiguracionReservaDateo.create({ horasExclusividad: 60 } as any)
     }
@@ -184,6 +185,7 @@ export default class CaptacionDateosController {
    * Actualiza las horas de exclusividad. body: { horas_exclusividad }
    */
   public async exclusividadConfigUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionReservaDateo } = await import(
       '#models/configuracion_reserva_dateo'
     )
@@ -196,7 +198,7 @@ export default class CaptacionDateosController {
       })
     }
 
-    let config = await ConfiguracionReservaDateo.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionReservaDateo.query()).first()
     if (!config) {
       config = await ConfiguracionReservaDateo.create({ horasExclusividad: horas } as any)
     } else {
@@ -218,7 +220,7 @@ export default class CaptacionDateosController {
       '#models/configuracion_redateo_global'
     )
 
-    let config = await ConfiguracionRedateoGlobal.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionRedateoGlobal.query()).first()
     if (!config) {
       config = await ConfiguracionRedateoGlobal.create({ maxRedateos: 3 } as any)
     }
@@ -231,6 +233,7 @@ export default class CaptacionDateosController {
    * Actualiza el límite global. body: { max_redateos }
    */
   public async maxRedateosConfigUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRedateoGlobal } = await import(
       '#models/configuracion_redateo_global'
     )
@@ -243,7 +246,7 @@ export default class CaptacionDateosController {
       })
     }
 
-    let config = await ConfiguracionRedateoGlobal.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionRedateoGlobal.query()).first()
     if (!config) {
       config = await ConfiguracionRedateoGlobal.create({ maxRedateos } as any)
     } else {
@@ -287,6 +290,7 @@ export default class CaptacionDateosController {
    * max_redateos null/vacío = elimina el override (vuelve a usar el global).
    */
   public async maxRedateosAsesoresUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRedateoAsesor } = await import(
       '#models/configuracion_redateo_asesor'
     )
@@ -331,6 +335,7 @@ export default class CaptacionDateosController {
    * Elimina el override — el asesor vuelve a usar el límite global.
    */
   public async maxRedateosAsesoresDelete({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRedateoAsesor } = await import(
       '#models/configuracion_redateo_asesor'
     )

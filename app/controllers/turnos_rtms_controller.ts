@@ -42,7 +42,7 @@ import {
   whereTurnoDaVigencia,
 } from '#services/segunda_vez_service'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
-import { sedeParaEscritura } from '#services/sede_scope'
+import { sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
 
 // ===== Helpers =====
 const toMySQL = (dt: DateTime) => dt.toFormat('yyyy-LL-dd HH:mm:ss')
@@ -1099,9 +1099,9 @@ export default class TurnosRtmController {
         }
       }
       // ── Clasificación de recurrencia en tiempo real ──
-      const configGlobal = await Database.from('configuracion_recurrencia_global')
-        .orderBy('id', 'asc')
-        .first()
+      const configGlobal = await preferirConfigDeSede(
+        Database.from('configuracion_recurrencia_global')
+      ).first()
       const mesesMinimos: number = configGlobal?.meses_minimos ?? 24
 
       let esRecurrente = false

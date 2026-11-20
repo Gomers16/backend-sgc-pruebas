@@ -12,6 +12,7 @@
 //  - Evidencia: ruta privada uploads/telemercadeo/AAAA/MM/<cuid>.<ext>.
 //  - Vínculo gestión ↔ dateo dentro de la transacción de store().
 
+import { preferirConfigDeSede } from '#services/sede_scope'
 import fs from 'node:fs'
 import { DateTime } from 'luxon'
 import app from '@adonisjs/core/services/app'
@@ -73,7 +74,7 @@ export async function agenteTelemercadeoDeUsuario(usuarioId: number) {
 }
 
 export async function getConfigSeguimientoTele(client?: TransactionClientContract) {
-  let cfg = await ConfiguracionSeguimientoTeleGlobal.query({ client }).first()
+  let cfg = await preferirConfigDeSede(ConfiguracionSeguimientoTeleGlobal.query({ client })).first()
   if (!cfg) {
     cfg = await ConfiguracionSeguimientoTeleGlobal.create(
       {

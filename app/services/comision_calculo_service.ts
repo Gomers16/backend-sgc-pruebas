@@ -12,6 +12,7 @@
 // simple (sin continuidad) que NO fue tocada — queda fuera de este service
 // por ahora.
 
+import { preferirConfigDeSede } from '#services/sede_scope'
 import Comision from '#models/comision'
 import Database from '@adonisjs/lucid/services/db'
 
@@ -233,7 +234,9 @@ export async function resolveConfigRecurrencia(
 ): Promise<ConfigRecurrenciaResuelta> {
   const esMoto = tipoVehiculo === 'MOTO'
 
-  const globalCfg = await Database.from('configuracion_recurrencia_global').orderBy('id', 'asc').first()
+  const globalCfg = await preferirConfigDeSede(
+    Database.from('configuracion_recurrencia_global')
+  ).first()
 
   let valorRecurrente: number
   let valorRecuperacion: number

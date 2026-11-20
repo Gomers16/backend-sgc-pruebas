@@ -1,4 +1,5 @@
 // app/controllers/rep_general_import_controller.ts
+import { preferirConfigDeSede } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import logger from '@adonisjs/core/services/logger'
 import fs from 'node:fs'
@@ -148,10 +149,7 @@ export default class RepGeneralImportController {
         sedeIdValido = sedeDefault.id
       }
 
-      const configGlobal = await db
-        .from('configuracion_recurrencia_global')
-        .orderBy('id', 'asc')
-        .first()
+      const configGlobal = await preferirConfigDeSede(db.from('configuracion_recurrencia_global')).first()
       const mesesMinimos: number = configGlobal?.meses_minimos ?? this.MESES_MINIMOS_DEFAULT
 
       let clientesCreados = 0
@@ -1195,10 +1193,7 @@ export default class RepGeneralImportController {
     console.log(`   🚗 tipoVehiculo: ${tipoVehiculo} | esMoto: ${esMoto}`)
 
     const asesorId = comision.asesorId
-    const configGlobal = await db
-      .from('configuracion_recurrencia_global')
-      .orderBy('id', 'asc')
-      .first()
+    const configGlobal = await preferirConfigDeSede(db.from('configuracion_recurrencia_global')).first()
 
     let valorRecurrente: number
 

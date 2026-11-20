@@ -1,4 +1,5 @@
 // app/services/reserva_dateo_service.ts
+import { preferirConfigDeSede, claveCacheSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import type TurnoRtm from '#models/turno_rtm'
@@ -73,24 +74,27 @@ function normalizePhone(v?: string | null): string | null {
 // requests con varias llamadas (ver busquedas_controller.ts), sin quedar
 // desactualizado más de unos segundos tras un cambio de configuración.
 const CACHE_MS = 15_000
-let cache: { horas: number; expiresAt: number } | null = null
+// Multi-sede: caché por sede (override por sede con fallback a la global).
+const cache = new Map<string, { horas: number; expiresAt: number }>()
 
 export async function getHorasExclusividad(): Promise<number> {
-  if (cache && cache.expiresAt > Date.now()) return cache.horas
+  const clave = claveCacheSede()
+  const enCache = cache.get(clave)
+  if (enCache && enCache.expiresAt > Date.now()) return enCache.horas
 
   const { default: ConfiguracionReservaDateo } = await import('#models/configuracion_reserva_dateo')
-  let config = await ConfiguracionReservaDateo.query().first()
+  let config = await preferirConfigDeSede(ConfiguracionReservaDateo.query()).first()
   if (!config) {
     config = await ConfiguracionReservaDateo.create({ horasExclusividad: 60 } as any)
   }
 
-  cache = { horas: config.horasExclusividad, expiresAt: Date.now() + CACHE_MS }
-  return cache.horas
+  cache.set(clave, { horas: config.horasExclusividad, expiresAt: Date.now() + CACHE_MS })
+  return config.horasExclusividad
 }
 
 /** Invalida el cache — llamar tras actualizar la config desde el endpoint PUT/POST. */
 export function invalidateHorasExclusividadCache(): void {
-  cache = null
+  cache.clear()
 }
 
 /** Reserva/ventana de exclusividad de un dateo. */
@@ -286,7 +290,7 @@ export async function getMinutosVentanaGlobal(): Promise<number> {
   const { default: ConfiguracionVentanaTicketGlobal } = await import(
     '#models/configuracion_ventana_ticket_global'
   )
-  const config = await ConfiguracionVentanaTicketGlobal.query().first()
+  const config = await preferirConfigDeSede(ConfiguracionVentanaTicketGlobal.query()).first()
   return config?.minutosVentana ?? MINUTOS_VENTANA_TICKET_DEFAULT
 }
 
@@ -410,7 +414,7 @@ export async function getMaxRedateos(agenteId?: number | null): Promise<number> 
   const { default: ConfiguracionRedateoGlobal } = await import(
     '#models/configuracion_redateo_global'
   )
-  let config = await ConfiguracionRedateoGlobal.query().first()
+  let config = await preferirConfigDeSede(ConfiguracionRedateoGlobal.query()).first()
   if (!config) {
     config = await ConfiguracionRedateoGlobal.create({ maxRedateos: 3 } as any)
   }

@@ -1,4 +1,5 @@
 // app/controllers/telemercadeo_controller.ts
+import { preferirConfigDeSede } from '#services/sede_scope'
 import fs from 'node:fs'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
@@ -744,7 +745,7 @@ export default class TelemercadeoController {
       return response.badRequest({ message: 'dias_vigencia_ciclo debe ser un entero entre 1 y 365' })
     }
     await getConfigSeguimientoTele()
-    const cfg = (await ConfiguracionSeguimientoTeleGlobal.query().first())!
+    const cfg = (await preferirConfigDeSede(ConfiguracionSeguimientoTeleGlobal.query()).first())!
     if (max !== undefined) cfg.maxSeguimientos = max
     if (dias !== undefined) cfg.diasVigenciaCiclo = dias
     await cfg.save()

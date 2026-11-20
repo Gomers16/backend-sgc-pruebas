@@ -253,3 +253,45 @@ declare module '@adonisjs/core/http' {
     sedeScope?: SedeScope | null
   }
 }
+
+/* ===================== Configuración con override por sede ===================== */
+
+/**
+ * Configuración "global con override por sede" (tablas configuracion_*_global
+ * y similares: sede_id NULL = global). Restringe la consulta a la fila de la
+ * sede activa o a la global y ordena para que gane el override:
+ *   - sede concreta → (sede_id = sede OR sede_id IS NULL), override primero;
+ *   - "todas" → solo la global (no hay una sede que elegir);
+ *   - bypass (sin request: comandos, tests) → todas las filas, override
+ *     primero (hoy: la única fila global, igual que antes).
+ * Siempre desempata por id ascendente (antes: .first() = la de menor id).
+ */
+export function preferirConfigDeSede<
+  Q extends {
+    where: (...a: any[]) => any
+    whereNull: (c: string) => any
+    orderByRaw: (sql: string) => any
+    orderBy: (c: string, d?: 'asc' | 'desc') => any
+  },
+>(qb: Q, columna = 'sede_id'): Q {
+  if (!COLUMNA_RE.test(columna)) {
+    throw new SedeScopeError(`preferirConfigDeSede: columna inválida "${columna}"`, 500)
+  }
+  const s = scopeObligatorio()
+  const sede = s && !s.todas ? s.sedeEscritura : null
+  if (s && sede) {
+    qb.where((q: any) => q.where(columna, sede).orWhereNull(columna))
+  } else if (s) {
+    qb.whereNull(columna)
+  }
+  qb.orderByRaw(`${columna} IS NULL`)
+  qb.orderBy('id', 'asc')
+  return qb
+}
+
+/** Clave de caché por sede para valores de configuración ("global" en todas/bypass). */
+export function claveCacheSede(): string {
+  const s = scopeActual()
+  if (!s || s === 'sin_filtro' || s.todas || !s.sedeEscritura) return 'global'
+  return `sede:${s.sedeEscritura}`
+}

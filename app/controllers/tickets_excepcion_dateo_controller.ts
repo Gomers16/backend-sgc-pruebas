@@ -1,5 +1,5 @@
 // app/controllers/tickets_excepcion_dateo_controller.ts
-import { sedeParaEscritura } from '#services/sede_scope'
+import { sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
 import type { HttpContext } from '@adonisjs/core/http'
 import { DateTime } from 'luxon'
 import Database from '@adonisjs/lucid/services/db'
@@ -59,6 +59,7 @@ export default class TicketsExcepcionDateoController {
    * Actualiza el límite global. body: { minutos_ventana }
    */
   public async ventanaConfigUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionVentanaTicketGlobal } = await import(
       '#models/configuracion_ventana_ticket_global'
     )
@@ -71,7 +72,7 @@ export default class TicketsExcepcionDateoController {
       })
     }
 
-    let config = await ConfiguracionVentanaTicketGlobal.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionVentanaTicketGlobal.query()).first()
     if (!config) {
       config = await ConfiguracionVentanaTicketGlobal.create({ minutosVentana } as any)
     } else {
@@ -115,6 +116,7 @@ export default class TicketsExcepcionDateoController {
    * minutos_ventana null/vacío = elimina el override (vuelve a usar el global).
    */
   public async ventanaAsesoresUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionVentanaTicketAsesor } = await import(
       '#models/configuracion_ventana_ticket_asesor'
     )
@@ -162,6 +164,7 @@ export default class TicketsExcepcionDateoController {
    * Elimina el override — el asesor vuelve a usar el límite global.
    */
   public async ventanaAsesoresDelete({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionVentanaTicketAsesor } = await import(
       '#models/configuracion_ventana_ticket_asesor'
     )

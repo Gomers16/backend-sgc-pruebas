@@ -1,7 +1,7 @@
 // app/controllers/reportes_administrativos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
-import { aplicarSede } from '#services/sede_scope'
+import { aplicarSede, preferirConfigDeSede } from '#services/sede_scope'
 import { DateTime } from 'luxon'
 import ExcelJS from 'exceljs'
 import PdfkitTable from 'pdfkit-table'
@@ -2427,9 +2427,9 @@ export default class ReportesAdministrativosController {
 
   /** Cálculo compartido por retencionClientes() y el Súper Informe. */
   private async computeRetencionClientes(fechaInicio: string, fechaFin: string) {
-    const configRecurrencia = await Database.from('configuracion_recurrencia_global')
-      .select('meses_minimos')
-      .first()
+    const configRecurrencia = await preferirConfigDeSede(
+      Database.from('configuracion_recurrencia_global').select('meses_minimos')
+    ).first()
     const mesesMinimos = configRecurrencia ? Number(configRecurrencia.meses_minimos) : 24
 
     const CLASIFICACION_SQL = RETENCION_CLASIFICACION_SQL

@@ -12,7 +12,7 @@ import Liquidacion, {
   type LiquidacionTipoPeriodo,
 } from '#models/liquidacion'
 import LiquidacionDetalle from '#models/liquidacion_detalle'
-import { aplicarSede, sedeParaEscritura } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
 import {
   conflictoSinComisionTicket,
@@ -2038,7 +2038,7 @@ export default class ComisionesController {
       '#models/configuracion_recurrencia_global'
     )
 
-    let config = await ConfiguracionRecurrenciaGlobal.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionRecurrenciaGlobal.query()).first()
     if (!config) {
       config = await ConfiguracionRecurrenciaGlobal.create({
         mesesMinimos: 24,
@@ -2059,6 +2059,7 @@ export default class ComisionesController {
   }
 
   public async recurrenciaConfigGlobalUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRecurrenciaGlobal } = await import(
       '#models/configuracion_recurrencia_global'
     )
@@ -2081,7 +2082,7 @@ export default class ComisionesController {
     const valorDateoRecuperacionVehiculo = parseNullable(payload.valor_dateo_recuperacion_vehiculo)
     const valorDateoRecuperacionMoto = parseNullable(payload.valor_dateo_recuperacion_moto)
 
-    let config = await ConfiguracionRecurrenciaGlobal.query().first()
+    let config = await preferirConfigDeSede(ConfiguracionRecurrenciaGlobal.query()).first()
 
     if (!config) {
       config = await ConfiguracionRecurrenciaGlobal.create({
@@ -2143,6 +2144,7 @@ export default class ComisionesController {
   }
 
   public async recurrenciaConfigAsesoresUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRecurrenciaAsesor } = await import(
       '#models/configuracion_recurrencia_asesor'
     )
@@ -2212,6 +2214,7 @@ export default class ComisionesController {
   }
 
   public async recurrenciaConfigAsesoresDelete({ params, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const { default: ConfiguracionRecurrenciaAsesor } = await import(
       '#models/configuracion_recurrencia_asesor'
     )
