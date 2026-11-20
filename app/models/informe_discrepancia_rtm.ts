@@ -1,4 +1,6 @@
 // app/models/informe_discrepancia_rtm.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -23,7 +25,11 @@ export interface DetalleDiscrepanciasRtm {
   ambiguos_revisar_manual: unknown[]
 }
 
-export default class InformeDiscrepanciaRtm extends BaseModel {
+export default class InformeDiscrepanciaRtm extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: Fase 4, informe de la sede donde se generó (los turnos cruzados son de esa sede).
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'informes_discrepancias_rtm'
 
   @column({ isPrimary: true })

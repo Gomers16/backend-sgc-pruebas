@@ -1,7 +1,14 @@
 // app/controllers/reportes_administrativos_controller.ts
 import type { HttpContext } from '@adonisjs/core/http'
 import Database from '@adonisjs/lucid/services/db'
-import { aplicarSede, preferirConfigDeSede } from '#services/sede_scope'
+import {
+  aplicarSede,
+  preferirConfigDeSede,
+  scopeActual,
+  sedeParaEscritura,
+  sedeSql,
+} from '#services/sede_scope'
+import { sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import { DateTime } from 'luxon'
 import ExcelJS from 'exceljs'
 import PdfkitTable from 'pdfkit-table'
@@ -230,6 +237,7 @@ async function obtenerConteoDiarioConFallback(
     const rows = (await excluirSegundaVez(
       Database.from('turnos_rtms as t')
         .join('servicios as s', 's.id', 't.servicio_id')
+        .where((q) => aplicarSede(q, 't.sede_id'))
         .where('t.estado', 'finalizado')
         .where('s.codigo_servicio', 'RTM')
         .whereRaw(FILTRO_PLACAS_PRUEBA)
@@ -254,13 +262,17 @@ async function obtenerConteoDiarioConFallback(
     }
     rowsRaw = Array.from(agregados.values())
   } else {
+    // Multi-sede: histórico de la(s) sede(s) activa(s), sumado por día ("todas"
+    // suma las sedes; una sola sede = su fila de cada día, igual que antes).
     const rowsHistorico = (await Database.from('historico_meta_diario')
+      .where((q) => aplicarSede(q, 'historico_meta_diario.sede_id'))
       .whereRaw('MONTH(fecha) = ? AND YEAR(fecha) = ?', [mes, anio])
+      .groupBy('fecha')
       .select(
         Database.raw("DATE_FORMAT(fecha, '%Y-%m-%d') as fecha"),
-        'livianos',
-        'motos',
-        'total'
+        Database.raw('SUM(livianos) as livianos'),
+        Database.raw('SUM(motos) as motos'),
+        Database.raw('SUM(total) as total')
       )) as any[]
     if (rowsHistorico.length > 0) {
       fuente = 'historico'
@@ -305,19 +317,53 @@ export { calcularPct }
  * peticiones concurrentes pueden ver ambas "no existe" y chocar contra el
  * índice único (mes, anio) con "Duplicate entry".
  */
-async function obtenerOCrearConfigMensual(
-  mes: number,
-  anio: number
-): Promise<ConfiguracionMetaMensual> {
-  await Database.rawQuery(
-    `INSERT INTO configuracion_meta_mensual
-       (mes, anio, meta_livianos, meta_motos, pct_crecimiento_referencia, created_at, updated_at)
-     VALUES (?, ?, 0, 0, 0, NOW(), NOW())
-     ON DUPLICATE KEY UPDATE id = id`,
-    [mes, anio]
-  )
+/** Meta del mes tal como la usan los reportes (de una sede, o sumada en "todas"). */
+type ConfigMetaMes = Pick<
+  ConfiguracionMetaMensual,
+  'mes' | 'anio' | 'metaLivianos' | 'metaMotos' | 'pctCrecimientoReferencia'
+>
 
-  const config = await ConfiguracionMetaMensual.query().where('mes', mes).where('anio', anio).first()
+/**
+ * Multi-sede: la meta mensual es POR SEDE. Con una sede concreta lee la
+ * suya (creándola en 0 si `crear` y no existe, como antes). En "todas" no
+ * crea nada: suma las metas de las sedes permitidas y promedia el % de
+ * crecimiento de referencia; sin filas → null (o ceros si `crear`).
+ */
+async function configMetaMes(
+  mes: number,
+  anio: number,
+  crear: boolean
+): Promise<ConfigMetaMes | null> {
+  const s = scopeActual()
+  const sede = s && s !== 'sin_filtro' && !s.todas ? s.sedeEscritura : null
+  if (sede) {
+    if (crear) {
+      await Database.rawQuery(
+        `INSERT INTO configuracion_meta_mensual
+           (sede_id, mes, anio, meta_livianos, meta_motos, pct_crecimiento_referencia, created_at, updated_at)
+         VALUES (?, ?, ?, 0, 0, 0, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE id = id`,
+        [sede, mes, anio]
+      )
+    }
+    return await ConfiguracionMetaMensual.query().where('mes', mes).where('anio', anio).first()
+  }
+  const filas = await ConfiguracionMetaMensual.query().where('mes', mes).where('anio', anio)
+  if (!filas.length) {
+    return crear ? { mes, anio, metaLivianos: 0, metaMotos: 0, pctCrecimientoReferencia: 0 } : null
+  }
+  return {
+    mes,
+    anio,
+    metaLivianos: filas.reduce((a, f) => a + Number(f.metaLivianos), 0),
+    metaMotos: filas.reduce((a, f) => a + Number(f.metaMotos), 0),
+    pctCrecimientoReferencia:
+      filas.reduce((a, f) => a + Number(f.pctCrecimientoReferencia), 0) / filas.length,
+  }
+}
+
+async function obtenerOCrearConfigMensual(mes: number, anio: number): Promise<ConfigMetaMes> {
+  const config = await configMetaMes(mes, anio, true)
   if (!config) {
     throw new Error(`No se pudo obtener/crear configuracion_meta_mensual para ${mes}/${anio}`)
   }
@@ -1782,6 +1828,7 @@ export default class ReportesAdministrativosController {
    */
   private baseIngresosPorCanal(fechaInicio: string, fechaFin: string) {
     return Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .join('turnos_rtms as t', 't.id', 'ft.turno_id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
@@ -1878,6 +1925,7 @@ export default class ReportesAdministrativosController {
     // ft./t. porque ambas tablas tienen sede_id — sin calificar, MySQL
     // tira columna ambigua tras el JOIN.
     const rows = (await Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .join('turnos_rtms as t', 't.id', 'ft.turno_id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
@@ -1917,6 +1965,7 @@ export default class ReportesAdministrativosController {
     // Una segunda vez no es unidad de producción (excluirSegundaVez).
     const turnosPorServicio = (await excluirSegundaVez(
       Database.from('turnos_rtms as t')
+        .where((q) => aplicarSede(q, 't.sede_id'))
         .join('servicios as s', 's.id', 't.servicio_id')
         .where('t.estado', 'finalizado')
         .whereRaw('DATE(t.fecha) BETWEEN ? AND ?', [fechaInicio, fechaFin])
@@ -2014,6 +2063,7 @@ export default class ReportesAdministrativosController {
    * que confiar a mano.
    */
   private async computeReconciliacionFacturacionRtm(fechaInicio: string, fechaFin: string) {
+    // sede: turnos de la sede activa; las subconsultas de tickets van por t.id
     const sql = `
       SELECT categoria, COUNT(*) AS cantidad
       FROM (
@@ -2043,6 +2093,7 @@ export default class ReportesAdministrativosController {
           AND s.codigo_servicio = 'RTM'
           AND t.placa NOT LIKE 'TST%'
           AND ${excluirSegundaVezSql('t')}
+          AND ${sedeSql('t')}
           AND DATE(t.fecha) BETWEEN ? AND ?
       ) x
       GROUP BY categoria
@@ -2117,6 +2168,7 @@ export default class ReportesAdministrativosController {
     if (error) return response.badRequest({ message: error })
 
     const rows = (await Database.from('facturacion_tickets')
+      .where((q) => aplicarSede(q, 'facturacion_tickets.sede_id'))
       .whereIn('captacion_canal', ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'])
       .where('estado', 'CONFIRMADA')
       .where('servicio_codigo', 'RTM')
@@ -2210,6 +2262,7 @@ export default class ReportesAdministrativosController {
     // total_bruto/total_neto SIGUEN siendo de facturacion_tickets, sin
     // cambios — mismo criterio que en `asesores` (dinero real cobrado en
     // caja, concepto distinto de "venta con comisión RTM generada").
+    // sede: tickets de la sede activa (sedeSql en el WHERE); joins por turno/dateo
     const convenioRowsResult = (await Database.rawQuery(
       `
       SELECT
@@ -2229,6 +2282,7 @@ export default class ReportesAdministrativosController {
         AND ft.servicio_codigo = 'RTM'
         AND DATE(ft.created_at) BETWEEN ? AND ?
         AND ft.captacion_canal = 'ASESOR_COMERCIAL'
+        AND ${sedeSql('ft')}
         AND COALESCE(ft.convenio_nombre, conv_fb.nombre) IS NOT NULL
       GROUP BY COALESCE(ft.convenio_nombre, conv_fb.nombre)
       ORDER BY total_bruto DESC
@@ -2284,6 +2338,7 @@ export default class ReportesAdministrativosController {
     }
 
     const rows = (await Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .leftJoin('turnos_rtms as t', 't.id', 'ft.turno_id')
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
       .where('ft.estado', 'CONFIRMADA')
@@ -2417,6 +2472,7 @@ export default class ReportesAdministrativosController {
    */
   private baseRetencion(fechaInicio: string, fechaFin: string) {
     return Database.from('turnos_rtms as t')
+      .where((q) => aplicarSede(q, 't.sede_id'))
       .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 't.id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
@@ -2694,6 +2750,7 @@ export default class ReportesAdministrativosController {
         AND DATE(t.fecha) BETWEEN ? AND ?
         AND t.placa NOT LIKE 'TST%'
         AND ${excluirSegundaVezSql('t')}
+        AND ${sedeSql('t')}
       GROUP BY s.id, s.codigo_servicio, s.nombre_servicio, tipo_vehiculo_clasificado
       ORDER BY s.id ASC, tipo_vehiculo_clasificado ASC
     `
@@ -2818,6 +2875,7 @@ export default class ReportesAdministrativosController {
   /** Tickets con descuento: los comparten el resumen por canal y detalleDescuentos. */
   private baseDescuentosPorCanal(fechaInicio: string, fechaFin: string) {
     return Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
       .whereNotNull('ft.descuento_id')
@@ -2918,6 +2976,7 @@ export default class ReportesAdministrativosController {
   /** Cálculo compartido por descuentosPorAutorizador() y el Súper Informe. */
   private async computeDescuentosPorAutorizador(fechaInicio: string, fechaFin: string) {
     const rows = (await Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .join('usuarios as u', 'u.id', 'ft.autorizado_por_id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
@@ -3765,6 +3824,7 @@ export default class ReportesAdministrativosController {
         'ft.agente_comercial_nombre',
         'ft.asesor_convenio_nombre',
         'ft.convenio_nombre',
+        // sede: correlacionada con el ticket (ya filtrado por sede)
         Database.raw(
           `EXISTS (
             SELECT 1 FROM comisiones c2
@@ -3902,6 +3962,7 @@ export default class ReportesAdministrativosController {
     }
 
     const filasDescuento = (await Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .join('descuentos as d', 'd.id', 'ft.descuento_id')
       .where('ft.estado', 'CONFIRMADA')
       .where('ft.servicio_codigo', 'RTM')
@@ -4577,6 +4638,7 @@ export default class ReportesAdministrativosController {
   /** Cálculo compartido por trazabilidadRtm() (JSON) y trazabilidadRtmExcel() (.xlsx). */
   private async computeTrazabilidadRtmData(fechaInicio: string, fechaFin: string) {
     const resumenRow = (await Database.from('comisiones')
+      .where((q) => aplicarSede(q, 'comisiones.sede_id'))
       .where('es_config', false)
       .where('tipo_servicio', 'RTM')
       .where('estado', 'PAGADA')
@@ -4837,6 +4899,7 @@ export default class ReportesAdministrativosController {
    * Upsert por (mes, anio) — crea o actualiza la fila de ese mes.
    */
   public async metaMensualConfigUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const payload = request.only([
       'mes',
       'anio',
@@ -4976,10 +5039,7 @@ export default class ReportesAdministrativosController {
     const { mes, anio, error } = this.parseMesAnio(request)
     if (error) return response.badRequest({ message: error })
 
-    const config = await ConfiguracionMetaMensual.query()
-      .where('mes', mes)
-      .where('anio', anio)
-      .first()
+    const config = await configMetaMes(mes, anio, false)
     const metaTotal = config ? config.metaLivianos + config.metaMotos : 0
 
     const { dias, fuente } = await obtenerConteoDiarioConFallback(mes, anio)
@@ -5036,10 +5096,7 @@ export default class ReportesAdministrativosController {
     const { mes, anio, error } = this.parseMesAnio(request)
     if (error) return response.badRequest({ message: error })
 
-    const config = await ConfiguracionMetaMensual.query()
-      .where('mes', mes)
-      .where('anio', anio)
-      .first()
+    const config = await configMetaMes(mes, anio, false)
     const metaLivianos = config?.metaLivianos ?? 0
     const metaMotos = config?.metaMotos ?? 0
 
@@ -5099,10 +5156,7 @@ export default class ReportesAdministrativosController {
     const { mes, anio, error } = this.parseMesAnio(request)
     if (error) return response.badRequest({ message: error })
 
-    const config = await ConfiguracionMetaMensual.query()
-      .where('mes', mes)
-      .where('anio', anio)
-      .first()
+    const config = await configMetaMes(mes, anio, false)
     const metaLivianos = config?.metaLivianos ?? 0
     const metaMotos = config?.metaMotos ?? 0
     const metaTotal = metaLivianos + metaMotos
@@ -5448,6 +5502,7 @@ export default class ReportesAdministrativosController {
    * apoyado en el UNIQUE(asesor_id, mes, anio) de la tabla.
    */
   public async metaComercialConfigUpsert({ request, response }: HttpContext) {
+    sedeParaEscritura() // "todas" no escribe (400)
     const payload = request.only(['asesor_id', 'mes', 'anio', 'meta_pesos', 'meta_vehiculos'])
 
     const asesorId = Number(payload.asesor_id)
@@ -5537,6 +5592,7 @@ export default class ReportesAdministrativosController {
     let idsConDatos: number[] = []
     if (esReal) {
       const rows = (await Database.from('comisiones')
+        .where((q) => aplicarSede(q, 'comisiones.sede_id'))
         .where('es_config', false)
         .where('tipo_servicio', 'RTM')
         .whereIn('estado', ['PENDIENTE', 'APROBADA', 'PAGADA'])
@@ -5547,6 +5603,7 @@ export default class ReportesAdministrativosController {
       idsConDatos = rows.map((r) => Number(r.asesor_id))
     } else {
       const rows = (await Database.from('historico_comercial_asesor')
+        .whereRaw(sqlAsesorDeLaSede('historico_comercial_asesor.asesor_id'))
         .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
         .distinct('asesor_id')
         .select('asesor_id')) as { asesor_id: number }[]
@@ -5582,6 +5639,7 @@ export default class ReportesAdministrativosController {
 
     if (esReal) {
       const agregados = (await Database.from('comisiones as c')
+        .where((q) => aplicarSede(q, 'c.sede_id'))
         .join('agentes_captacions as a', 'a.id', 'c.asesor_id')
         .whereIn('c.asesor_id', asesorIds)
         .where('c.es_config', false)
@@ -5601,6 +5659,7 @@ export default class ReportesAdministrativosController {
       }
     } else {
       const agregados = (await Database.from('historico_comercial_asesor')
+        .whereRaw(sqlAsesorDeLaSede('historico_comercial_asesor.asesor_id'))
         .whereIn('asesor_id', asesorIds)
         .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
         .select('asesor_id', 'tipo')
@@ -5635,6 +5694,7 @@ export default class ReportesAdministrativosController {
     >()
     if (!esReal) {
       const detalleRows = (await Database.from('historico_comercial_vehiculo_mensual')
+        .whereRaw(sqlAsesorDeLaSede('historico_comercial_vehiculo_mensual.asesor_id'))
         .whereIn('asesor_id', asesorIds)
         .where({ mes, anio })
         .select(
@@ -5849,6 +5909,7 @@ export default class ReportesAdministrativosController {
     if (idsPermitidos.length === 0) return resultado
 
     const rows = (await Database.from('facturacion_tickets as ft')
+      .where((q) => aplicarSede(q, 'ft.sede_id'))
       .join('descuentos as d', 'd.id', 'ft.descuento_id')
       .whereIn('ft.agente_id', idsPermitidos)
       .where('ft.estado', 'CONFIRMADA')
@@ -6098,6 +6159,7 @@ export default class ReportesAdministrativosController {
           // (PENDIENTE+APROBADA) sin correr una segunda consulta — ANULADA
           // ya queda excluida por el whereIn de arriba.
           const rows = (await Database.from('comisiones as c')
+            .where((q) => aplicarSede(q, 'c.sede_id'))
             .whereIn('c.asesor_id', idsPermitidos)
             .where('c.es_config', false)
             .where('c.tipo_servicio', 'RTM')
@@ -6119,6 +6181,7 @@ export default class ReportesAdministrativosController {
           // del agente — puede reflejar captación por convenio aun para un
           // asesor cuya clasificación general es ASESOR_COMERCIAL.
           const historicoRows = (await Database.from('historico_comercial_asesor')
+            .whereRaw(sqlAsesorDeLaSede('historico_comercial_asesor.asesor_id'))
             .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
             .whereIn('asesor_id', idsPermitidos)
             .select('asesor_id', 'tipo')
@@ -6126,6 +6189,7 @@ export default class ReportesAdministrativosController {
             .groupBy('asesor_id', 'tipo')) as { asesor_id: number; tipo: string; total: string }[]
 
           const detalleVehiculo = (await Database.from('historico_comercial_vehiculo_mensual')
+            .whereRaw(sqlAsesorDeLaSede('historico_comercial_vehiculo_mensual.asesor_id'))
             .where({ mes, anio })
             .whereIn('asesor_id', idsPermitidos)
             .select(
@@ -6218,6 +6282,7 @@ export default class ReportesAdministrativosController {
         }).daysInMonth as number
 
         const rowsVentanaPromedio = (await Database.from('comisiones as c')
+          .where((q) => aplicarSede(q, 'c.sede_id'))
           .whereIn('c.asesor_id', idsPermitidos)
           .where('c.es_config', false)
           .where('c.tipo_servicio', 'RTM')
@@ -6231,6 +6296,7 @@ export default class ReportesAdministrativosController {
         )
 
         const rowsMesActualCompleto = (await Database.from('comisiones as c')
+          .where((q) => aplicarSede(q, 'c.sede_id'))
           .whereIn('c.asesor_id', idsPermitidos)
           .where('c.es_config', false)
           .where('c.tipo_servicio', 'RTM')
@@ -6299,6 +6365,7 @@ export default class ReportesAdministrativosController {
         }).daysInMonth as number
 
         const ingresoDiarioRows = (await Database.from('facturacion_tickets as ft')
+          .where((q) => aplicarSede(q, 'ft.sede_id'))
           .join('turnos_rtms as t', 't.id', 'ft.turno_id')
           .whereIn('ft.agente_id', idsPermitidos)
           .where('ft.estado', 'CONFIRMADA')
@@ -6614,6 +6681,7 @@ export default class ReportesAdministrativosController {
     cantidadVehiculoDisponible: boolean
   }> {
     const query = Database.from('historico_comercial_asesor')
+      .whereRaw(sqlAsesorDeLaSede('historico_comercial_asesor.asesor_id'))
       .whereRaw('MONTH(fecha_inicio) = ? AND YEAR(fecha_inicio) = ?', [mes, anio])
       .select(
         'asesor_id',
@@ -6680,6 +6748,7 @@ export default class ReportesAdministrativosController {
 
     if (asesorIds.length > 0) {
       const detalleRows = (await Database.from('historico_comercial_vehiculo_mensual')
+        .whereRaw(sqlAsesorDeLaSede('historico_comercial_vehiculo_mensual.asesor_id'))
         .whereIn('asesor_id', asesorIds)
         .where({ mes, anio })
         .select(
@@ -7185,6 +7254,7 @@ export default class ReportesAdministrativosController {
     }
 
     const fila = (await Database.from('historico_comercial_vehiculo_mensual')
+      .whereRaw(sqlAsesorDeLaSede('historico_comercial_vehiculo_mensual.asesor_id'))
       .where({ asesor_id: asesorId, mes, anio })
       .first()) as
       | {
@@ -7290,6 +7360,7 @@ export default class ReportesAdministrativosController {
     if (!asesor) return response.badRequest({ message: 'asesor_id no existe' })
 
     const rows = (await Database.from('captacion_dateos as cd')
+      .where((q) => aplicarSede(q, 'cd.sede_id'))
       .innerJoin('facturacion_tickets as ft', 'ft.turno_id', 'cd.consumido_turno_id')
       .leftJoin('descuentos as d', 'd.id', 'ft.descuento_id')
       .leftJoin('comisiones as com', (q) => {

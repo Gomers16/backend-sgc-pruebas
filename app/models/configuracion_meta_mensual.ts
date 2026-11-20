@@ -1,8 +1,14 @@
 // app/models/configuracion_meta_mensual.ts
+import { compose } from '@adonisjs/core/helpers'
+import { SedeScoped } from '#models/mixins/sede_scoped'
 import { DateTime } from 'luxon'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
 
-export default class ConfiguracionMetaMensual extends BaseModel {
+export default class ConfiguracionMetaMensual extends compose(BaseModel, SedeScoped) {
+  // Multi-sede: Fase 4, meta mensual POR SEDE (decisión 2026-11-19); el mixin pone la sede al crear.
+  @column({ columnName: 'sede_id' })
+  declare sedeId: number | null
+
   public static table = 'configuracion_meta_mensual'
 
   @column({ isPrimary: true })
