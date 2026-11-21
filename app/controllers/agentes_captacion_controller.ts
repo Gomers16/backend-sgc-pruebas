@@ -112,7 +112,7 @@ export default class AgentesCaptacionController {
 
     const row = await AgenteCaptacion.query()
       .where('agentes_captacions.usuario_id', userId)
-      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
+      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id') // sede: usuario y contrato del agente (raíz AgenteCaptacion con mixin)
       .leftJoin('contratos', function () {
         this.on('contratos.usuario_id', '=', 'usuarios.id').andOnVal(
           'contratos.estado',
@@ -166,7 +166,7 @@ export default class AgentesCaptacionController {
     const order: 'asc' | 'desc' = orderRaw === 'desc' ? 'desc' : 'asc'
 
     const qbuilder = AgenteCaptacion.query()
-      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
+      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id') // sede: usuario y contrato del agente (raíz AgenteCaptacion con mixin)
       .leftJoin('contratos', function () {
         this.on('contratos.usuario_id', '=', 'usuarios.id').andOnVal(
           'contratos.estado',
@@ -217,7 +217,7 @@ export default class AgentesCaptacionController {
   public async show({ params, response, auth }: HttpContext) {
     const row = await AgenteCaptacion.query()
       .where('agentes_captacions.id', params.id)
-      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
+      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id') // sede: usuario y contrato del agente (raíz AgenteCaptacion con mixin)
       .leftJoin('contratos', function () {
         this.on('contratos.usuario_id', '=', 'usuarios.id').andOnVal(
           'contratos.estado',
@@ -282,7 +282,7 @@ export default class AgentesCaptacionController {
     // Multi-sede: el agente del PROPIO usuario es identidad (se ve en cualquier sede activa).
     const row = await AgenteCaptacion.querySinSede()
       .where('agentes_captacions.usuario_id', auth.user.id)
-      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id')
+      .leftJoin('usuarios', 'usuarios.id', 'agentes_captacions.usuario_id') // sede: usuario y contrato del agente propio (identidad, ver arriba)
       .leftJoin('contratos', function () {
         this.on('contratos.usuario_id', '=', 'usuarios.id').andOnVal(
           'contratos.estado',
@@ -540,7 +540,7 @@ export default class AgentesCaptacionController {
     const q = String(request.input('q', '') || '').trim()
 
     const query = Prospecto.query()
-      .join('asesor_prospecto_asignaciones as apa', 'apa.prospecto_id', 'prospectos.id')
+      .join('asesor_prospecto_asignaciones as apa', 'apa.prospecto_id', 'prospectos.id') // sede: asignación por FK desde Prospecto.query() (mixin)
       .where('apa.asesor_id', asesorId)
       .select('prospectos.*')
       .orderBy('prospectos.updated_at', 'desc')
@@ -609,10 +609,12 @@ export default class AgentesCaptacionController {
     // Multi-sede: un asesor de otra sede no tiene convenios aquí.
     if (!(await AgenteCaptacion.find(asesorId))) return []
 
-    // sede: convenios de un asesor de la sede activa (asignaciones de su sede)
+    // Convenios de la sede activa: no basta con que el asesor sea de la sede
+    // (una asignación vieja o mal cargada no debe mostrar un convenio ajeno).
     const rows = await db
       .from('convenios')
       .join('asesor_convenio_asignaciones as aca', 'aca.convenio_id', 'convenios.id')
+      .where((q) => aplicarSede(q, 'convenios.sede_id'))
       .where('aca.asesor_id', asesorId)
       .if(vigente, (qb) => qb.where('aca.activo', true).whereNull('aca.fecha_fin'))
       .select(

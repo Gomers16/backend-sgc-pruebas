@@ -150,6 +150,32 @@ test.group('Multi-sede 3g · agentes, convenios, prospectos y telemercadeo', (gr
     assert.equal(ajeno.status(), 409, JSON.stringify(ajeno.body()))
   })
 
+  test('convenios del asesor: una asignación que cruza sedes no muestra el convenio ajeno', async ({
+    client,
+    assert,
+  }) => {
+    // Dato inconsistente a propósito (el código ya no lo permite crear):
+    // asesor de QA asignado a un convenio de Ibagué y a uno de QA.
+    const cA = await convenio(IBAGUE)
+    const cB = await convenio(QA)
+    for (const convenioId of [cA, cB]) {
+      await Database.table('asesor_convenio_asignaciones').insert({
+        convenio_id: convenioId,
+        asesor_id: agB,
+        activo: true,
+      })
+    }
+    for (const light of ['0', '1']) {
+      const r = await client
+        .get(`/api/agentes-captacion/${agB}/convenios`)
+        .qs({ light })
+        .headers(gerB.h)
+      assert.equal(r.status(), 200, JSON.stringify(r.body()))
+      assert.include(ids(r.body()), cB)
+      assert.notInclude(ids(r.body()), cA)
+    }
+  })
+
   test('convenios y prospectos: de otra sede → 404; asignar asesor ajeno → 409', async ({
     client,
     assert,
