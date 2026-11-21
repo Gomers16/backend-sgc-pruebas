@@ -33,6 +33,8 @@
 > Actualizado: 2026-11-19 (**Telemercadeo — gestión y control, Fase 1 backend**; solo pruebas; commits `608a62e` migraciones y modelos, `daf9429` servicios, `466f4a8` endpoints, `39161bd` tests (2026-11-18); `f9aa41d` parche WIP y `19bcd35` handoff (documentos); `f9f49c4` dateo desde gestión, `04747a1` Excel y seguimiento, `3813981` cierre (2026-11-19); `beeaec8` `agente_id` en el seguimiento de la cola y `82c197b` este mapa (Fase 2); producción local y servidor pendientes): migraciones `1803`–`1809` (orígenes, ciclos, gestiones, autorizaciones, configuración global/por asesor, metas), gestiones con evidencia privada e idempotencia, ciclo de seguimiento por cliente con límite configurable y extra autorizado por gerencia, dateo desde una gestión en la misma transacción de `store()`, resumen/Excel y metas con avance y ritmo. **Al sincronizar: copiar 1803–1809 (y la 1810, ver abajo) y no correr rollback desde producción local.** Ver *Telemercadeo — gestión y control*. Mismo día, después: cargo **"ASESOR TELEMERCADEO"** (migración `1810000000000`, corrida en la BD local; copiarla también al sincronizar) para dar de alta asesores de Telemercadeo por pantalla (usuario → contrato) y deudas del alta de asesores documentadas.
 >
 > Actualizado: 2026-11-21 (**Multi-sede, Fases 0–7**, solo en -pruebas y sin sincronizar: aislamiento por sede de operación, comercial, telemercadeo, tickets, trámites, comisiones, reportes, configuración, usuarios y contratos; ver sección `Multi-sede`).
+>
+> Actualizado: 2026-11-21, después (**Importación Bogotá**: base histórica de una sede distinta de Ibagué desde el archivo de Tecnoingeniería de Bogotá, con vista previa y carga por lotes; ver `Multi-sede → Importación Bogotá`).
 
 ---
 ## RTM / Turnos del Día
@@ -882,6 +884,16 @@ Ibagué (1), Bogotá (2) y PRUEBAS QA (3, inactiva). Mismo software y misma BD; 
 **Tests**: `tests/functional/multisede_*.spec.ts` (por fase), `snapshot_reportes_ibague.spec.ts` (opcional, `SNAPSHOT_IBAGUE=comparar`; parte operativa con reloj congelado en su captura), `multisede_th_usuarios_contratos.spec.ts`.
 
 ---
+
+### Importación Bogotá (2026-11-21)
+
+Base histórica de una sede **distinta de Ibagué** (archivo de Tecnoingeniería en formato de Bogotá: 42 columnas A–AP, el TECNOBASE de Ibagué sin 6 columnas entre U y AA). **No toca** el importador de Rep General/TECNOBASE ni el de histórico RTM.
+- Rutas: `POST /api/rtm/importar-bogota/preview` (multipart `archivo`, .xls o .xlsx, 50 MB) y `POST /api/rtm/importar-bogota/lote` (`{ token, lote }`); SUPER_ADMIN, GERENCIA, OPERATIVO_TURNOS. Ibagué (sede 1) o "todas" → 400. Controlador `app/controllers/importacion_bogota_controller.ts`.
+- `app/services/importacion_bogota/`: `lector_xls.ts` (lector propio de .xls BIFF8, sin dependencias; ExcelJS solo lee .xlsx), `formato_bogota.ts` (columnas y reglas puras), `importacion_bogota_service.ts` (vista previa y lotes).
+- Columnas: C fecha y hora, D APROBADO/RECHAZADO, H duración, I categoría, J tipo (servicio/tipo/clase igual que Ibagué), K placa, M marca, N línea, O modelo, Q → `vehiculos.matricula` (es el nº de motor, como en Ibagué), U color; dueño AA tipo, AB documento, AC nombre, AG celular, AH correo; conductor AI, AJ, AK, AO celular. No se guardan: A, B, E–G, L, P, R (VIN), S (licencia), T, V, W–Z (SOAT), AD–AF, AL–AN, AP.
+- Reglas: mismo resultado que el TECNOBASE de Ibagué (clientes/vehículos/conductores globales, turno finalizado `HIST-…`, canal FACHADA, responsable = primer usuario activo de la sede; sin recurrencia ni comisiones) más: misma placa el mismo día → un turno (APROBADA si hubo aprobado); solo RECHAZADO → turno RECHAZADA con `rechazado_at` y ventana (`camposAlCertificar`); hora real de ingreso y salida = ingreso + H; teléfonos 0/2000000/<7 dígitos descartados; vehículo con historial en otra sede no cambia dueño ni clase (aviso). Sede sin usuarios activos → 400.
+- Vista previa sin escribir (plan en `tmp/importacion_bogota/<token>.json`, 24 h, ligado a sede y usuario); lotes de 250 visitas con una transacción cada uno; idempotente por placa + fecha en la sede. Archivo real (11.439 filas → 10.510 turnos) en copia de BD: vista previa 2 s, 43 lotes en 2,8 min.
+- Tests: `tests/unit/importacion_bogota_formato.spec.ts`, `tests/functional/importacion_bogota.spec.ts`, muestra anonimizada `tests/fixtures/importacion_bogota_muestra.xls` (30 filas).
 
 ## Puntos de Integración Clave
 
