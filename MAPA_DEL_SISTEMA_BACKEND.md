@@ -31,6 +31,8 @@
 > Actualizado: 2026-11-12, tercera entrega (**sin comisión doble ni re-vinculación del dateo en el segundo turno del año**; solo pruebas, sin commit). Nuevo helper `dateoConsumidoPorOtroTurno()` en `reserva_dateo_service.ts`. `turnos_rtms_controller.ts::store()` ya no vincula, en ninguna de las 3 capas (explícito/fallback, Capa 1 y Capa 2), un dateo cuyo `consumido_turno_id` apunte a otro turno no cancelado: el turno se crea sin dateo, canal ni asesor heredados, y queda el log `🔒 [DATEO-YA-CONSUMIDO]`. Aplica a RTM y SOAT. Como respaldo, `applyCommissionHook()` no crea comisión si el dateo ya está vinculado a otro turno no cancelado y ya tiene una comisión RTM no anulada, sea del día que sea (log `⚠️ [COMISION-DATEO-OTRO-TURNO]`). Sin cambios: un dateo nuevo se vincula y paga, y un turno cancelado y recreado vuelve a vincular el dateo (`cancelar()` no libera el dateo; un turno cancelado no cuenta). Se confirmó con un test que `aprobar()` de un ticket de Excepción de Dateo crea una comisión **tipo RTM** sobre un turno SOAT; no se arregló. Suite 355 + 1 `.fails()` esperado.
 >
 > Actualizado: 2026-11-19 (**Telemercadeo — gestión y control, Fase 1 backend**; solo pruebas; commits `608a62e` migraciones y modelos, `daf9429` servicios, `466f4a8` endpoints, `39161bd` tests (2026-11-18); `f9aa41d` parche WIP y `19bcd35` handoff (documentos); `f9f49c4` dateo desde gestión, `04747a1` Excel y seguimiento, `3813981` cierre (2026-11-19); `beeaec8` `agente_id` en el seguimiento de la cola y `82c197b` este mapa (Fase 2); producción local y servidor pendientes): migraciones `1803`–`1809` (orígenes, ciclos, gestiones, autorizaciones, configuración global/por asesor, metas), gestiones con evidencia privada e idempotencia, ciclo de seguimiento por cliente con límite configurable y extra autorizado por gerencia, dateo desde una gestión en la misma transacción de `store()`, resumen/Excel y metas con avance y ritmo. **Al sincronizar: copiar 1803–1809 (y la 1810, ver abajo) y no correr rollback desde producción local.** Ver *Telemercadeo — gestión y control*. Mismo día, después: cargo **"ASESOR TELEMERCADEO"** (migración `1810000000000`, corrida en la BD local; copiarla también al sincronizar) para dar de alta asesores de Telemercadeo por pantalla (usuario → contrato) y deudas del alta de asesores documentadas.
+>
+> Actualizado: 2026-11-21 (**Multi-sede, Fases 0–7**, solo en -pruebas y sin sincronizar: aislamiento por sede de operación, comercial, telemercadeo, tickets, trámites, comisiones, reportes, configuración, usuarios y contratos; ver sección `Multi-sede`).
 
 ---
 ## RTM / Turnos del Día
@@ -858,6 +860,26 @@ Columna **"Cédula convenio"**, justo después de "Convenio", en:
 - `UsuariosController` tiene métodos selectores (`getRoles`, `getRazonesSociales`, `getSedes`, `getCargos`, `getEntidadesSalud`) que duplican lo que ya hacen `roles_controller.ts`/`sedes_controller.ts`/etc., y no parecen estar montados en `start/routes.ts` — candidatos a código muerto, a confirmar contra el frontend real.
 - `roles_controller.show()` (buscar rol por id) existe pero no está ruteado.
 - `auth_controller.logout()` existe (revoca el token actual) pero no se encontró una ruta `POST /logout` montada en `start/routes.ts` — si el frontend cierra sesión, probablemente lo hace solo descartando el token en el cliente, sin revocarlo en el servidor.
+
+---
+
+## Multi-sede (2026-11-19 → 2026-11-21)
+
+Ibagué (1), Bogotá (2) y PRUEBAS QA (3, inactiva). Mismo software y misma BD; cada sede ve y escribe solo lo suyo. **Solo en -pruebas**: el despliegue sigue `C:\Users\ggyt1\checklist_despliegue_multisede.md`.
+
+**Mecanismo**
+- `app/middleware/sede_activa_middleware.ts` (invocado desde `AuthMiddleware`): resuelve la sede del request con `resolverSedeActiva()` (`app/services/sede_scope.ts`). Usuario sin sede → 403. `X-Sede-Id` solo cuenta para SUPER_ADMIN/GERENCIA (una sede activa o `todas`); la sede propia inactiva se usa sin cabecera. `todas` = sedes activas, **solo lectura** (POST/PUT/PATCH/DELETE → 400 `E_SEDE_SCOPE`).
+- Contexto con AsyncLocalStorage: `conSede()`, `sinFiltroDeSede()`, `sedeParaEscritura()`, `aplicarSede(q, col)`, `sedeSql(alias)`, `preferirConfigDeSede()`, `configParaEditar()`.
+- Mixin `app/models/mixins/sede_scoped.ts` (fail-closed): filtra `query()`/`find`/preload, pone la sede al crear, 404 en otra sede, `sedeVia` para hijas sin `sede_id`, `sedeGlobalSi` para filas globales (config con sede NULL). **whereHas, update/delete masivo y SQL crudo NO pasan por el mixin**: usar `aplicarSede`/`sedeSql`.
+- `app/services/visibilidad_sede.ts`: clientes/vehículos son identidad global; visibles si tienen turnos o dateos en la sede, o si no tienen historial en ninguna. `sqlAsesorDeLaSede()` para tablas por asesor (metas, históricos).
+- `app/middleware/registro_en_sede_middleware.ts` (`middleware.registroEnSede`): usuarios y contratos de otra sede → 404 en las rutas por id; listados `/usuarios` y `/contratos` por sede (el propio siempre visible).
+- Guardián `tests/unit/guardian_sql_sede.spec.ts` + baseline `tests/fixtures/sede_guardian_baseline.json` (**en 0**): toda consulta cruda/whereHas/masiva sobre tablas con sede necesita filtro o comentario `// sede: <motivo>`. `GUARDIAN_SEDE=regenerar` solo deja bajar.
+
+**Reglas de negocio**: tarifas de servicios y descuentos globales; `tarifas_tramites`, consecutivo de descuento (único por sede), exclusividad de dateo, recurrencia, segunda vez, ventana RTM y continuidad por sede; configuración global (sede NULL) con override por sede (editar desde una sede crea su fila); metas e histórico de meta por sede; comisión con la sede del turno (si no, la del dateo); liquidaciones y comprobantes nunca mezclan sedes (409 `COMISIONES_DE_OTRA_SEDE`); dateo con asesor/convenio de otra sede → 409; ticket↔turno/comisión de otra sede → 409 `TICKET_OTRA_SEDE`.
+
+**Migraciones** (`database/helpers/multisede.ts`): 1811000000000–05 (columnas y backfill), 1812–1815 y 1817 (`NOT NULL DEFAULT 1` temporal, compatibles con código viejo) aplicadas en local; **1816** (cierre Fase 3) y **1818** (cierre Fase 4, quita DEFAULT de metas e informes) ensayadas y **sin aplicar hasta sincronizar**. Comandos: `multisede:sede-qa` (solo local), `multisede:rebackfill-usuarios`.
+
+**Tests**: `tests/functional/multisede_*.spec.ts` (por fase), `snapshot_reportes_ibague.spec.ts` (opcional, `SNAPSHOT_IBAGUE=comparar`; parte operativa con reloj congelado en su captura), `multisede_th_usuarios_contratos.spec.ts`.
 
 ---
 
