@@ -96,7 +96,11 @@ const RE_SQL = /\b(?:FROM|JOIN)\s+`?([a-z_]+)`?/g
 const RE_WHEREHAS =
   /\.(?:whereHas|orWhereHas|has|orHas|whereDoesntHave|orWhereDoesntHave|doesntHave|orDoesntHave)\(\s*['"](\w+)['"]/g
 const RE_MASIVO = /\.(?:update|delete|increment|decrement)\(/
-const MARCA_CERCA = /sedeSql\(|aplicarSede\(/
+// Marcas de filtro por sede: sedeSql()/aplicarSede(), sqlAsesorDeLaSede() (asesor
+// de la sede activa; usa sedeSql por dentro) y la correlación por sede en SQL
+// crudo (`t2.sede_id = t.sede_id`: misma sede que una fila ya filtrada).
+const MARCA_CERCA =
+  /sedeSql\(|aplicarSede\(|sqlAsesorDeLaSede\(|\b[a-z_0-9]+\.sede_id\s*=\s*[a-z_0-9]+\.sede_id\b/
 const COMENTARIO = /\/\/\s*sede:\s*\S/
 
 function archivos(dir: string): string[] {
@@ -290,6 +294,9 @@ test.group('Guardián de consultas por sede', () => {
       ['`SELECT * FROM facturacion_tickets ft`', true],
       ['`... JOIN captacion_dateos d ON d.id = x`', true],
       [`db.from('servicios')`, false], // catálogo global
+      [`db.from('meta_comercial_asesor').whereRaw(sqlAsesorDeLaSede('m.asesor_id'))`, false],
+      ['`SELECT 1 FROM turnos_rtms t2 WHERE t2.sede_id = t.sede_id`', false],
+      ['`SELECT 1 FROM turnos_rtms t2 WHERE t2.sede_id = 1`', true], // no es correlación
       [`db.from('turnos_rtms as t').whereRaw(sedeSql('t'))`, false],
     ]
     for (const [codigo, debe] of casos) {
