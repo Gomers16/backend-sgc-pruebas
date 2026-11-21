@@ -9,6 +9,7 @@ import TurnoRtm from '#models/turno_rtm'
 import Certificacion from '#models/certificacion'
 import InformeDiscrepanciaRtm from '#models/informe_discrepancia_rtm'
 import DiscrepanciasRtmService from '#services/discrepancias_rtm_service'
+import { conSede } from '#services/sede_scope'
 
 // "Segunda vez" — Entrega C1: una segunda vez no infla reportes (Meta
 // Mensual, Producción por líder, Reconciliación RTM, Reporte de servicios,
@@ -59,10 +60,13 @@ test.group('Segunda vez · reportes (C1)', (group) => {
       rango
     )
     const servicios = await get(client, '/api/reportes-admin/servicios', rango)
-    const informe = await DiscrepanciasRtmService.generarInforme([], {
-      archivoNombre: 'tst-segunda-vez-c1',
-      generadoPorId: usuario.id,
-    })
+    // El informe es de la sede donde se genera (sin DEFAULT de sede desde 1818).
+    const informe = await conSede([SEDE_ID], () =>
+      DiscrepanciasRtmService.generarInforme([], {
+        archivoNombre: 'tst-segunda-vez-c1',
+        generadoPorId: usuario.id,
+      })
+    )
     informeIds.push(informe.id)
     return {
       meta,
