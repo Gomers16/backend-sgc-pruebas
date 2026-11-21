@@ -241,7 +241,10 @@ test.group('Multi-sede Fase 0 · guard de usuarios por API', (group) => {
       .put(`/api/usuarios/${deOtra.usuario.id}`)
       .headers(th.bearer)
       .json({ nombres: 'HACK' })
-    assert.equal(r1.status(), 403)
+    // Desde el cierre de Talento Humano por sede, el usuario de otra sede ni
+    // siquiera es visible: 404, como el resto del aislamiento por sede.
+    assert.equal(r1.status(), 404)
+    assert.notEqual((await Usuario.find(deOtra.usuario.id))?.nombres, 'HACK')
 
     const r2 = await client
       .put(`/api/usuarios/${propio.usuario.id}`)
