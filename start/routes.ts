@@ -390,6 +390,32 @@ router
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
       ])
 
+    /* ===================== IMPORTACIÓN BOGOTÁ (otras sedes) ============ */
+    // Base histórica de una sede distinta de Ibagué (formato de Bogotá).
+    router
+      .post('/rtm/importar-bogota/preview', async (ctx) => {
+        const { default: ImportacionBogotaController } = await import(
+          '#controllers/importacion_bogota_controller'
+        )
+        return new ImportacionBogotaController().preview(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
+    router
+      .post('/rtm/importar-bogota/lote', async (ctx) => {
+        const { default: ImportacionBogotaController } = await import(
+          '#controllers/importacion_bogota_controller'
+        )
+        return new ImportacionBogotaController().lote(ctx)
+      })
+      .use([
+        middleware.auth(),
+        middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'OPERATIVO_TURNOS'] }),
+      ])
+
     /* ============================== USUARIOS =========================== */
     router
       .get('/usuarios', async (ctx) => {
