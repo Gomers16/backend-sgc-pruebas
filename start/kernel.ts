@@ -42,4 +42,6 @@ export const middleware = router.named({
   auth: () => import('#middleware/auth_middleware'),
   // Multi-sede: auth ya lo invoca; queda nombrado para usos explícitos.
   sedeActiva: () => import('#middleware/sede_activa_middleware'),
+  // Multi-sede: usuarios/contratos de otra sede → 404 (rutas de Talento Humano).
+  registroEnSede: () => import('#middleware/registro_en_sede_middleware'),
 })

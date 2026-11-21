@@ -15,6 +15,7 @@ import EntidadSalud from '#models/entidad_salud'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import { normalizarId, validarGestionUsuario } from '#services/usuario_permisos_service'
+import { aplicarSede } from '#services/sede_scope'
 
 /** Campos a seleccionar cuando se precarga el usuario actor */
 const USER_SELECT = ['id', 'nombres', 'apellidos', 'correo'] as const
@@ -258,11 +259,16 @@ export default class UsuariosController {
   }
 
   /** Lista de usuarios (opcionalmente filtrados por razón social) */
-  public async index({ request, response }: HttpContext) {
+  public async index({ request, response, auth }: HttpContext) {
     try {
       const razonSocialId = request.input('razon_social_id')
+      const yo = auth.user?.id ?? 0
 
+      // Multi-sede: usuarios de las sedes visibles (y siempre el propio).
       const query = Usuario.query()
+        .where((q) => {
+          q.where('usuarios.id', yo).orWhere((s) => aplicarSede(s, 'usuarios.sede_id'))
+        })
         .preload('rol')
         .preload('razonSocial')
         .preload('sede')

@@ -13,6 +13,7 @@ import RazonSocial from '#models/razon_social'
 import AgenteCaptacion from '#models/agente_captacion'
 import Convenio from '#models/convenio'
 import { normalizarId, validarSedeContrato } from '#services/usuario_permisos_service'
+import { aplicarSede } from '#services/sede_scope'
 
 import app from '@adonisjs/core/services/app'
 import { DateTime } from 'luxon'
@@ -573,7 +574,11 @@ export default class ContratosController {
   public async index(ctx: HttpContext) {
     const { response } = ctx
     try {
-      const query = Contrato.query()
+      const yo = ctx.auth.user?.id ?? 0
+      // Multi-sede: contratos de las sedes visibles (y siempre los propios).
+      const query = Contrato.query().where((q) => {
+        q.where('contratos.usuario_id', yo).orWhere((s) => aplicarSede(s, 'contratos.sede_id'))
+      })
       this.preloadRelations(query)
       const contratos = await query.orderBy('id', 'desc')
       return response.ok(contratos)

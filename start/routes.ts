@@ -421,6 +421,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'usuario', param: 'id' }),
       ])
 
     router
@@ -431,6 +432,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'usuario', param: 'id' }),
       ])
 
     router
@@ -441,6 +443,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA'] }), // Solo admin y gerencia pueden eliminar
+        middleware.registroEnSede({ tipo: 'usuario', param: 'id' }),
       ])
 
     router
@@ -451,6 +454,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'usuario', param: 'id' }),
       ])
     /* ============================== SELECTORES ========================= */
     const selectors = [
@@ -510,6 +514,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'usuario', param: 'usuarioId' }),
       ])
 
     router
@@ -540,6 +545,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -550,6 +556,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -560,6 +567,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -570,6 +578,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -580,6 +589,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -590,6 +600,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -600,6 +611,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -610,6 +622,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -620,6 +633,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -630,6 +644,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -640,6 +655,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -650,6 +666,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -660,6 +677,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'id' }),
       ])
 
     router
@@ -699,6 +717,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'contratoId' }),
       ])
 
     router
@@ -732,6 +751,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'contratoId' }),
       ])
 
     router
@@ -753,6 +773,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'contratoId' }),
       ])
 
     router
@@ -763,6 +784,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'contratoId' }),
       ])
 
     router
@@ -773,6 +795,7 @@ router
       .use([
         middleware.auth(),
         middleware.checkRole({ roles: ['SUPER_ADMIN', 'GERENCIA', 'TALENTO_HUMANO'] }),
+        middleware.registroEnSede({ tipo: 'contrato', param: 'contratoId' }),
       ])
     /* =============================== CIUDADES ========================== */
     router
