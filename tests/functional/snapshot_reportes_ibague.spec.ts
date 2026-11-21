@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import Database from '@adonisjs/lucid/services/db'
+import { Settings } from 'luxon'
 import Usuario from '#models/usuario'
 
 // Multi-sede — referencia de "Ibagué idéntico".
@@ -31,8 +32,10 @@ const DIR =
 const MANIFIESTO = path.join(DIR, 'manifiesto.json')
 // Parte operativa (clientes, vehículos, búsqueda y cola de telemercadeo):
 // manifiesto aparte. La cola depende de "hoy" (meses transcurridos, por
-// vencer): recapturar ese manifiesto el día en que se compare
-// (SNAPSHOT_IBAGUE=capturar_operativo).
+// vencer), que sale del reloj de Node (DateTime.now()/new Date(), pasados
+// como parámetro al SQL). Por eso la parte operativa corre con el reloj
+// CONGELADO en el `capturado_at` del manifiesto: comparar otro día da lo
+// mismo y un cambio real de datos o de código sigue saltando.
 const MANIFIESTO_OPERATIVO = path.join(DIR, 'manifiesto_operativo.json')
 const SEDE_QA = 3
 const MARCA = 'test.snapibague.'
@@ -278,22 +281,55 @@ async function limpiar() {
   await Database.from('usuarios').whereIn('id', ids).delete()
 }
 
+/**
+ * Corre fn con el reloj de Node detenido en `instanteISO`: Luxon
+ * (Settings.now) y Date (new Date() sin argumentos y Date.now()). El
+ * servidor HTTP de los tests vive en este mismo proceso, así que los
+ * controladores ven el mismo "hoy". Se restaura siempre.
+ */
+async function conRelojCongelado<T>(instanteISO: string, fn: () => Promise<T>): Promise<T> {
+  const fijo = new Date(instanteISO).getTime()
+  if (!Number.isFinite(fijo)) throw new Error(`capturado_at inválido: ${instanteISO}`)
+  const DateReal = globalThis.Date
+  const nowLuxon = Settings.now
+  class DateCongelada extends DateReal {
+    constructor(...args: any[]) {
+      if (args.length === 0) super(fijo)
+      else super(...(args as [any]))
+    }
+    static now() {
+      return fijo
+    }
+  }
+  globalThis.Date = DateCongelada as DateConstructor
+  Settings.now = () => fijo
+  try {
+    return await fn()
+  } finally {
+    globalThis.Date = DateReal
+    Settings.now = nowLuxon
+  }
+}
+
 async function capturarOperativo(pedir: (url: string) => Promise<{ status: number; body: Json }>) {
   await fs.mkdir(DIR, { recursive: true })
+  const capturadoAt = new Date().toISOString()
   const entradas: Entrada[] = []
-  for (const url of await urlsOperativas()) {
-    const a = await pedir(url)
-    const b = await pedir(url)
-    const volatiles = [...diferencias(canon(a.body), canon(b.body))]
-    entradas.push({ url, status: a.status, hash: hashDe(a.body, volatiles), volatiles })
-    await fs.writeFile(
-      path.join(DIR, 'op_' + archivoDe(url)),
-      JSON.stringify(canon(a.body), null, 1)
-    )
-  }
+  await conRelojCongelado(capturadoAt, async () => {
+    for (const url of await urlsOperativas()) {
+      const a = await pedir(url)
+      const b = await pedir(url)
+      const volatiles = [...diferencias(canon(a.body), canon(b.body))]
+      entradas.push({ url, status: a.status, hash: hashDe(a.body, volatiles), volatiles })
+      await fs.writeFile(
+        path.join(DIR, 'op_' + archivoDe(url)),
+        JSON.stringify(canon(a.body), null, 1)
+      )
+    }
+  })
   await fs.writeFile(
     MANIFIESTO_OPERATIVO,
-    JSON.stringify({ capturado_at: new Date().toISOString(), entradas }, null, 2)
+    JSON.stringify({ capturado_at: capturadoAt, entradas }, null, 2)
   )
   const no2xx = entradas.filter((e) => e.status >= 300)
   console.log(
@@ -390,7 +426,7 @@ test.group('Snapshot reportes Ibagué (opcional: SNAPSHOT_IBAGUE)', (group) => {
       assert.deepEqual(distintos, [], 'Reportes de Ibagué distintos al snapshot')
 
       // Parte operativa: obligatoria si su manifiesto existe.
-      let manOp: { entradas: Entrada[] } | null = null
+      let manOp: { capturado_at: string; entradas: Entrada[] } | null = null
       try {
         manOp = JSON.parse(await fs.readFile(MANIFIESTO_OPERATIVO, 'utf8'))
       } catch {
@@ -400,16 +436,19 @@ test.group('Snapshot reportes Ibagué (opcional: SNAPSHOT_IBAGUE)', (group) => {
       }
       if (manOp) {
         const distintosOp: string[] = []
-        for (const e of manOp.entradas) {
-          const r = await pedir(e.url)
-          if (r.status !== e.status || hashDe(r.body, e.volatiles) !== e.hash) {
-            distintosOp.push(`${e.url} (status ${e.status}→${r.status})`)
-            await fs.writeFile(
-              path.join(DIR, 'op_' + archivoDe(e.url).replace(/\.json$/, '.actual.json')),
-              JSON.stringify(canon(r.body), null, 1)
-            )
+        const { capturado_at: capturadoAt, entradas } = manOp
+        await conRelojCongelado(capturadoAt, async () => {
+          for (const e of entradas) {
+            const r = await pedir(e.url)
+            if (r.status !== e.status || hashDe(r.body, e.volatiles) !== e.hash) {
+              distintosOp.push(`${e.url} (status ${e.status}→${r.status})`)
+              await fs.writeFile(
+                path.join(DIR, 'op_' + archivoDe(e.url).replace(/\.json$/, '.actual.json')),
+                JSON.stringify(canon(r.body), null, 1)
+              )
+            }
           }
-        }
+        })
         assert.deepEqual(distintosOp, [], 'Clientes/vehículos/búsqueda/cola de Ibagué distintos')
       }
       return
