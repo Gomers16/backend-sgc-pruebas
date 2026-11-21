@@ -406,8 +406,8 @@ export default class ClientesController {
   )
 )`
       )
-      .leftJoin('agentes_captacions as ac', 'ac.id', 'cd.agente_id')
-      .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id')
+      .leftJoin('agentes_captacions as ac', 'ac.id', 'cd.agente_id') // sede: agente/convenio del dateo de un turno ya filtrado (base)
+      .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id') // sede: agente/convenio del dateo de un turno ya filtrado (base)
       .select([
         't.id',
         't.fecha',
@@ -499,8 +499,8 @@ export default class ClientesController {
   )
 )`
       )
-      .leftJoin('agentes_captacions as ac', 'ac.id', 'cd.agente_id')
-      .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id')
+      .leftJoin('agentes_captacions as ac', 'ac.id', 'cd.agente_id') // sede: agente/convenio del dateo de un turno ya filtrado (base)
+      .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id') // sede: agente/convenio del dateo de un turno ya filtrado (base)
       .where((qb) => {
         qb.where('t.cliente_id', id).orWhere('v.cliente_id', id)
       })

@@ -85,12 +85,12 @@ export async function ticketsOrigenPorDateo(
   if (!ids.length) return out
   // sede: por ids de dateos ya filtrados por sede; ticket de la misma sede del dateo
   const filas = (await Database.from('captacion_dateos as cd')
-    .join('tickets_detalle_excepcion_dateo as d', 'd.turno_id', 'cd.consumido_turno_id')
+    .join('tickets_detalle_excepcion_dateo as d', 'd.turno_id', 'cd.consumido_turno_id') // sede: por ids de dateos ya filtrados; ticket de la misma sede del dateo
     .join('tickets as t', (j) =>
       j.on('t.id', '=', 'd.ticket_id').andOn('t.sede_id', '=', 'cd.sede_id')
     )
-    .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id')
-    .leftJoin('usuarios as u', 'u.id', 'd.aprobado_por_id')
+    .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id') // sede: por ids de dateos ya filtrados; ticket de la misma sede del dateo
+    .leftJoin('usuarios as u', 'u.id', 'd.aprobado_por_id') // sede: por ids de dateos ya filtrados; ticket de la misma sede del dateo
     .whereIn('cd.id', ids)
     .where('t.estado', 'APROBADO')
     .select(
@@ -171,7 +171,7 @@ export async function dejadoDePagarComision(
   let convenio: number | null = 0
   if (origen.sin_comision_convenio && origen.caso === 'CONVENIO_COMERCIAL') {
     const cv = dateo?.convenioId
-      ? await Database.from('convenios')
+      ? await Database.from('convenios') // sede: convenio de un dateo ya leído en la sede
           .where('id', dateo.convenioId)
           .select('asesor_convenio_id')
           .first()

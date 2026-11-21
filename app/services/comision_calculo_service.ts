@@ -268,7 +268,7 @@ export async function resolveConfigRecurrencia(
   }
 
   if (asesorId) {
-    const asesorCfg = await Database.from('configuracion_recurrencia_asesores')
+    const asesorCfg = await Database.from('configuracion_recurrencia_asesores') // sede: config por asesor; el asesor ya se resolvió en la sede
       .where('asesor_id', asesorId)
       .where('recurrencia_habilitada', true)
       .first()

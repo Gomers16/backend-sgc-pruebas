@@ -61,7 +61,7 @@ export async function convenioAsignadoAlAsesor(
   convenioId: number,
   client?: TransactionClientContract
 ): Promise<boolean> {
-  const fila = await (client ?? Database)
+  const fila = await (client ?? Database) // sede: asignación de un asesor y convenio ya validados en la sede
     .from('asesor_convenio_asignaciones')
     .where('asesor_id', asesorId)
     .where('convenio_id', convenioId)

@@ -124,8 +124,8 @@ export function joinCanalReporte<Q extends Joinable>(
   const ag = opts.ag ?? 'ag'
   if (opts.unirTurno !== false) query.leftJoin(`turnos_rtms as ${t}`, `${t}.id`, `${ft}.turno_id`)
   query.leftJoin(`agentes_captacions as ${ag}`, `${ag}.id`, `${t}.agente_captacion_id`)
-  query.leftJoin('captacion_dateos as crd_t', 'crd_t.id', `${t}.captacion_dateo_id`)
-  query.leftJoin('captacion_dateos as crd_k', 'crd_k.id', `${ft}.dateo_id`)
+  query.leftJoin('captacion_dateos as crd_t', 'crd_t.id', `${t}.captacion_dateo_id`) // sede: joinCanalReporte recibe una base ya filtrada por sede
+  query.leftJoin('captacion_dateos as crd_k', 'crd_k.id', `${ft}.dateo_id`) // sede: joinCanalReporte recibe una base ya filtrada por sede
   query.whereRaw(`(${t}.id IS NULL OR ${t}.es_segunda_vez = 0)`)
   return query
 }

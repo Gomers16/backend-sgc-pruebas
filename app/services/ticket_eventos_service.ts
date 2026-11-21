@@ -66,9 +66,9 @@ export async function lineaDeTiempoTicket(ticketId: number): Promise<EventoLinea
   // sede: por id de un ticket ya leído con el mixin
   const t = await Database.from('tickets as t')
     .leftJoin('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 't.id')
-    .leftJoin('usuarios as uc', 'uc.id', 't.creado_por_id')
-    .leftJoin('usuarios as ua', 'ua.id', 'd.aprobado_por_id')
-    .leftJoin('usuarios as ur', 'ur.id', 'd.rechazado_por_id')
+    .leftJoin('usuarios as uc', 'uc.id', 't.creado_por_id') // sede: nombres de usuarios de un ticket ya leído con el mixin
+    .leftJoin('usuarios as ua', 'ua.id', 'd.aprobado_por_id') // sede: nombres de usuarios de un ticket ya leído con el mixin
+    .leftJoin('usuarios as ur', 'ur.id', 'd.rechazado_por_id') // sede: nombres de usuarios de un ticket ya leído con el mixin
     .where('t.id', ticketId)
     .select(
       't.estado',

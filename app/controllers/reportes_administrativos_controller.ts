@@ -3028,7 +3028,7 @@ export default class ReportesAdministrativosController {
     // Misma base y canal que el resumen por canal (canal_reporte_service).
     const query = joinCanalReporte(this.baseDescuentosPorCanal(fechaInicio, fechaFin))
       .join('descuentos as d', 'd.id', 'ft.descuento_id')
-      .leftJoin('usuarios as u', 'u.id', 'ft.autorizado_por_id')
+      .leftJoin('usuarios as u', 'u.id', 'ft.autorizado_por_id') // sede: autorizador del ticket; base filtrada con aplicarSede
       .leftJoin('clientes as c', 'c.id', 't.cliente_id')
 
     if (tipo) query.where('d.codigo', tipo)
@@ -3825,7 +3825,7 @@ export default class ReportesAdministrativosController {
         'ft.asesor_convenio_nombre',
         'ft.convenio_nombre',
         // sede: correlacionada con el ticket (ya filtrado por sede)
-        Database.raw(
+        Database.raw( // sede: EXISTS correlacionado con el ticket ya filtrado por sede
           `EXISTS (
             SELECT 1 FROM comisiones c2
             WHERE c2.captacion_dateo_id = ft.dateo_id
@@ -4538,8 +4538,8 @@ export default class ReportesAdministrativosController {
     // sede: la liquidación ya se leyó con el mixin (404 si es de otra sede)
     const detalle = (await Database.from('liquidacion_detalle as ld')
       .join('comisiones as c', 'c.id', 'ld.comision_id')
-      .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id')
-      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id')
+      .leftJoin('agentes_captacions as a', 'a.id', 'c.asesor_id') // sede: liquidación leída con el mixin (404 si es de otra sede)
+      .leftJoin('convenios as conv', 'conv.id', 'c.convenio_id') // sede: liquidación leída con el mixin (404 si es de otra sede)
       .where('ld.liquidacion_id', params.id)
       .select(
         'c.id as comision_id',

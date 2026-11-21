@@ -132,7 +132,7 @@ function base(f: FiltrosTickets) {
 }
 
 /** Última comisión real (no config) del dateo vinculado al turno del ticket. */
-const SQL_ULTIMA_COMISION =
+const SQL_ULTIMA_COMISION = // sede: correlacionada con el turno de un ticket ya filtrado
   '(SELECT MAX(c2.id) FROM comisiones c2 WHERE c2.captacion_dateo_id = tr.captacion_dateo_id AND c2.es_config = 0)'
 
 export async function estadisticasTickets(f: FiltrosTickets) {
@@ -153,7 +153,7 @@ export async function estadisticasTickets(f: FiltrosTickets) {
 
   // 1) Conteos.
   const conteos = await base(f)
-    .leftJoin('agentes_captacions as ac', 'ac.id', 'd.comercial_id')
+    .leftJoin('agentes_captacions as ac', 'ac.id', 'd.comercial_id') // sede: join por FK desde base(f), filtrada con aplicarSede
     .groupBy('d.comercial_id')
     .select('d.comercial_id')
     .select(
@@ -198,8 +198,8 @@ export async function estadisticasTickets(f: FiltrosTickets) {
   // 2) Dinero real (la comisión ya existe), agregado por asesor y estado.
   const reales = await base(f)
     .where('t.estado', 'APROBADO')
-    .join('turnos_rtms as tr', 'tr.id', 'd.turno_id')
-    .joinRaw(`JOIN comisiones c ON c.id = ${SQL_ULTIMA_COMISION}`)
+    .join('turnos_rtms as tr', 'tr.id', 'd.turno_id') // sede: join por FK desde base(f), filtrada con aplicarSede
+    .joinRaw(`JOIN comisiones c ON c.id = ${SQL_ULTIMA_COMISION}`) // sede: join por FK desde base(f), filtrada con aplicarSede
     .groupBy('d.comercial_id', 'c.estado')
     .select('d.comercial_id', 'c.estado')
     .select(
@@ -248,11 +248,11 @@ export async function estadisticasTickets(f: FiltrosTickets) {
   //    no pagado).
   const filas = (await base(f)
     .where('t.estado', 'APROBADO')
-    .join('turnos_rtms as tr', 'tr.id', 'd.turno_id')
-    .join('captacion_dateos as cd', 'cd.id', 'tr.captacion_dateo_id')
-    .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id')
+    .join('turnos_rtms as tr', 'tr.id', 'd.turno_id') // sede: join por FK desde base(f), filtrada con aplicarSede
+    .join('captacion_dateos as cd', 'cd.id', 'tr.captacion_dateo_id') // sede: join por FK desde base(f), filtrada con aplicarSede
+    .leftJoin('convenios as cv', 'cv.id', 'cd.convenio_id') // sede: join por FK desde base(f), filtrada con aplicarSede
     .leftJoin('descuentos as ds', 'ds.id', 'cd.descuento_id')
-    .joinRaw(`LEFT JOIN comisiones c ON c.id = ${SQL_ULTIMA_COMISION}`)
+    .joinRaw(`LEFT JOIN comisiones c ON c.id = ${SQL_ULTIMA_COMISION}`) // sede: join por FK desde base(f), filtrada con aplicarSede
     .where((q: any) => {
       q.whereNull('c.id').orWhere((q2: any) => {
         q2.whereRaw(`${sqlFlagConvenio('d')} = 0`)

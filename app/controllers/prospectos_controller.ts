@@ -684,7 +684,7 @@ export default class ProspectosController {
     const asesorId = Number(params.id)
     const vigente = String(request.input('vigente', '1'))
     const q = Prospecto.query()
-      .join('asesor_prospecto_asignaciones as apa', 'apa.prospecto_id', 'prospectos.id')
+      .join('asesor_prospecto_asignaciones as apa', 'apa.prospecto_id', 'prospectos.id') // sede: asignación por FK desde Prospecto.query() (mixin)
       .where('apa.asesor_id', asesorId)
       .where('prospectos.archivado', false)
       .select('prospectos.*')

@@ -147,10 +147,10 @@ export default class TicketsController {
 
     const query = Ticket.query()
       .join('tipos_ticket', 'tipos_ticket.id', 'tickets.tipo_ticket_id')
-      .leftJoin('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 'tickets.id')
-      .leftJoin('agentes_captacions as ac', 'ac.id', 'd.comercial_id')
-      .leftJoin('convenios as cv', 'cv.id', 'd.convenio_id')
-      .leftJoin('turnos_rtms as tr', 'tr.id', 'd.turno_id')
+      .leftJoin('tickets_detalle_excepcion_dateo as d', 'd.ticket_id', 'tickets.id') // sede: join por FK desde Ticket.query() (mixin)
+      .leftJoin('agentes_captacions as ac', 'ac.id', 'd.comercial_id') // sede: join por FK desde Ticket.query() (mixin)
+      .leftJoin('convenios as cv', 'cv.id', 'd.convenio_id') // sede: join por FK desde Ticket.query() (mixin)
+      .leftJoin('turnos_rtms as tr', 'tr.id', 'd.turno_id') // sede: join por FK desde Ticket.query() (mixin)
       .leftJoin('servicios as sv', 'sv.id', 'tr.servicio_id')
       .select(
         'tickets.*',

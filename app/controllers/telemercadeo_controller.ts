@@ -216,9 +216,9 @@ export default class TelemercadeoController {
     const q = Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
-      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id')
+      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id') // sede: joins por FK de g; aplicarSede(q, g.sede_id) abajo
       .join('servicios as s', 's.id', 'g.servicio_id')
-      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id')
+      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id') // sede: joins por FK de g; aplicarSede(q, g.sede_id) abajo
       .leftJoin('clientes as cl', 'cl.id', 'g.cliente_id')
 
     if (alc.agenteId !== null) q.where('g.agente_id', alc.agenteId)
@@ -359,9 +359,9 @@ export default class TelemercadeoController {
     const r = await Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
-      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id')
+      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id') // sede: joins por FK de una gestión ya validada en la sede
       .join('servicios as s', 's.id', 'g.servicio_id')
-      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id')
+      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id') // sede: joins por FK de una gestión ya validada en la sede
       .leftJoin('clientes as cl', 'cl.id', 'g.cliente_id')
       .where('g.id', id)
       .select(
@@ -436,9 +436,9 @@ export default class TelemercadeoController {
     const r = await Database.from('telemercadeo_gestiones as g')
       .join('agentes_captacions as a', 'a.id', 'g.agente_id')
       .join('telemercadeo_origenes as o', 'o.id', 'g.origen_id')
-      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id')
+      .join('telemercadeo_ciclos as c', 'c.id', 'g.ciclo_id') // sede: joins por FK de una gestión ya validada en la sede
       .join('servicios as s', 's.id', 'g.servicio_id')
-      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id')
+      .leftJoin('captacion_dateos as d', 'd.id', 'g.captacion_dateo_id') // sede: joins por FK de una gestión ya validada en la sede
       .leftJoin('clientes as cl', 'cl.id', 'g.cliente_id')
       .where('g.id', res.gestion.id)
       .select(
@@ -822,8 +822,8 @@ export default class TelemercadeoController {
     sedeParaEscritura() // "todas" no escribe (400)
     const res = await autorizarExtra(Number(params.id), auth.user!.id, request.input('motivo'))
     if (!res.ok) return response.status(res.status).send(res.body)
-    const autorizaciones = await Database.from('telemercadeo_ciclo_autorizaciones as x')
-      .leftJoin('usuarios as u', 'u.id', 'x.usuario_id')
+    const autorizaciones = await Database.from('telemercadeo_ciclo_autorizaciones as x') // sede: ciclo validado por autorizarExtra (TelemercadeoCiclo con mixin)
+      .leftJoin('usuarios as u', 'u.id', 'x.usuario_id') // sede: ciclo validado por autorizarExtra (TelemercadeoCiclo con mixin)
       .where('x.ciclo_id', res.ciclo.id)
       .orderBy('x.id', 'asc')
       .select('x.id', 'x.motivo', 'x.created_at', 'x.usuario_id', 'u.nombres', 'u.apellidos')

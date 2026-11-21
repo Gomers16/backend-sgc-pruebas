@@ -1229,7 +1229,7 @@ export default class RepGeneralImportController {
     }
 
     if (asesorId) {
-      const asesorCfg = await db
+      const asesorCfg = await db // sede: config por asesor; el asesor ya se resolvió en la sede
         .from('configuracion_recurrencia_asesores')
         .where('asesor_id', asesorId)
         .where('recurrencia_habilitada', true)

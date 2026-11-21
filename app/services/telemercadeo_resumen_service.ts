@@ -150,7 +150,7 @@ async function metasPeriodo(asesorIds: number[], r: Rango) {
   const meses = mesesEnRango(r.desde, r.hasta)
   const res = new Map<number, Record<MetricaMeta, number | null>>()
   if (!asesorIds.length) return res
-  const filas = await Database.from('meta_telemercadeo_asesor')
+  const filas = await Database.from('meta_telemercadeo_asesor') // sede: metas de asesores ya resueltos en la sede
     .whereIn('asesor_id', asesorIds)
     .where((q) => {
       for (const { mes, anio } of meses) q.orWhere((w) => w.where({ mes, anio }))
@@ -347,7 +347,7 @@ export async function guardarMetas(mes: number, anio: number, filasRaw: unknown)
   await Database.transaction(async (trx) => {
     for (const f of filas) {
       if (f.g === null && f.d === null && f.e === null) {
-        await trx
+        await trx // sede: asesores validados con aplicarSede arriba
           .from('meta_telemercadeo_asesor')
           .where({ asesor_id: f.asesorId, mes, anio })
           .delete()
