@@ -53,7 +53,7 @@ export async function resolverOrigenDateo(
     Number.isInteger(id) && id > 0
       ? await Database.from('telemercadeo_origenes').where('id', id).first()
       : null
-  if (!fila || !Boolean(fila.activo)) {
+  if (!fila || !fila.activo) {
     return {
       ok: false,
       status: 400,
