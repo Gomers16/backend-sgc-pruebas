@@ -41,6 +41,7 @@ import {
   serializarVentana,
   whereTurnoDaVigencia,
 } from '#services/segunda_vez_service'
+import { DIAS_VENTANA_PRE_VENCIMIENTO } from '#services/ventana_rtm_service'
 import type { TransactionClientContract } from '@adonisjs/lucid/types/database'
 import { sedeParaEscritura, preferirConfigDeSede } from '#services/sede_scope'
 
@@ -671,9 +672,8 @@ export default class TurnosRtmController {
         const meses = bloqueoMesesPorServicio((servicio as any).codigoServicio)
         if (meses > 0) {
           const ultimaFecha = lastFinalizado.fecha as DateTime
-          const DIAS_VENTANA_PRE = 16
           const vencimiento = ultimaFecha.plus({ months: meses }).startOf('day')
-          const nextAllowed = vencimiento.minus({ days: DIAS_VENTANA_PRE })
+          const nextAllowed = vencimiento.minus({ days: DIAS_VENTANA_PRE_VENCIMIENTO })
           const antesDeVentana = fechaGuardar.startOf('day') < nextAllowed
 
           if (antesDeVentana) {
@@ -697,7 +697,7 @@ export default class TurnosRtmController {
                 nextAllowedDate: nextAllowed.toISODate(),
                 vencimientoDate: vencimiento.toISODate(),
                 monthsBlocked: meses,
-                diasVentana: DIAS_VENTANA_PRE,
+                diasVentana: DIAS_VENTANA_PRE_VENCIMIENTO,
                 diasAntesDelVencimiento,
               })
             }

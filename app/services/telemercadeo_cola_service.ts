@@ -27,7 +27,7 @@ import { excluirSegundaVezSql, whereTurnoDaVigencia } from '#services/segunda_ve
 import {
   MESES_VIGENCIA_RTM,
   bloqueaDateoRtm,
-  diasVentanaPreRtm,
+  DIAS_VENTANA_PRE_VENCIMIENTO,
   vigenciaRtm,
 } from '#services/ventana_rtm_service'
 import { seguimientoPorPlacas, type SeguimientoPlaca } from '#services/telemercadeo_gestion_service'
@@ -665,7 +665,7 @@ export async function obtenerColaTelemercadeo(p: ParametrosCola): Promise<Result
       },
       parametros: {
         meses_vigencia_rtm: MESES_VIGENCIA_RTM,
-        dias_ventana_previa: diasVentanaPreRtm(),
+        dias_ventana_previa: DIAS_VENTANA_PRE_VENCIMIENTO,
         dias_por_vencer: DIAS_POR_VENCER,
         dias_vencidas_recientes: DIAS_VENCIDAS_RECIENTES,
       },

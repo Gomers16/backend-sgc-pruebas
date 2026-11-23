@@ -5,7 +5,7 @@
 //
 // Crea un turno RTM finalizado para la placa TST999 cuya fecha se calcula
 // dinámicamente (misma fórmula que usa el controller) para que HOY caiga
-// justo dentro de la ventana de bloqueo (DIAS_VENTANA_PRE_RTM, default 10
+// justo dentro de la ventana de bloqueo (DIAS_VENTANA_PRE_VENCIMIENTO, 16
 // días), con un excedente de ~5 días — suficiente para disparar el bloqueo
 // tanto para usuarios normales (RTM_VIGENTE) como para SUPER_ADMIN/GERENCIA
 // (RTM_VIGENTE_EXCEPCION_DISPONIBLE).
@@ -18,6 +18,7 @@
 import { BaseSeeder } from '@adonisjs/lucid/seeders'
 import { sedeDeSeeder } from '../helpers/sede_seeder.js'
 import { sinFiltroDeSede } from '#services/sede_scope'
+import { DIAS_VENTANA_PRE_VENCIMIENTO } from '#services/ventana_rtm_service'
 import db from '@adonisjs/lucid/services/db'
 import { DateTime } from 'luxon'
 
@@ -77,7 +78,7 @@ export default class TestRtmVigenteExcepcionSeeder extends BaseSeeder {
       if (!usuario) throw new Error('❌ No hay usuarios en la BD para asignar como funcionario.')
 
       // ===== Misma fórmula que usa captacion_dateos_controller.ts (VALIDACIÓN 2) =====
-      const diasVentanaPreRtm = Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
+      const diasVentanaPreRtm = DIAS_VENTANA_PRE_VENCIMIENTO
       const hoy = DateTime.local().setZone('America/Bogota').startOf('day')
       const caducaEl = hoy.plus({ days: diasVentanaPreRtm + EXCESO_DIAS_DESEADO })
       const fechaTurno = caducaEl.minus({ months: 12 })

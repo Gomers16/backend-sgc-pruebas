@@ -45,7 +45,7 @@ import {
 } from '#services/comision_calculo_service'
 import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
 import { resolverIntentoDateo } from '#services/intento_dateo_service'
-import { diasVentanaPreRtm } from '#services/ventana_rtm_service'
+import { DIAS_VENTANA_PRE_VENCIMIENTO } from '#services/ventana_rtm_service'
 import {
   prepararDateoDesdeGestion,
   vincularGestionConDateo,
@@ -1224,7 +1224,7 @@ export default class CaptacionDateosController {
         const fechaUltimoRtm = lastRtmFinalizado.fecha as DateTime
         const caducaEl = fechaUltimoRtm.plus({ months: 12 }).startOf('day')
         const hoy = DateTime.local().setZone('America/Bogota').startOf('day')
-        const ventanaPrevia = caducaEl.minus({ days: diasVentanaPreRtm() })
+        const ventanaPrevia = caducaEl.minus({ days: DIAS_VENTANA_PRE_VENCIMIENTO })
 
         if (hoy < ventanaPrevia) {
           const diasExcedidos = Math.ceil(ventanaPrevia.diff(hoy, 'days').days)
@@ -2017,7 +2017,7 @@ export default class CaptacionDateosController {
     const fechaUltimoRtm = lastRtm.fecha as DateTime
     const caducaEl = fechaUltimoRtm.plus({ months: 12 }).startOf('day')
     const hoy = DateTime.local().setZone('America/Bogota').startOf('day')
-    const ventanaPrevia = caducaEl.minus({ days: diasVentanaPreRtm() })
+    const ventanaPrevia = caducaEl.minus({ days: DIAS_VENTANA_PRE_VENCIMIENTO })
 
     const rtmVigente = hoy < caducaEl
     const dentroDeVentana = rtmVigente && hoy >= ventanaPrevia

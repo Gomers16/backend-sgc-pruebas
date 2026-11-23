@@ -10,6 +10,7 @@ import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
 import CaptacionDateo from '#models/captacion_dateo'
 import { evaluarCierreCiclo } from '#services/telemercadeo_gestion_service'
+import { DIAS_VENTANA_PRE_VENCIMIENTO } from '#services/ventana_rtm_service'
 import {
   avanceMeta,
   fraccionTranscurrida,
@@ -674,7 +675,7 @@ test.group('Telemercadeo · gestiones', (group) => {
     }
   })
 
-  test('avisos: RTM vigente con la ventana compartida (DIAS_VENTANA_PRE_RTM)', async ({
+  test('avisos: RTM vigente con la ventana compartida (16 días)', async ({
     client,
     assert,
   }) => {
@@ -686,7 +687,7 @@ test.group('Telemercadeo · gestiones', (group) => {
       .qs({ placa: 'TLG017' })
     s.assertStatus(200)
     const vence = fecha.plus({ months: 12 }).startOf('day')
-    const dias = Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
+    const dias = DIAS_VENTANA_PRE_VENCIMIENTO
     assert.equal(s.body().avisos.rtm_vigente.vence_el, vence.toISODate())
     assert.equal(
       s.body().avisos.rtm_vigente.puede_datear_desde,
@@ -719,7 +720,7 @@ test.group('Telemercadeo · gestiones', (group) => {
     assert.equal(fila.seguimiento.ultima_gestion.agente_id, teleA.id)
     assert.equal(
       r.body().meta.parametros.dias_ventana_previa,
-      Number(process.env.DIAS_VENTANA_PRE_RTM ?? 10)
+      DIAS_VENTANA_PRE_VENCIMIENTO
     )
   })
 

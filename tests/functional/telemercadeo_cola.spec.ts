@@ -9,7 +9,7 @@ import {
   ttlPostConsumoDiasPorServicio,
 } from '#services/reserva_dateo_service'
 import { vigenciaDateoRtmSql } from '#services/telemercadeo_cola_service'
-import { diasVentanaPreRtm } from '#services/ventana_rtm_service'
+import { DIAS_VENTANA_PRE_VENCIMIENTO } from '#services/ventana_rtm_service'
 
 // Cola de Telemercadeo (GET /api/telemercadeo/cola, solo lectura). Escribe
 // fixtures en la BD compartida: placas TLMV*/TLMC*/TLMP*, clientes con
@@ -525,8 +525,8 @@ test.group('Telemercadeo · cola de trabajo', (group) => {
     const venceV1 = hace(12).plus({ days: 10 }).plus({ months: 12 })
     assert.equal(v1.rango, 'PROXIMAS')
     assert.equal(v1.vence_el, venceV1.toISODate())
-    // Misma ventana que RTM_VIGENTE de store() (DIAS_VENTANA_PRE_RTM), no 16 fijos.
-    assert.equal(v1.puede_datear_desde, venceV1.minus({ days: diasVentanaPreRtm() }).toISODate())
+    // Misma ventana que RTM_VIGENTE de store(): 16 días fijos.
+    assert.equal(v1.puede_datear_desde, venceV1.minus({ days: DIAS_VENTANA_PRE_VENCIMIENTO }).toISODate())
     assert.equal(v1.cliente_id, clientes.TLMV01)
 
     const v2 = data.find((f: any) => f.placa === 'TLMV02')
