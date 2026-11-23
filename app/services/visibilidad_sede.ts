@@ -46,10 +46,22 @@ export function sqlVehiculoVisible(colId: string, colPlaca: string): string {
   if (!scopeObligatorio()) return '1=1'
   const id = col(colId)
   const placa = col(colPlaca)
-  return `(EXISTS (SELECT 1 FROM turnos_rtms tvis WHERE (tvis.vehiculo_id = ${id} OR tvis.placa = ${placa}) AND ${sedeSql('tvis')})
-    OR EXISTS (SELECT 1 FROM captacion_dateos dvis WHERE (dvis.vehiculo_id = ${id} OR dvis.placa = ${placa}) AND ${sedeSql('dvis')})
-    OR (NOT EXISTS (SELECT 1 FROM turnos_rtms tsin WHERE tsin.vehiculo_id = ${id} OR tsin.placa = ${placa})
-      AND NOT EXISTS (SELECT 1 FROM captacion_dateos dsin WHERE dsin.vehiculo_id = ${id} OR dsin.placa = ${placa})))`
+  // Un EXISTS por columna (vehiculo_id, placa): con "vehiculo_id = x OR placa = y"
+  // dentro de un solo EXISTS MySQL no usaba los índices (111 s por listado).
+  // EXISTS(a OR b) = EXISTS(a) OR EXISTS(b), también con NULL.
+  const existe = (tabla: string, alias: string, columna: string, valor: string, sede: boolean) =>
+    `EXISTS (SELECT 1 FROM ${tabla} ${alias} WHERE ${alias}.${columna} = ${valor}${
+      sede ? ` AND ${sedeSql(alias)}` : ''
+    })`
+  const historial = (sede: boolean) =>
+    [
+      existe('turnos_rtms', 'tvid', 'vehiculo_id', id, sede),
+      existe('turnos_rtms', 'tvpl', 'placa', placa, sede),
+      existe('captacion_dateos', 'dvid', 'vehiculo_id', id, sede),
+      existe('captacion_dateos', 'dvpl', 'placa', placa, sede),
+    ].join(' OR ')
+  return `(${historial(true)}
+    OR NOT (${historial(false)}))`
 }
 
 export async function clienteVisible(clienteId: number): Promise<boolean> {
