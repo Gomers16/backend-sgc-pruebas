@@ -35,6 +35,11 @@ import {
 } from '#services/comision_ticket_excepcion_service'
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
+import {
+  validarGestionDelAgente,
+  vincularGestionConDateo,
+} from '#services/telemercadeo_gestion_service'
+import type TelemercadeoGestion from '#models/telemercadeo_gestion'
 
 function readOptionalNumber(input: unknown): number | null {
   if (input === undefined || input === null) return null
@@ -237,6 +242,7 @@ export default class TicketsExcepcionDateoController {
       'evidencia_grupo_whatsapp_url',
       'evidencia_bloqueo_url',
       'evidencia_calamidad_url',
+      'telemercadeo_gestion_id',
     ])
 
     const turnoId = readOptionalNumber(payload.turno_id)
@@ -312,11 +318,39 @@ export default class TicketsExcepcionDateoController {
         return response.conflict(conflictoTurnoSegundaVez('dateo ni ticket de excepción de dateo'))
       }
 
+      // Ticket que nace de una gestión de Telemercadeo (REQUIERE_TICKET_DATEO
+      // al datear desde ella): la gestión tiene que ser del comercial del
+      // ticket, de la placa del turno y no estar dateada. Sin convenio,
+      // descuento ni avance (decisión 2026-11-23); canal TELE y el servicio de
+      // la gestión.
+      const gestionTeleId = readOptionalNumber(payload.telemercadeo_gestion_id)
+      let gestionTele: TelemercadeoGestion | null = null
+      if (gestionTeleId !== null) {
+        const conExtras =
+          readOptionalNumber(payload.convenio_id) !== null ||
+          readOptionalNumber(payload.descuento_id) !== null ||
+          payload.es_avance === true ||
+          payload.es_avance === 'true'
+        if (conExtras) {
+          await trx.rollback()
+          return response.badRequest({
+            code: 'TELE_SIN_CONVENIO_DESCUENTO',
+            message: 'El dateo desde una gestión de Telemercadeo no lleva convenio ni descuento.',
+          })
+        }
+        const resGestion = await validarGestionDelAgente(gestionTeleId, comercial.id, turno.placa)
+        if (!resGestion.ok) {
+          await trx.rollback()
+          return response.status(resGestion.status).send(resGestion.body)
+        }
+        gestionTele = resGestion.gestion
+      }
+
       // Convenio: después de la segunda vez (esa respuesta manda) y antes del
       // resto de validaciones del turno.
       const decisionConvenio = leerDecisionConvenioCrear({
         convenioId: readOptionalNumber(payload.convenio_id),
-        sinConvenio: payload.sin_convenio,
+        sinConvenio: gestionTele ? true : payload.sin_convenio,
         esAsesorConvenio: (comercial.tipo || '').toUpperCase() === 'ASESOR_CONVENIO',
       })
       if (!decisionConvenio.ok) {
@@ -386,23 +420,23 @@ export default class TicketsExcepcionDateoController {
 
       const resIntento = await resolverIntentoDateo({
         agenteId: comercial.id,
-        canal: (payload.canal as string | undefined) || null,
+        canal: gestionTele ? 'TELE' : (payload.canal as string | undefined) || null,
         convenioId,
-        descuentoId: readOptionalNumber(payload.descuento_id),
-        servicioId: readOptionalNumber(payload.servicio_id) ?? turno.servicioId,
+        descuentoId: gestionTele ? null : readOptionalNumber(payload.descuento_id),
+        servicioId: gestionTele
+          ? gestionTele.servicioId
+          : (readOptionalNumber(payload.servicio_id) ?? turno.servicioId),
         esAvance: payload.es_avance === true || payload.es_avance === 'true',
         comprobanteAvanceUrl: (payload.comprobante_avance_url as string | undefined) || null,
         permitirConvenioNoAsignado: esRespaldoPrivilegiado,
       })
       if (!resIntento.ok) {
         await trx.rollback()
-        return response
-          .status(resIntento.status)
-          .send({
-            code: 'INTENTO_DATEO_INVALIDO',
-            motivo: resIntento.code ?? null,
-            message: resIntento.message,
-          })
+        return response.status(resIntento.status).send({
+          code: 'INTENTO_DATEO_INVALIDO',
+          motivo: resIntento.code ?? null,
+          message: resIntento.message,
+        })
       }
       const intento = resIntento.intento
       if (intento.servicioIdEfectivo !== turno.servicioId) {
@@ -457,6 +491,9 @@ export default class TicketsExcepcionDateoController {
           turnoId: turno.id,
           placa: turno.placa,
           comercialId: comercial.id,
+          // Solo si viene de una gestión: sin gestión la columna (1819) no se
+          // escribe y crear() funciona aunque la migración no esté aplicada.
+          ...(gestionTele ? { telemercadeoGestionId: gestionTele.id } : {}),
           convenioId: intento.convenioId,
           convenioIdOriginal: intento.convenioId,
           sinConvenioExplicito: intento.convenioId === null,
@@ -628,6 +665,13 @@ export default class TicketsExcepcionDateoController {
       const convenioIdCorregido = corrigeConvenio
         ? readOptionalNumber(request.input('convenio_id'))
         : null
+      if (corrigeConvenio && convenioIdCorregido !== null && detalle.telemercadeoGestionId) {
+        await trx.rollback()
+        return response.badRequest({
+          code: 'TELE_SIN_CONVENIO_DESCUENTO',
+          message: 'El dateo desde una gestión de Telemercadeo no lleva convenio ni descuento.',
+        })
+      }
       if (corrigeConvenio && convenioIdCorregido !== null) {
         const conv = await Convenio.find(convenioIdCorregido, { client: trx })
         if (!conv || !conv.activo) {
@@ -655,13 +699,11 @@ export default class TicketsExcepcionDateoController {
         })
         if (!res.ok) {
           await trx.rollback()
-          return response
-            .status(res.status)
-            .send({
-              code: 'INTENTO_DATEO_INVALIDO',
-              motivo: res.code ?? null,
-              message: res.message,
-            })
+          return response.status(res.status).send({
+            code: 'INTENTO_DATEO_INVALIDO',
+            motivo: res.code ?? null,
+            message: res.message,
+          })
         }
         canal = res.intento.canal
         convenioId = res.intento.convenioId
@@ -720,6 +762,23 @@ export default class TicketsExcepcionDateoController {
       // 4. Vinculación retroactiva.
       turno.captacionDateoId = dateo.id
       await turno.save()
+
+      // 4b. Ticket que nace de una gestión de Telemercadeo: la gestión queda
+      // DATEADO con este dateo y su ciclo cerrado (misma transacción).
+      if (detalle.telemercadeoGestionId) {
+        const vinculada = await vincularGestionConDateo(
+          detalle.telemercadeoGestionId,
+          dateo.id,
+          trx
+        )
+        if (!vinculada) {
+          await trx.rollback()
+          return response.conflict({
+            code: 'GESTION_YA_DATEADA',
+            message: 'La gestión de Telemercadeo de este ticket ya tiene otro dateo vinculado.',
+          })
+        }
+      }
 
       // 5. ¿Ya existe un facturacion_ticket CONFIRMADA para este turno?
       const facturacionConfirmada = await FacturacionTicket.query({ client: trx })

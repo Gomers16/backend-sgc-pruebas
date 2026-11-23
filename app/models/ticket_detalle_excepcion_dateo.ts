@@ -34,6 +34,14 @@ export default class TicketDetalleExcepcionDateo extends compose(BaseModel, Sede
   @column({ columnName: 'comercial_id' })
   declare comercialId: number
 
+  /**
+   * Gestión de Telemercadeo de la que nace el ticket (REQUIERE_TICKET_DATEO al
+   * datear desde ella). aprobar() la vincula con el dateo creado. Migración
+   * 1819000000000; null en tickets que no vienen de una gestión.
+   */
+  @column({ columnName: 'telemercadeo_gestion_id' })
+  declare telemercadeoGestionId: number | null
+
   @column({ columnName: 'convenio_id' })
   declare convenioId: number | null
 

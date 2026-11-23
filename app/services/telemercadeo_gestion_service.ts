@@ -30,7 +30,7 @@ import TelemercadeoGestion, {
 } from '#models/telemercadeo_gestion'
 import ConfiguracionSeguimientoTeleGlobal from '#models/configuracion_seguimiento_tele_global'
 import ConfiguracionSeguimientoTeleAsesor from '#models/configuracion_seguimiento_tele_asesor'
-import { buildReserva } from '#services/reserva_dateo_service'
+import { buildReserva, buscarTurnoSinDateoHoy } from '#services/reserva_dateo_service'
 import { whereTurnoDaVigencia } from '#services/segunda_vez_service'
 import { bloqueaDateoRtm, vigenciaRtm } from '#services/ventana_rtm_service'
 
@@ -222,12 +222,23 @@ export interface AvisosGestion {
     bloquea_hasta: string | null
   } | null
   rtm_vigente: { vence_el: string; puede_datear_desde: string } | null
+  /**
+   * Ya hay un turno de hoy en la sede, de esa placa y servicio, sin dateo:
+   * datear responderá 409 REQUIERE_TICKET_DATEO (mismo criterio que store(),
+   * buscarTurnoSinDateoHoy). Se avisa ANTES de datear.
+   */
+  turno_hoy_sin_dateo: {
+    turno_id: number
+    turno_numero: number | null
+    hora_ingreso: string | null
+  } | null
 }
 
 /**
  * Mismos criterios que store() de dateos: último dateo liberado=0 por placa
  * o teléfono + servicio (buildReserva) y RTM_VIGENTE con la ventana
- * compartida. Solo informan: la gestión se registra igual.
+ * compartida, y turno de hoy sin dateo (REQUIERE_TICKET_DATEO). Solo
+ * informan: la gestión se registra igual.
  */
 export async function avisosGestion(p: {
   placa: string
@@ -286,7 +297,20 @@ export async function avisosGestion(p: {
     }
   }
 
-  return { dateo_activo: dateoActivo, rtm_vigente: rtmVigente }
+  const turnoHoy = await buscarTurnoSinDateoHoy(p.placa, p.servicioId)
+  const turnoHoySinDateo: AvisosGestion['turno_hoy_sin_dateo'] = turnoHoy
+    ? {
+        turno_id: turnoHoy.id,
+        turno_numero: turnoHoy.turnoNumero ?? null,
+        hora_ingreso: turnoHoy.horaIngreso ?? null,
+      }
+    : null
+
+  return {
+    dateo_activo: dateoActivo,
+    rtm_vigente: rtmVigente,
+    turno_hoy_sin_dateo: turnoHoySinDateo,
+  }
 }
 
 /* ───────────────────────── Registrar gestión ───────────────────────── */
@@ -646,10 +670,25 @@ export async function prepararDateoDesdeGestion(
       message: 'Solo un asesor de Telemercadeo puede datear desde una gestión.',
     })
   }
+  const res = await validarGestionDelAgente(gestionId, agente.id, placaNormalizada)
+  if (!res.ok) return res
+  return { ok: true, agenteId: agente.id, gestion: res.gestion }
+}
+
+/**
+ * La gestión existe en la sede activa, es del agente, no está dateada y es
+ * de la placa. Compartida por store() de dateos y por el ticket de Excepción
+ * de Dateo (donde gerencia puede crearlo a nombre del asesor).
+ */
+export async function validarGestionDelAgente(
+  gestionId: number,
+  agenteId: number,
+  placaNormalizada: string | null
+): Promise<{ ok: true; gestion: TelemercadeoGestion } | Falla> {
   const gestion = await TelemercadeoGestion.find(gestionId)
   if (!gestion)
     return falla(404, { code: 'GESTION_NO_ENCONTRADA', message: 'Gestión no encontrada' })
-  if (gestion.agenteId !== agente.id) {
+  if (gestion.agenteId !== agenteId) {
     return falla(403, { code: 'GESTION_AJENA', message: 'La gestión no es tuya.' })
   }
   if (gestion.captacionDateoId !== null) {
@@ -665,7 +704,7 @@ export async function prepararDateoDesdeGestion(
       message: `La placa del dateo debe ser la de la gestión (${gestion.placa}).`,
     })
   }
-  return { ok: true, agenteId: agente.id, gestion }
+  return { ok: true, gestion }
 }
 
 /**
