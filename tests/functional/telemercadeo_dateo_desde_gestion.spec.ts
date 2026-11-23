@@ -188,6 +188,36 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert.isNotNull(c.cerrado_at)
   })
 
+  test('re-datear un dateo de Telemercadeo → 409 TELE_NO_REDATEABLE (asesor y admin)', async ({
+    client,
+    assert,
+  }) => {
+    const g = await gestion(client, 'TLG119')
+    const r = await datear(client, 'TELE_A', { placa: 'TLG119', telemercadeo_gestion_id: g.id })
+    r.assertStatus(201)
+    // TELE sin gestión (creado por admin a nombre del asesor).
+    const sinGestion = await datear(client, 'ADMIN', {
+      placa: 'TLG120',
+      agente_id: teleA.id,
+      canal: 'TELE',
+    })
+    sinGestion.assertStatus(201)
+    const ids = [r.body().id, sinGestion.body().id]
+    await Database.from('captacion_dateos').whereIn('id', ids).update({ resultado: 'RE_DATEAR' })
+    for (const id of ids) {
+      for (const k of ['TELE_A', 'ADMIN']) {
+        const x = await client
+          .post(`/api/captacion-dateos/${id}/redatear`)
+          .headers(bearer(k))
+          .json({ evidencia_url: '/api/uploads/dateos/x.png', observacion: 'prueba' })
+        x.assertStatus(409)
+        assert.equal(x.body().code, 'TELE_NO_REDATEABLE')
+      }
+    }
+    const filas = await Database.from('captacion_dateos').whereIn('id', ids)
+    for (const f of filas) assert.equal(f.resultado, 'RE_DATEAR')
+  })
+
   test('segundo dateo con la misma gestión → 409 GESTION_YA_DATEADA, sin dateo nuevo', async ({
     client,
     assert,

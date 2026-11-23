@@ -479,6 +479,22 @@ export default class CaptacionDateosController {
     const dateoPreview = await CaptacionDateo.find(dateoId)
     if (!dateoPreview) return response.notFound({ message: 'Dateo no encontrado' })
 
+    // Decisión 2026-11-23: un dateo de Telemercadeo no se re-datea (ni por
+    // canal TELE ni si salió de una gestión); se vuelve a gestionar.
+    // sede: por id del dateo ya leído con el mixin (misma sede)
+    const desdeGestion = await db
+      .from('telemercadeo_gestiones')
+      .where('captacion_dateo_id', dateoPreview.id)
+      .select('id')
+      .first()
+    if (dateoPreview.canal === 'TELE' || desdeGestion) {
+      return response.conflict({
+        code: 'TELE_NO_REDATEABLE',
+        message:
+          'Un dateo de Telemercadeo no se puede re-datear. Registra una nueva gestión y datea desde ella.',
+      })
+    }
+
     await auth.user!.load('rol')
     const rolNombre = auth.user!.rol?.nombre ?? ''
     const esPrivilegiado = ['SUPER_ADMIN', 'GERENCIA'].includes(rolNombre)
