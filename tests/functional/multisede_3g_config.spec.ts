@@ -1,6 +1,6 @@
 import { test } from '@japa/runner'
 import Database from '@adonisjs/lucid/services/db'
-import { conSede, sinFiltroDeSede } from '#services/sede_scope'
+import { conSede } from '#services/sede_scope'
 import {
   getHorasExclusividad,
   getMaxRedateos,
@@ -76,18 +76,22 @@ test.group('Multi-sede 3g · configuración con override por sede', (group) => {
   test('sin override: Ibagué, QA y "todas" leen la global (mismo valor que antes)', async ({
     assert,
   }) => {
-    const antes = await sinFiltroDeSede(lecturas)
+    // "todas" lee solo la global (sede NULL), aunque alguna sede tenga override.
+    const antes = await conSede([IBAGUE, QA], lecturas)
+    const filaTele = await Database.from(TABLAS.tele).whereNull('sede_id').firstOrFail()
+    assert.equal(antes.teleMax, filaTele.max_seguimientos)
+    const filaHoras = await Database.from(TABLAS.reserva).whereNull('sede_id').firstOrFail()
+    assert.equal(antes.horas, filaHoras.horas_exclusividad)
     // Con un override real en Ibagué, sus lecturas no tienen por qué ser las globales.
     if (!(await hayOverride(IBAGUE))) {
       assert.deepEqual(await conSede([IBAGUE], lecturas), antes)
     }
     assert.deepEqual(await conSede([QA], lecturas), antes)
-    assert.deepEqual(await conSede([IBAGUE, QA], lecturas), antes)
   })
 
   test('override de QA: gana en QA; Ibagué y "todas" siguen con la global', async ({ assert }) => {
     const antes = await conSede([IBAGUE], lecturas)
-    const global = await sinFiltroDeSede(lecturas)
+    const global = await conSede([IBAGUE, QA], lecturas)
     const ahora = new Date()
     await Database.table(TABLAS.reserva).insert({
       sede_id: QA,
