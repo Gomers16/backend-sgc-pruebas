@@ -347,7 +347,7 @@ test.group('Telemercadeo · ticket desde gestión', (group) => {
     const d2 = await client
       .post('/api/captacion-dateos')
       .headers(bearer('TELE_A'))
-      .json({ origen: 'UI', placa: 'TLK109', telefono: '3991330009', canal: 'TELE' })
+      .json({ origen: 'UI', placa: 'TLK109', telefono: '3991330009', telemercadeo_origen_id: origenId })
     d2.assertStatus(201)
     await Database.from('telemercadeo_gestiones')
       .where('id', gId)

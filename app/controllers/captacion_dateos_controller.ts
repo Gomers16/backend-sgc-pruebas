@@ -51,6 +51,11 @@ import {
   vincularGestionConDateo,
 } from '#services/telemercadeo_gestion_service'
 import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
+import {
+  agenteTeleFijo,
+  atributosOrigen,
+  resolverOrigenDateo,
+} from '#services/telemercadeo_origen_service'
 import type TelemercadeoGestion from '#models/telemercadeo_gestion'
 import {
   consecutivoDescuentoDeTickets,
@@ -979,6 +984,37 @@ export default class CaptacionDateosController {
       agenteIdEntrada = prep.agenteId
     }
 
+    // Asesor de Telemercadeo (con o sin gestión): canal TELE y su propio
+    // agente, mande lo que mande el body; sin convenio, descuento ni avance,
+    // y con origen del catálogo. Para los demás usuarios no cambia nada.
+    const agenteTele = await agenteTeleFijo(auth.user!)
+    const esDateoTele = gestionTele !== null || agenteTele !== null
+    let origenTeleId: number | null = null
+    if (agenteTele) {
+      agenteIdEntrada = agenteTele.id
+      const conExtras =
+        readOptionalNumber(
+          (request.input('convenio_id') ?? request.input('convenioId')) as unknown
+        ) !== null ||
+        readOptionalNumber(
+          (request.input('descuento_id') ?? request.input('descuentoId')) as unknown
+        ) !== null
+      if (conExtras) {
+        return response.badRequest({
+          code: 'TELE_SIN_CONVENIO_DESCUENTO',
+          message: 'Un dateo de Telemercadeo no lleva convenio ni descuento.',
+        })
+      }
+    }
+    if (esDateoTele) {
+      const resOrigen = await resolverOrigenDateo(
+        request.input('telemercadeo_origen_id'),
+        gestionTele?.origenId ?? null
+      )
+      if (!resOrigen.ok) return response.status(resOrigen.status).send(resOrigen.body)
+      origenTeleId = resOrigen.origenId
+    }
+
     const esAvanceEntrada = Boolean(
       request.input('es_avance') === true ||
         request.input('es_avance') === 'true' ||
@@ -991,7 +1027,7 @@ export default class CaptacionDateosController {
     // (intento_dateo_service.ts).
     const resIntento = await resolverIntentoDateo({
       agenteId: agenteIdEntrada,
-      canal: gestionTele ? 'TELE' : ((request.input('canal') as string | undefined) ?? null),
+      canal: esDateoTele ? 'TELE' : ((request.input('canal') as string | undefined) ?? null),
       convenioId: readOptionalNumber(
         (request.input('convenio_id') ?? request.input('convenioId')) as unknown
       ),
@@ -1111,6 +1147,7 @@ export default class CaptacionDateosController {
           es_avance: esAvance,
           comprobante_avance_url: comprobanteAvanceUrl,
           telefono,
+          ...(esDateoTele ? { telemercadeo_origen_id: origenTeleId } : {}),
         },
       })
     }
@@ -1299,6 +1336,7 @@ export default class CaptacionDateosController {
         {
           canal: canal as Canal,
           agenteId,
+          ...(await atributosOrigen(origenTeleId, gestionTele?.origenId ?? null)),
           convenioId,
           asesorConvenioId,
           placa: placa!,

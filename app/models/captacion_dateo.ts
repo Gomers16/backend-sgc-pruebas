@@ -268,6 +268,10 @@ export default class CaptacionDateo extends compose(BaseModel, SedeScoped) {
   @belongsTo(() => Descuento, { foreignKey: 'descuentoCajaId' })
   declare descuentoCaja: BelongsTo<typeof Descuento>
 
+  /** Origen elegido por el asesor de Telemercadeo (migración 1820). */
+  @column({ columnName: 'telemercadeo_origen_id' })
+  declare telemercadeoOrigenId: number | null
+
   // 🆕 Servicio para el que se datéa
   @column({ columnName: 'servicio_id' })
   declare servicioId: number | null

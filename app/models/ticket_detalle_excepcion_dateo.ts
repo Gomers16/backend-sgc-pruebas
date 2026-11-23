@@ -42,6 +42,10 @@ export default class TicketDetalleExcepcionDateo extends compose(BaseModel, Sede
   @column({ columnName: 'telemercadeo_gestion_id' })
   declare telemercadeoGestionId: number | null
 
+  /** Origen elegido para el dateo que creará aprobar() (migración 1820). */
+  @column({ columnName: 'telemercadeo_origen_id' })
+  declare telemercadeoOrigenId: number | null
+
   @column({ columnName: 'convenio_id' })
   declare convenioId: number | null
 

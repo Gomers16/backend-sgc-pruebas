@@ -10,6 +10,13 @@
 //  - turnos   = las que tienen dateo consumido por un turno.
 // Así el embudo, la tabla por asesor y el avance de meta cuadran entre sí.
 //
+// Origen (2026-11-23): los contactos se cuentan por el origen de la gestión y
+// los dateos/exitosos/turnos por el del dateo (telemercadeo_origen_id; si no
+// tiene, el de la gestión). Cada gestión y cada dateo cuenta una sola vez.
+//
+// Dateos directos: los que un asesor de Telemercadeo hace SIN gestión (con
+// origen) suman dateos/exitosos/turnos —no contactos— por la fecha del dateo.
+//
 // Meta del periodo = suma de las metas de cada mes tocado; si a algún mes le
 // falta la meta de esa métrica, la meta queda en null (sin semáforo, nunca 0%).
 // Semáforo por ritmo: el avance se compara contra la meta prorrateada a los
@@ -21,6 +28,7 @@ import Database from '@adonisjs/lucid/services/db'
 import { mesesEnRango } from '#services/meta_asesor_service'
 import { calcularPct, calcularSemaforo, type SemaforoColor } from '#services/semaforo_service'
 import { TIPO_AGENTE_TELE, ZONA_TELE } from '#services/telemercadeo_gestion_service'
+import { columnaOrigenDateo } from '#services/telemercadeo_origen_service'
 
 export const METRICAS_META = ['gestiones', 'dateos', 'exitosos'] as const
 export type MetricaMeta = (typeof METRICAS_META)[number]
@@ -133,6 +141,74 @@ function base(r: Rango, agenteId: number | null) {
   return aplicarSede(q, 'g.sede_id')
 }
 
+const sumar = (a: Conteos, b: Conteos): Conteos => ({
+  gestiones: a.gestiones + b.gestiones,
+  dateos: a.dateos + b.dateos,
+  exitosos: a.exitosos + b.exitosos,
+  turnos: a.turnos + b.turnos,
+})
+
+/** Dateos directos del rango, agrupados por `col` (vacío sin la migración 1820). */
+async function directosPor(
+  r: Rango,
+  agenteId: number | null,
+  col: 'd.agente_id' | 'd.telemercadeo_origen_id'
+): Promise<Map<number, Conteos>> {
+  if (!(await columnaOrigenDateo())) return new Map()
+  // sede: aplicarSede abajo
+  const q = Database.from('captacion_dateos as d')
+    .where('d.canal', 'TELE')
+    .whereNotNull('d.telemercadeo_origen_id')
+    .whereNotExists((s) =>
+      // sede: gestión ligada por FK al dateo ya filtrado por sede
+      s.from('telemercadeo_gestiones as gx').whereColumn('gx.captacion_dateo_id', 'd.id')
+    )
+    .where('d.created_at', '>=', r.inicioSql)
+    .where('d.created_at', '<', r.finSql)
+  if (agenteId !== null) q.where('d.agente_id', agenteId)
+  aplicarSede(q, 'd.sede_id')
+  const filas = await q
+    .groupBy(col)
+    .select(`${col} as k`)
+    .select(
+      Database.raw(`0 AS gestiones, COUNT(*) AS dateos,
+      SUM(d.resultado = 'EXITOSO') AS exitosos,
+      SUM(d.consumido_turno_id IS NOT NULL) AS turnos`)
+    )
+  return new Map(filas.map((x: any) => [Number(x.k), aConteos(x)]))
+}
+
+const totalDe = (m: Map<number, Conteos>) => [...m.values()].reduce(sumar, aConteos(null))
+
+/** Conteos por origen: contactos por el de la gestión, dateos por el del dateo. */
+async function conteosPorOrigen(r: Rango, agenteId: number | null) {
+  const colDateo = (await columnaOrigenDateo())
+    ? 'COALESCE(d.telemercadeo_origen_id, g.origen_id)'
+    : 'g.origen_id'
+  const contactos = await base(r, agenteId)
+    .groupBy('g.origen_id')
+    .select('g.origen_id as k')
+    .select(Database.raw('COUNT(*) AS gestiones'))
+  const dateos = await base(r, agenteId)
+    .whereNotNull('g.captacion_dateo_id')
+    .groupByRaw(colDateo)
+    .select(Database.raw(`${colDateo} AS k`))
+    .select(
+      Database.raw(`0 AS gestiones, COUNT(*) AS dateos,
+        SUM(d.resultado = 'EXITOSO') AS exitosos,
+        SUM(d.consumido_turno_id IS NOT NULL) AS turnos`)
+    )
+  const directos = await directosPor(r, agenteId, 'd.telemercadeo_origen_id')
+  const origenes = await Database.from('telemercadeo_origenes')
+    .orderBy('orden')
+    .select('id', 'codigo', 'nombre')
+  return origenes.map((o: any) => {
+    const de = (filas: any[]) => aConteos(filas.find((x) => Number(x.k) === Number(o.id)))
+    const c = sumar(sumar(de(contactos), de(dateos)), directos.get(Number(o.id)) ?? aConteos(null))
+    return { origen_id: Number(o.id), codigo: o.codigo, nombre: o.nombre, ...embudo(c) }
+  })
+}
+
 const tasa = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : null)
 
 export function embudo(c: Conteos) {
@@ -196,13 +272,8 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
     .groupBy('g.resultado')
     .select('g.resultado')
     .count('* as gestiones')
-  const porOrigen = await base(r, agenteId)
-    .groupBy('g.origen_id')
-    .select('g.origen_id')
-    .select(Database.raw(SUMAS))
-  const origenes = await Database.from('telemercadeo_origenes')
-    .orderBy('orden')
-    .select('id', 'codigo', 'nombre')
+  const porOrigen = await conteosPorOrigen(r, agenteId)
+  const directos = await directosPor(r, agenteId, 'd.agente_id')
 
   const porAgente = await base(r, agenteId)
     .groupBy('g.agente_id')
@@ -211,6 +282,9 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
   const conteoPorAgente = new Map<number, Conteos>(
     porAgente.map((x: any) => [Number(x.agente_id), aConteos(x)])
   )
+  for (const [id, c] of directos) {
+    conteoPorAgente.set(id, sumar(conteoPorAgente.get(id) ?? aConteos(null), c))
+  }
 
   // sede: aplicarSede(agentesQ) antes de ejecutar (abajo)
   const agentesQ = Database.from('agentes_captacions')
@@ -246,16 +320,13 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
 
   return {
     rango: { desde: r.desde, hasta: r.hasta, fraccion_transcurrida: fraccion },
-    totales: embudo(aConteos(tot)),
+    totales: embudo(sumar(aConteos(tot), totalDe(directos))),
     por_medio: porMedio.map((x: any) => ({ medio: x.medio, ...embudo(aConteos(x)) })),
     por_resultado: porResultado.map((x: any) => ({
       resultado: x.resultado,
       gestiones: Number(x.gestiones),
     })),
-    por_origen: origenes.map((o: any) => {
-      const x = porOrigen.find((p: any) => Number(p.origen_id) === Number(o.id))
-      return { origen_id: Number(o.id), codigo: o.codigo, nombre: o.nombre, ...embudo(aConteos(x)) }
-    }),
+    por_origen: porOrigen,
     por_asesor: porAsesor,
   }
 }
@@ -264,7 +335,8 @@ export async function resumenTelemercadeo(r: Rango, agenteId: number | null) {
 export async function miResumen(agenteId: number, mes: number, anio: number) {
   const r = rangoDeMes(mes, anio)
   const [tot] = await base(r, agenteId).select(Database.raw(SUMAS))
-  const c = aConteos(tot)
+  const directos = await directosPor(r, agenteId, 'd.agente_id')
+  const c = sumar(aConteos(tot), totalDe(directos))
   const metas = await metasPeriodo([agenteId], r)
   const fraccion = fraccionTranscurrida(r)
   const m = metasDeAsesor(c, metas.get(agenteId), fraccion)
@@ -280,6 +352,7 @@ export async function miResumen(agenteId: number, mes: number, anio: number) {
     fraccion_transcurrida: fraccion,
     gestiones_hoy: Number(h?.n ?? 0),
     ...embudo(c),
+    por_origen: await conteosPorOrigen(r, agenteId),
     metas: m,
     semaforo: m.exitosos.semaforo,
   }

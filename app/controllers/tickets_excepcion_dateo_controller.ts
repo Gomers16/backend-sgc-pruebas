@@ -39,6 +39,11 @@ import {
   validarGestionDelAgente,
   vincularGestionConDateo,
 } from '#services/telemercadeo_gestion_service'
+import {
+  agenteTeleFijo,
+  atributosOrigen,
+  resolverOrigenDateo,
+} from '#services/telemercadeo_origen_service'
 import type TelemercadeoGestion from '#models/telemercadeo_gestion'
 
 function readOptionalNumber(input: unknown): number | null {
@@ -243,6 +248,7 @@ export default class TicketsExcepcionDateoController {
       'evidencia_bloqueo_url',
       'evidencia_calamidad_url',
       'telemercadeo_gestion_id',
+      'telemercadeo_origen_id',
     ])
 
     const turnoId = readOptionalNumber(payload.turno_id)
@@ -325,6 +331,9 @@ export default class TicketsExcepcionDateoController {
       // la gestión.
       const gestionTeleId = readOptionalNumber(payload.telemercadeo_gestion_id)
       let gestionTele: TelemercadeoGestion | null = null
+      // Asesor de Telemercadeo: siempre canal TELE. Sin gestión el convenio
+      // sigue la regla de siempre (asignado, 2026-11-10) y el origen es opcional.
+      const esTicketTele = gestionTeleId !== null || (await agenteTeleFijo(auth.user!)) !== null
       if (gestionTeleId !== null) {
         const conExtras =
           readOptionalNumber(payload.convenio_id) !== null ||
@@ -344,6 +353,19 @@ export default class TicketsExcepcionDateoController {
           return response.status(resGestion.status).send(resGestion.body)
         }
         gestionTele = resGestion.gestion
+      }
+      let origenTeleId: number | null = null
+      const origenEnviado = readOptionalNumber(payload.telemercadeo_origen_id) !== null
+      if (gestionTele || (esTicketTele && origenEnviado)) {
+        const resOrigen = await resolverOrigenDateo(
+          payload.telemercadeo_origen_id,
+          gestionTele?.origenId ?? null
+        )
+        if (!resOrigen.ok) {
+          await trx.rollback()
+          return response.status(resOrigen.status).send(resOrigen.body)
+        }
+        origenTeleId = resOrigen.origenId
       }
 
       // Convenio: después de la segunda vez (esa respuesta manda) y antes del
@@ -420,7 +442,7 @@ export default class TicketsExcepcionDateoController {
 
       const resIntento = await resolverIntentoDateo({
         agenteId: comercial.id,
-        canal: gestionTele ? 'TELE' : (payload.canal as string | undefined) || null,
+        canal: esTicketTele ? 'TELE' : (payload.canal as string | undefined) || null,
         convenioId,
         descuentoId: gestionTele ? null : readOptionalNumber(payload.descuento_id),
         servicioId: gestionTele
@@ -494,6 +516,7 @@ export default class TicketsExcepcionDateoController {
           // Solo si viene de una gestión: sin gestión la columna (1819) no se
           // escribe y crear() funciona aunque la migración no esté aplicada.
           ...(gestionTele ? { telemercadeoGestionId: gestionTele.id } : {}),
+          ...(await atributosOrigen(origenTeleId, gestionTele?.origenId ?? null)),
           convenioId: intento.convenioId,
           convenioIdOriginal: intento.convenioId,
           sinConvenioExplicito: intento.convenioId === null,
@@ -669,7 +692,7 @@ export default class TicketsExcepcionDateoController {
         await trx.rollback()
         return response.badRequest({
           code: 'TELE_SIN_CONVENIO_DESCUENTO',
-          message: 'El dateo desde una gestión de Telemercadeo no lleva convenio ni descuento.',
+          message: 'Un dateo de Telemercadeo no lleva convenio ni descuento.',
         })
       }
       if (corrigeConvenio && convenioIdCorregido !== null) {
@@ -742,6 +765,9 @@ export default class TicketsExcepcionDateoController {
         {
           canal: canal as any,
           agenteId: comercial.id,
+          ...(detalle.telemercadeoOrigenId
+            ? { telemercadeoOrigenId: detalle.telemercadeoOrigenId }
+            : {}),
           convenioId,
           asesorConvenioId: asesorConvenioIdDateo,
           placa: turno.placa,

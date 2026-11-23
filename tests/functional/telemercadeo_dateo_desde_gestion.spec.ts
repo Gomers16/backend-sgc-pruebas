@@ -5,6 +5,7 @@ import app from '@adonisjs/core/services/app'
 import Database from '@adonisjs/lucid/services/db'
 import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
+import { columnaOrigenDateo } from '#services/telemercadeo_origen_service'
 import { vincularGestionConDateo } from '#services/telemercadeo_gestion_service'
 
 // Dateo desde una gestión de Telemercadeo (POST /api/captacion-dateos con
@@ -533,17 +534,19 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert.equal(d.canal, 'TELE')
   })
 
-  test('caracteriza deuda conocida: ASESOR_TELEMERCADEO sin gestión ni canal queda ASESOR_COMERCIAL', async ({
+  test('ASESOR_TELEMERCADEO sin gestión ni canal: TELE, con origen obligatorio', async ({
     client,
     assert,
   }) => {
-    // Deuda documentada en HANDOFF.md: el arreglo global en
-    // resolverIntentoDateo queda pendiente. Si se arregla, este test debe
-    // cambiar a esperar TELE.
-    const r = await datear(client, 'TELE_A', { placa: 'TLG112' })
+    // Antes quedaba ASESOR_COMERCIAL (deuda de HANDOFF.md, resuelta 2026-11-23).
+    const sin = await datear(client, 'TELE_A', { placa: 'TLG112' })
+    sin.assertStatus(400)
+    assert.equal(sin.body().code, 'ORIGEN_REQUERIDO')
+    if (!(await columnaOrigenDateo())) return // sin la migración 1820 no hay dónde guardarlo
+    const r = await datear(client, 'TELE_A', { placa: 'TLG112', telemercadeo_origen_id: origenId })
     r.assertStatus(201)
     const d = await Database.from('captacion_dateos').where('id', r.body().id).first()
     assert.equal(d.agente_id, teleA.id)
-    assert.equal(d.canal, 'ASESOR_COMERCIAL')
+    assert.equal(d.canal, 'TELE')
   })
 })
