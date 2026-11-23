@@ -37,7 +37,7 @@ Estado al 2026-11-19. Repos: `backend-sgc-pruebas` y `front-sgc-pruebas`, rama `
   - `1809` `meta_telemercadeo_asesor`
   - Todas con `utf8mb4_unicode_ci` explícito.
 - **Modelos:** `telemercadeo_ciclo`, `telemercadeo_gestion`, `configuracion_seguimiento_tele_global`, `configuracion_seguimiento_tele_asesor`.
-- **Servicios:** `ventana_rtm_service` (ventana `DIAS_VENTANA_PRE_RTM`, ahora también usada por `store()`), `semaforo_service` (movido sin cambios desde `reportes_administrativos_controller`, que ahora lo importa), `telemercadeo_gestion_service`, `telemercadeo_resumen_service`.
+- **Servicios:** `ventana_rtm_service` (ventana única de 16 días desde 2026-11-23, ahora también usada por `store()`), `semaforo_service` (movido sin cambios desde `reportes_administrativos_controller`, que ahora lo importa), `telemercadeo_gestion_service`, `telemercadeo_resumen_service`.
 - **Controlador y rutas** `/api/telemercadeo/*`: cola, catálogos, gestiones (listar / ver / evidencia / registrar), seguimiento, mi-resumen, resumen, resumen/excel, asesores, metas (GET/PUT), metas/copiar, ciclos/:id/autorizar-extra, config/max-seguimientos (+ asesores).
 - **Cola:** `puede_datear_desde` con la ventana compartida; RTM vigente marcado con fecha en CLIENTES (`rtm_vigentes`); `seguimiento` por placa.
 - **`uploads_controller`:** `carpeta=telemercadeo` devuelve `ruta` privada; GET/DELETE `/api/uploads/*` no sirven ni borran esa carpeta (también con `../`, `%2e%2e`, `%2f` y mayúsculas); segmentos con `%` o `\` → 404 (antes 500).
@@ -148,15 +148,16 @@ Detalle en `MAPA_DEL_SISTEMA_FRONTEND.md` 4.2, 4.9 y 8. Resumen:
 
 - Backend y frontend juntos: el frontend nuevo usa endpoints de la Fase 1 y el campo `agente_id` de `beeaec8`.
 - **Copiar las migraciones 1803–1810 junto con el código. NO correr `migration:rollback` desde producción local.** La 1810 inserta el cargo "ASESOR TELEMERCADEO" y ya está corrida en la BD local compartida (producción local ya lo ve en Contratos); su código viejo ya convierte ese cargo en agente `ASESOR_TELEMERCADEO`, pero sin el módulo nuevo. En el servidor, `migration:run` antes de `pm2 restart`.
-- `DIAS_VENTANA_PRE_RTM`: 10 en pruebas (sin definir), 5 en producción local.
+- `DIAS_VENTANA_PRE_RTM` ya no se lee (2026-11-23): la ventana es de 16 días fijos. Sigue en el `.env` de producción local (5), sin efecto.
 - Opcional: `TELE_EXCEL_MAX_DETALLE` (por defecto 20.000).
 
 ## Avisos y riesgos
 
 - **Test de la carrera** (`telemercadeo_dateo_desde_gestion.spec.ts`, "carrera dentro de la transacción"): para saber que la petición ya está esperando el `FOR UPDATE`, cuenta las transacciones en `LOCK WAIT` de `information_schema.innodb_trx` en **toda la BD compartida**, no solo la suya. Si otra transacción ajena (producción local, otro proceso) está en LOCK WAIT en ese momento, el test puede soltar el bloqueo antes de tiempo. En ese caso la petición pasaría por la validación previa y respondería igual 409, así que el test no fallaría, pero no estaría probando el guard dentro de la transacción. Si se vuelve inestable, filtrar por `trx_mysql_thread_id` de la conexión del servidor.
-- Ventana RTM: en pruebas `DIAS_VENTANA_PRE_RTM` no está definida (10); en producción local es 5.
+- Ventana RTM: 16 días fijos (`DIAS_VENTANA_PRE_VENCIMIENTO`) desde 2026-11-23.
 - `DELETE /uploads/*` sigue abierto a cualquier usuario autenticado para las carpetas públicas: deuda fuera de esta entrega.
-- Deuda: un ASESOR_TELEMERCADEO que datea sin gestión ni canal queda como ASESOR_COMERCIAL (test "caracteriza deuda conocida").
+- Resuelto 2026-11-23: el ASESOR_TELEMERCADEO no puede datear sin gestión (400 `TELE_REQUIERE_GESTION`).
+- ⚠️ **No correr `node ace multisede:sede-qa --aplicar`**: pasaría a QA todo lo de la sede 2, que ya tiene los turnos reales de Bogotá.
 - SELECT para dimensionar dateos de telemercadeo mal clasificados (solo lectura, correr en producción):
 
   ```sql
