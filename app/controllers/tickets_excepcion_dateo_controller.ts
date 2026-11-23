@@ -34,6 +34,7 @@ import {
   aplicarComisionTicketExcepcion,
 } from '#services/comision_ticket_excepcion_service'
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
+import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
 
 function readOptionalNumber(input: unknown): number | null {
   if (input === undefined || input === null) return null
@@ -748,7 +749,12 @@ export default class TicketsExcepcionDateoController {
       })
 
       let comisionCreada: Comision | null = null
-      if (facturacionConfirmada) {
+      if (facturacionConfirmada && dateoSinComision(dateo)) {
+        // Telemercadeo: el dateo queda EXITOSO, sin comisión.
+        dateo.resultado = 'EXITOSO'
+        await dateo.useTransaction(trx).save()
+        logComisionTeleOmitida('aprobación de ticket', dateo.id, `ticket ${ticket.id}`)
+      } else if (facturacionConfirmada) {
         dateo.resultado = 'EXITOSO'
         await dateo.useTransaction(trx).save()
 

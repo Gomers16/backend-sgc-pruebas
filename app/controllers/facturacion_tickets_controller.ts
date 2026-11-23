@@ -32,6 +32,7 @@ import {
 import { conflictoTurnoSegundaVez, turnoIdEsSegundaVez } from '#services/segunda_vez_service'
 import { sedeParaEscritura } from '#services/sede_scope'
 import { buscarConvenioDelAsesorConvenio } from '#services/intento_dateo_service'
+import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
 import {
   construirComisionRTM,
   notaEdicionFactura,
@@ -1252,6 +1253,27 @@ export default class FacturacionTicketsController {
       .first()
 
     if (!dateo) return
+
+    // Telemercadeo (canal TELE): sin comisión. El dateo sí queda EXITOSO.
+    if (dateoSinComision(dateo)) {
+      if (dateo.resultado !== 'EXITOSO') {
+        dateo.resultado = 'EXITOSO'
+        await dateo.save()
+      }
+      // El snapshot del descuento de caja no es comisión: se conserva igual.
+      if (ticket.descuentoId) {
+        // sede: por id del dateo del ticket (mismo turno, misma sede)
+        await CaptacionDateo.query()
+          .where('id', dateo.id)
+          .update({
+            descuento_caja_id: ticket.descuentoId,
+            descuento_caja_observacion: ticket.descuentoObservacion ?? null,
+            descuento_caja_aplicado_at: DateTime.now().toSQL({ includeOffset: false }),
+          })
+      }
+      logComisionTeleOmitida('facturación', dateo.id, `ticket ${ticket.id}`)
+      return
+    }
 
     // Dateo de asesor convenio sin convenio (solo pudo nacer de un ticket de
     // Excepción de Dateo anterior a la Fase 3 de Tickets): se resuelve su

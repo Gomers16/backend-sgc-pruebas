@@ -8,6 +8,7 @@ import CaptacionDateo from '#models/captacion_dateo'
 import Servicio from '#models/servicio'
 import Comision from '#models/comision'
 import { dateoAplicaAServicio } from '#services/reserva_dateo_service'
+import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
 import {
   aplicaSegundaVez,
   conflictoFinalizarSinCertificacion,
@@ -84,6 +85,7 @@ export default class TurnosCierreController {
 
       // 3) Si hay dateo vinculado → marcar EXITOSO + consumos
       let asesorId: number | null = null
+      let dateoTele = false
       let convenioId: number | null = null
 
       if (turno.captacionDateoId) {
@@ -105,6 +107,8 @@ export default class TurnosCierreController {
           // (ts-ignore/any por si tu tipo no serializa snake_case)
           asesorId = (dateo as any).agenteId ?? (dateo as any).agente_id ?? null
           convenioId = (dateo as any).convenioId ?? (dateo as any).convenio_id ?? null
+          dateoTele = dateoSinComision(dateo)
+          if (dateoTele) logComisionTeleOmitida('cierre de turno', dateo.id, `turno ${turno.id}`)
         }
       }
 
@@ -112,7 +116,7 @@ export default class TurnosCierreController {
       const yaExiste = await Comision.query({ client: trx }).where('turno_id', turno.id).first()
 
       let comisionCreada: Comision | null = null
-      if (!yaExiste) {
+      if (!yaExiste && !dateoTele) {
         // Trae servicio para obtener codigo_servicio
         const svc = await Servicio.find(turno.servicioId, { client: trx })
         const servicioCodigo: string = (svc as any)?.codigoServicio ?? 'NA'

@@ -41,6 +41,11 @@ import {
 import { contarUnidadesRtmPorAsesor } from '#services/meta_comercial_rtm_service'
 import { resolverMetasAsesores } from '#services/meta_asesor_service'
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
+import {
+  CODIGO_TELE_SIN_COMISION,
+  dateoSinComision,
+  logComisionTeleOmitida,
+} from '#services/comision_tele_service'
 
 /* ========= Helpers ========= */
 function toNumber(v: any): number {
@@ -1393,6 +1398,27 @@ export default class ComisionesController {
       const { default: CaptacionDateo } = await import('#models/captacion_dateo')
 
       let captacionDateoId: number | null = (turno as any).captacionDateoId ?? null
+
+      // Telemercadeo no genera comisión: ni con el dateo TELE del turno (esta
+      // ruta le cambiaría el canal) ni a nombre de un asesor de Telemercadeo.
+      const dateoDelTurno = captacionDateoId
+        ? await CaptacionDateo.find(captacionDateoId, { client: trx })
+        : null
+      const asesorPedido = payload.asesor_id
+        ? await AgenteCaptacion.find(Number(payload.asesor_id), { client: trx })
+        : null
+      if (dateoSinComision(dateoDelTurno) || asesorPedido?.tipo === 'ASESOR_TELEMERCADEO') {
+        await trx.rollback()
+        logComisionTeleOmitida(
+          'alta manual de comisión',
+          dateoDelTurno?.id ?? 0,
+          `turno ${turno.id}`
+        )
+        return response.conflict({
+          code: CODIGO_TELE_SIN_COMISION,
+          message: 'Los dateos de Telemercadeo no generan comisión.',
+        })
+      }
 
       if (!captacionDateoId) {
         // Detectar canal según tipo de asesor

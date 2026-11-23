@@ -50,6 +50,7 @@ import {
   prepararDateoDesdeGestion,
   vincularGestionConDateo,
 } from '#services/telemercadeo_gestion_service'
+import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
 import type TelemercadeoGestion from '#models/telemercadeo_gestion'
 import {
   consecutivoDescuentoDeTickets,
@@ -1604,7 +1605,13 @@ export default class CaptacionDateosController {
       // VEZ?" — esta ruta se usa para corregir dateos días/semanas después
       // del turno (evidencia tardía), y un dedup por ventana del día crearía
       // una comisión duplicada al reeditar el mismo dateo más adelante.
-      if (item.resultado === 'EXITOSO' && item.consumidoTurnoId !== null) {
+      if (
+        item.resultado === 'EXITOSO' &&
+        item.consumidoTurnoId !== null &&
+        dateoSinComision(item)
+      ) {
+        logComisionTeleOmitida('edición del dateo', item.id)
+      } else if (item.resultado === 'EXITOSO' && item.consumidoTurnoId !== null) {
         const yaExisteComision = await Comision.query()
           .where('captacion_dateo_id', item.id)
           .where('es_config', false)
