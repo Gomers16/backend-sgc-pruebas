@@ -264,8 +264,11 @@ test.group('Telemercadeo · origen del dateo', (group) => {
   }) => {
     const g = await gestion(client, 'TLO103', origen.GOOGLE_ADS)
     for (const malo of [999999, origen.INACTIVO, 'abc', -1, 0]) {
-      for (const extra of [{ telemercadeo_gestion_id: g }, {}]) {
-        const r = await datear(client, 'A', {
+      for (const [k, extra] of [
+        ['A', { telemercadeo_gestion_id: g }],
+        ['ADMIN', { canal: 'TELE', agente_id: teleA.id }],
+      ] as const) {
+        const r = await datear(client, k, {
           placa: 'TLO103',
           telemercadeo_origen_id: malo,
           ...extra,
@@ -290,16 +293,30 @@ test.group('Telemercadeo · origen del dateo', (group) => {
     r.assertStatus(201)
   }).skip(saltar, MOTIVO)
 
-  test('sin gestión: origen obligatorio, canal TELE y suma a Control y Mi gestión', async ({
+  test('sin gestión el asesor no datea (400); SUPER_ADMIN con TELE exige origen y suma al asesor', async ({
     client,
     assert,
   }) => {
-    const sin = await datear(client, 'B', { placa: 'TLO105' })
+    const tele = await datear(client, 'B', {
+      placa: 'TLO105',
+      canal: 'TELE',
+      telemercadeo_origen_id: origen.REDES,
+    })
+    tele.assertStatus(400)
+    assert.equal(tele.body().code, 'TELE_REQUIERE_GESTION')
+
+    const sin = await datear(client, 'ADMIN', {
+      placa: 'TLO105',
+      canal: 'TELE',
+      agente_id: teleB.id,
+    })
     sin.assertStatus(400)
     assert.equal(sin.body().code, 'ORIGEN_REQUERIDO')
 
-    const r = await datear(client, 'B', {
+    const r = await datear(client, 'ADMIN', {
       placa: 'TLO105',
+      canal: 'TELE',
+      agente_id: teleB.id,
       telemercadeo_origen_id: origen.REDES,
     })
     r.assertStatus(201)
@@ -324,7 +341,7 @@ test.group('Telemercadeo · origen del dateo', (group) => {
     assert.deepInclude(fila(mio.body(), origen.REDES), { dateos: 1, exitosos: 1 })
   }).skip(saltar, MOTIVO)
 
-  test('bloqueo: otro agente, canal o tipo en el body se ignora; convenio y descuento → 400', async ({
+  test('bloqueo con gestión: otro agente, canal o tipo en el body se ignora; convenio, descuento y edición, rechazados', async ({
     client,
     assert,
   }) => {
@@ -333,35 +350,34 @@ test.group('Telemercadeo · origen del dateo', (group) => {
       ['TLO107', { agenteId: comercial.id, canal: 'ASESOR', tipo_asesor: 'ASESOR_COMERCIAL' }],
       ['TLO108', { canal: 'FACHADA' }],
       ['TLO109', { canal: 'ASESOR_CONVENIO', agente_id: comercial.id }],
-      ['TLO110', { canal: 'REDES', agente_id: 999999 }],
     ]
     for (const [placa, extra] of casos) {
-      const r = await datear(client, 'A', {
-        placa,
-        telemercadeo_origen_id: origen.REDES,
-        ...extra,
-      })
+      const g = await gestion(client, placa, origen.REDES)
+      const r = await datear(client, 'A', { placa, telemercadeo_gestion_id: g, ...extra })
       r.assertStatus(201)
       const f = await dateoBd(r.body().id)
       assert.equal(f.canal, 'TELE', placa)
       assert.equal(f.agente_id, teleA.id, placa)
     }
-    for (const extra of [{ convenio_id: 1 }, { convenioId: 1 }, { descuento_id: 1 }]) {
-      const r = await datear(client, 'A', {
-        placa: 'TLO111',
-        telemercadeo_origen_id: origen.REDES,
-        ...extra,
-      })
+    const g = await gestion(client, 'TLO111', origen.REDES)
+    for (const extra of [{ convenio_id: 1 }, { descuento_id: 1 }]) {
+      const r = await datear(client, 'A', { placa: 'TLO111', telemercadeo_gestion_id: g, ...extra })
       r.assertStatus(400)
       assert.equal(r.body().code, 'TELE_SIN_CONVENIO_DESCUENTO')
     }
+    // Formas camelCase: tampoco entran.
+    const camel = await datear(client, 'A', {
+      placa: 'TLO111',
+      telemercadeo_gestion_id: g,
+      convenioId: 1,
+    })
+    camel.assertStatus(400)
     const avance = await datear(client, 'A', {
       placa: 'TLO111',
-      telemercadeo_origen_id: origen.REDES,
+      telemercadeo_gestion_id: g,
       es_avance: true,
     })
     avance.assertStatus(400)
-    // Tampoco puede editar un dateo ya creado.
     const d = await Database.from('captacion_dateos').where('placa', 'TLO106').firstOrFail()
     const put = await client
       .put(`/api/captacion-dateos/${d.id}`)
@@ -370,31 +386,31 @@ test.group('Telemercadeo · origen del dateo', (group) => {
     put.assertStatus(403)
   }).skip(saltar, MOTIVO)
 
-  test('SUPER_ADMIN y comercial siguen igual: eligen canal y agente, sin origen', async ({
+  test('SUPER_ADMIN con otro canal y comercial: igual que siempre, el origen no se guarda', async ({
     client,
     assert,
   }) => {
     const sa = await datear(client, 'ADMIN', {
-      placa: 'TLO112',
-      canal: 'TELE',
-      agente_id: teleB.id,
+      placa: 'TLO113',
+      canal: 'FACHADA',
       telemercadeo_origen_id: origen.REDES,
     })
     sa.assertStatus(201)
-    const f = await dateoBd(sa.body().id)
-    assert.equal(f.agente_id, teleB.id)
-    assert.isNull(f.telemercadeo_origen_id)
-    const saFachada = await datear(client, 'ADMIN', { placa: 'TLO113', canal: 'FACHADA' })
-    saFachada.assertStatus(201)
-    const ff = await dateoBd(saFachada.body().id)
+    const ff = await dateoBd(sa.body().id)
     assert.equal(ff.canal, 'FACHADA')
+    assert.isNull(ff.telemercadeo_origen_id)
 
-    const com = await datear(client, 'COM', { placa: 'TLO114', canal: 'ASESOR' })
-    com.assertStatus(201)
-    const fc = await dateoBd(com.body().id)
-    assert.equal(fc.canal, 'ASESOR_COMERCIAL')
-    assert.equal(fc.agente_id, comercial.id)
-    assert.isNull(fc.telemercadeo_origen_id)
+    for (const [placa, canal, esperado] of [
+      ['TLO114', 'ASESOR', 'ASESOR_COMERCIAL'],
+      ['TLO119', 'TELE', 'TELE'],
+    ]) {
+      const com = await datear(client, 'COM', { placa, canal })
+      com.assertStatus(201)
+      const fc = await dateoBd(com.body().id)
+      assert.equal(fc.canal, esperado)
+      assert.equal(fc.agente_id, comercial.id)
+      assert.isNull(fc.telemercadeo_origen_id)
+    }
   }).skip(saltar, MOTIVO)
 
   test('ticket: con y sin gestión conserva el origen elegido y no deja cambiar el canal', async ({
@@ -458,10 +474,17 @@ test.group('Telemercadeo · origen del dateo', (group) => {
     })
     ajena.assertStatus(404)
 
-    const bog = await datear(client, 'BOG', {
-      placa: 'TLO118',
-      telemercadeo_origen_id: origen.REDES,
-    })
+    const bog = await client
+      .post('/api/captacion-dateos')
+      .headers({ ...bearer('ADMIN'), 'X-Sede-Id': '2' })
+      .json({
+        origen: 'UI',
+        telefono: tel(),
+        placa: 'TLO118',
+        canal: 'TELE',
+        agente_id: teleBogota.id,
+        telemercadeo_origen_id: origen.REDES,
+      })
     bog.assertStatus(201)
     const f = await dateoBd(bog.body().id)
     assert.equal(f.sede_id, 2)

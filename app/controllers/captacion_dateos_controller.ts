@@ -54,6 +54,7 @@ import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tel
 import {
   agenteTeleFijo,
   atributosOrigen,
+  esRolLibre,
   resolverOrigenDateo,
 } from '#services/telemercadeo_origen_service'
 import type TelemercadeoGestion from '#models/telemercadeo_gestion'
@@ -966,8 +967,14 @@ export default class CaptacionDateosController {
     let gestionTele: TelemercadeoGestion | null = null
     if (gestionTeleId !== null) {
       // Decisión 2026-11-23: el dateo desde una gestión no lleva convenio ni descuento.
-      const conConvenio = readOptionalNumber(request.input('convenio_id') as unknown) !== null
-      const conDescuento = readOptionalNumber(request.input('descuento_id') as unknown) !== null
+      const conConvenio =
+        readOptionalNumber(
+          (request.input('convenio_id') ?? request.input('convenioId')) as unknown
+        ) !== null
+      const conDescuento =
+        readOptionalNumber(
+          (request.input('descuento_id') ?? request.input('descuentoId')) as unknown
+        ) !== null
       if (conConvenio || conDescuento) {
         return response.badRequest({
           code: 'TELE_SIN_CONVENIO_DESCUENTO',
@@ -984,28 +991,19 @@ export default class CaptacionDateosController {
       agenteIdEntrada = prep.agenteId
     }
 
-    // Asesor de Telemercadeo (con o sin gestión): canal TELE y su propio
-    // agente, mande lo que mande el body; sin convenio, descuento ni avance,
-    // y con origen del catálogo. Para los demás usuarios no cambia nada.
-    const agenteTele = await agenteTeleFijo(auth.user!)
-    const esDateoTele = gestionTele !== null || agenteTele !== null
-    let origenTeleId: number | null = null
-    if (agenteTele) {
-      agenteIdEntrada = agenteTele.id
-      const conExtras =
-        readOptionalNumber(
-          (request.input('convenio_id') ?? request.input('convenioId')) as unknown
-        ) !== null ||
-        readOptionalNumber(
-          (request.input('descuento_id') ?? request.input('descuentoId')) as unknown
-        ) !== null
-      if (conExtras) {
-        return response.badRequest({
-          code: 'TELE_SIN_CONVENIO_DESCUENTO',
-          message: 'Un dateo de Telemercadeo no lleva convenio ni descuento.',
-        })
-      }
+    // Asesor de Telemercadeo: solo desde una gestión suya (canal TELE y agente
+    // ya fijados arriba). SUPER_ADMIN/GERENCIA con canal TELE: eligen agente
+    // como siempre, pero el origen es obligatorio. Los demás, sin cambios.
+    if (!gestionTele && (await agenteTeleFijo(auth.user!))) {
+      return response.badRequest({
+        code: 'TELE_REQUIERE_GESTION',
+        message: 'Para datear registra primero la gestión y datea desde ella, en Mi gestión.',
+      })
     }
+    const canalPedidoTele = String(request.input('canal') ?? '').toUpperCase() === 'TELE'
+    const esDateoTele = gestionTele !== null || (canalPedidoTele && (await esRolLibre(auth.user!)))
+    let origenTeleId: number | null = null
+    let atributosOrigenTele: { telemercadeoOrigenId?: number } = {}
     if (esDateoTele) {
       const resOrigen = await resolverOrigenDateo(
         request.input('telemercadeo_origen_id'),
@@ -1013,6 +1011,7 @@ export default class CaptacionDateosController {
       )
       if (!resOrigen.ok) return response.status(resOrigen.status).send(resOrigen.body)
       origenTeleId = resOrigen.origenId
+      atributosOrigenTele = await atributosOrigen(origenTeleId, gestionTele?.origenId ?? null)
     }
 
     const esAvanceEntrada = Boolean(
@@ -1336,7 +1335,7 @@ export default class CaptacionDateosController {
         {
           canal: canal as Canal,
           agenteId,
-          ...(await atributosOrigen(origenTeleId, gestionTele?.origenId ?? null)),
+          ...atributosOrigenTele,
           convenioId,
           asesorConvenioId,
           placa: placa!,

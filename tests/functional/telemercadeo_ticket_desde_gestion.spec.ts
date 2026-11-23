@@ -7,6 +7,7 @@ import Database from '@adonisjs/lucid/services/db'
 import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
 import TurnoRtm from '#models/turno_rtm'
+import { columnaOrigenDateo } from '#services/telemercadeo_origen_service'
 import FacturacionTicket from '#models/facturacion_ticket'
 
 // Ticket de Excepción de Dateo que nace de una gestión de Telemercadeo:
@@ -18,7 +19,7 @@ import FacturacionTicket from '#models/facturacion_ticket'
 const SEDE_ID = 3
 const ROL = { SUPER_ADMIN: 9, COMERCIAL: 11 }
 const ZONA = 'America/Bogota'
-const MOTIVO = 'migración 1819 sin aplicar en esta BD'
+const MOTIVO = 'migración 1819/1820 sin aplicar en esta BD'
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64'
@@ -30,7 +31,7 @@ async function columnaAplicada() {
       WHERE table_schema = DATABASE() AND table_name = 'tickets_detalle_excepcion_dateo'
         AND column_name = 'telemercadeo_gestion_id'`
   )
-  return Number(r[0][0].n) > 0
+  return Number(r[0][0].n) > 0 && (await columnaOrigenDateo())
 }
 
 async function limpiar() {
@@ -344,10 +345,14 @@ test.group('Telemercadeo · ticket desde gestión', (group) => {
     const c = await crearTicket(client, 'TELE_A', t.id, gId)
     c.assertStatus(201)
     // Otro dateo (cualquier placa) queda vinculado a la gestión.
-    const d2 = await client
-      .post('/api/captacion-dateos')
-      .headers(bearer('TELE_A'))
-      .json({ origen: 'UI', placa: 'TLK109', telefono: '3991330009', telemercadeo_origen_id: origenId })
+    const d2 = await client.post('/api/captacion-dateos').headers(bearer('ADMIN')).json({
+      origen: 'UI',
+      placa: 'TLK109',
+      telefono: '3991330009',
+      canal: 'TELE',
+      agente_id: teleA.id,
+      telemercadeo_origen_id: origenId,
+    })
     d2.assertStatus(201)
     await Database.from('telemercadeo_gestiones')
       .where('id', gId)

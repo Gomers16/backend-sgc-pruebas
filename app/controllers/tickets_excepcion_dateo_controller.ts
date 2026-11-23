@@ -36,12 +36,13 @@ import {
 import { conflictoTurnoSegundaVez, esTurnoSegundaVez } from '#services/segunda_vez_service'
 import { dateoSinComision, logComisionTeleOmitida } from '#services/comision_tele_service'
 import {
+  TIPO_AGENTE_TELE,
   validarGestionDelAgente,
   vincularGestionConDateo,
 } from '#services/telemercadeo_gestion_service'
 import {
-  agenteTeleFijo,
   atributosOrigen,
+  exigirColumnaGestionTicket,
   resolverOrigenDateo,
 } from '#services/telemercadeo_origen_service'
 import type TelemercadeoGestion from '#models/telemercadeo_gestion'
@@ -331,10 +332,14 @@ export default class TicketsExcepcionDateoController {
       // la gestión.
       const gestionTeleId = readOptionalNumber(payload.telemercadeo_gestion_id)
       let gestionTele: TelemercadeoGestion | null = null
-      // Asesor de Telemercadeo: siempre canal TELE. Sin gestión el convenio
-      // sigue la regla de siempre (asignado, 2026-11-10) y el origen es opcional.
-      const esTicketTele = gestionTeleId !== null || (await agenteTeleFijo(auth.user!)) !== null
-      if (gestionTeleId !== null) {
+      // Ticket TELE: con gestión, a nombre de un asesor de Telemercadeo o con
+      // canal TELE. Siempre canal TELE, sin convenio, descuento ni avance y con
+      // origen (decisión 2026-11-23; reemplaza la excepción del 2026-11-10).
+      const esTicketTele =
+        gestionTeleId !== null ||
+        comercial.tipo === TIPO_AGENTE_TELE ||
+        String(payload.canal ?? '').toUpperCase() === 'TELE'
+      if (esTicketTele) {
         const conExtras =
           readOptionalNumber(payload.convenio_id) !== null ||
           readOptionalNumber(payload.descuento_id) !== null ||
@@ -344,9 +349,12 @@ export default class TicketsExcepcionDateoController {
           await trx.rollback()
           return response.badRequest({
             code: 'TELE_SIN_CONVENIO_DESCUENTO',
-            message: 'El dateo desde una gestión de Telemercadeo no lleva convenio ni descuento.',
+            message: 'Un dateo de Telemercadeo no lleva convenio ni descuento.',
           })
         }
+      }
+      if (gestionTeleId !== null) {
+        await exigirColumnaGestionTicket()
         const resGestion = await validarGestionDelAgente(gestionTeleId, comercial.id, turno.placa)
         if (!resGestion.ok) {
           await trx.rollback()
@@ -355,8 +363,7 @@ export default class TicketsExcepcionDateoController {
         gestionTele = resGestion.gestion
       }
       let origenTeleId: number | null = null
-      const origenEnviado = readOptionalNumber(payload.telemercadeo_origen_id) !== null
-      if (gestionTele || (esTicketTele && origenEnviado)) {
+      if (esTicketTele) {
         const resOrigen = await resolverOrigenDateo(
           payload.telemercadeo_origen_id,
           gestionTele?.origenId ?? null
@@ -372,7 +379,7 @@ export default class TicketsExcepcionDateoController {
       // resto de validaciones del turno.
       const decisionConvenio = leerDecisionConvenioCrear({
         convenioId: readOptionalNumber(payload.convenio_id),
-        sinConvenio: gestionTele ? true : payload.sin_convenio,
+        sinConvenio: esTicketTele ? true : payload.sin_convenio,
         esAsesorConvenio: (comercial.tipo || '').toUpperCase() === 'ASESOR_CONVENIO',
       })
       if (!decisionConvenio.ok) {
@@ -444,7 +451,7 @@ export default class TicketsExcepcionDateoController {
         agenteId: comercial.id,
         canal: esTicketTele ? 'TELE' : (payload.canal as string | undefined) || null,
         convenioId,
-        descuentoId: gestionTele ? null : readOptionalNumber(payload.descuento_id),
+        descuentoId: esTicketTele ? null : readOptionalNumber(payload.descuento_id),
         servicioId: gestionTele
           ? gestionTele.servicioId
           : (readOptionalNumber(payload.servicio_id) ?? turno.servicioId),
@@ -688,7 +695,7 @@ export default class TicketsExcepcionDateoController {
       const convenioIdCorregido = corrigeConvenio
         ? readOptionalNumber(request.input('convenio_id'))
         : null
-      if (corrigeConvenio && convenioIdCorregido !== null && detalle.telemercadeoGestionId) {
+      if (corrigeConvenio && convenioIdCorregido !== null && detalle.canal === 'TELE') {
         await trx.rollback()
         return response.badRequest({
           code: 'TELE_SIN_CONVENIO_DESCUENTO',
@@ -1029,6 +1036,12 @@ export default class TicketsExcepcionDateoController {
         return cortar(409, {
           code: 'CONVENIO_ASESOR_CONVENIO',
           message: 'El asesor convenio siempre queda con su propio convenio.',
+        })
+      }
+      if (detalle.canal === 'TELE' && convenioNuevoId !== null) {
+        return cortar(400, {
+          code: 'TELE_SIN_CONVENIO_DESCUENTO',
+          message: 'Un dateo de Telemercadeo no lleva convenio ni descuento.',
         })
       }
       const convenioAnteriorId = detalle.convenioId ?? null

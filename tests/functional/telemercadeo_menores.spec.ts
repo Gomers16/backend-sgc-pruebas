@@ -6,6 +6,7 @@ import app from '@adonisjs/core/services/app'
 import Database from '@adonisjs/lucid/services/db'
 import Usuario from '#models/usuario'
 import AgenteCaptacion from '#models/agente_captacion'
+import { columnaOrigenDateo } from '#services/telemercadeo_origen_service'
 
 // Arreglos menores del recorrido de Telemercadeo en Bogotá (2026-11-23):
 // búsqueda de CLIENTES, bloqueadoHasta real, canal en la ficha, límite de
@@ -35,6 +36,8 @@ async function limpiar() {
   await Database.from('vehiculos').where('placa', 'like', 'TLN1%').delete()
   await Database.from('clientes').where('nombre', 'like', 'TEST TLN%').delete()
 }
+
+const sin1820 = async () => !(await columnaOrigenDateo())
 
 test.group('Telemercadeo · arreglos menores', (group) => {
   group.each.timeout(60_000)
@@ -165,6 +168,7 @@ test.group('Telemercadeo · arreglos menores', (group) => {
       canal: 'TELE',
       agente_id: teleA.id,
       placa: 'TLN120',
+      telemercadeo_origen_id: origenId,
       telefono: '3991550120',
     })
     r.assertStatus(201)
@@ -183,7 +187,7 @@ test.group('Telemercadeo · arreglos menores', (group) => {
     const fila = JSON.stringify(ficha.body())
     assert.include(fila, '"canal":"TELE"')
     assert.notInclude(fila, '"canal":"ASESOR"')
-  })
+  }).skip(sin1820, 'migración 1820 sin aplicar en esta BD')
 
   test('extra: destraba a todos aunque otro con máximo propio mayor subiera el conteo', async ({
     client,

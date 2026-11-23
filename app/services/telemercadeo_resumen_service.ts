@@ -14,8 +14,8 @@
 // los dateos/exitosos/turnos por el del dateo (telemercadeo_origen_id; si no
 // tiene, el de la gestión). Cada gestión y cada dateo cuenta una sola vez.
 //
-// Dateos directos: los que un asesor de Telemercadeo hace SIN gestión (con
-// origen) suman dateos/exitosos/turnos —no contactos— por la fecha del dateo.
+// Dateos directos: los TELE con origen SIN gestión (los registra gerencia a
+// nombre del asesor, o nacen de un ticket) suman dateos/exitosos/turnos —no contactos— por la fecha del dateo.
 //
 // Meta del periodo = suma de las metas de cada mes tocado; si a algún mes le
 // falta la meta de esa métrica, la meta queda en null (sin semáforo, nunca 0%).

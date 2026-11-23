@@ -33,6 +33,8 @@ async function limpiarDatos() {
   await Database.from('prospectos').where('placa', 'like', 'TLG%').delete()
 }
 
+const sin1820 = async () => !(await columnaOrigenDateo())
+
 test.group('Telemercadeo · dateo desde gestión', (group) => {
   group.each.timeout(60_000)
 
@@ -201,6 +203,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
       placa: 'TLG120',
       agente_id: teleA.id,
       canal: 'TELE',
+      telemercadeo_origen_id: origenId,
     })
     sinGestion.assertStatus(201)
     const ids = [r.body().id, sinGestion.body().id]
@@ -217,7 +220,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     }
     const filas = await Database.from('captacion_dateos').whereIn('id', ids)
     for (const f of filas) assert.equal(f.resultado, 'RE_DATEAR')
-  })
+  }).skip(sin1820, 'migración 1820 sin aplicar en esta BD')
 
   test('segundo dateo con la misma gestión → 409 GESTION_YA_DATEADA, sin dateo nuevo', async ({
     client,
@@ -492,6 +495,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
       placa: 'TLG117',
       agente_id: comercial.id,
       canal: 'TELE',
+      telemercadeo_origen_id: origenId,
     })
     dc.assertStatus(201)
     const fichaCom = await client
@@ -503,7 +507,7 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
       (fichaCom.body().data as any[]).map((x) => x.id),
       dc.body().id
     )
-  })
+  }).skip(sin1820, 'migración 1820 sin aplicar en esta BD')
 
   /* ═══════════ Regresión: store() sin gestión ═══════════ */
 
@@ -527,26 +531,32 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     client,
     assert,
   }) => {
-    const r = await datear(client, 'ADMIN', { placa: 'TLG111', agente_id: teleB.id, canal: 'TELE' })
+    const r = await datear(client, 'ADMIN', {
+      placa: 'TLG111',
+      agente_id: teleB.id,
+      canal: 'TELE',
+      telemercadeo_origen_id: origenId,
+    })
     r.assertStatus(201)
     const d = await Database.from('captacion_dateos').where('id', r.body().id).first()
     assert.equal(d.agente_id, teleB.id)
     assert.equal(d.canal, 'TELE')
-  })
+  }).skip(sin1820, 'migración 1820 sin aplicar en esta BD')
 
-  test('ASESOR_TELEMERCADEO sin gestión ni canal: TELE, con origen obligatorio', async ({
+  test('ASESOR_TELEMERCADEO sin gestión → 400 TELE_REQUIERE_GESTION', async ({
     client,
     assert,
   }) => {
     // Antes quedaba ASESOR_COMERCIAL (deuda de HANDOFF.md, resuelta 2026-11-23).
-    const sin = await datear(client, 'TELE_A', { placa: 'TLG112' })
-    sin.assertStatus(400)
-    assert.equal(sin.body().code, 'ORIGEN_REQUERIDO')
-    if (!(await columnaOrigenDateo())) return // sin la migración 1820 no hay dónde guardarlo
-    const r = await datear(client, 'TELE_A', { placa: 'TLG112', telemercadeo_origen_id: origenId })
-    r.assertStatus(201)
-    const d = await Database.from('captacion_dateos').where('id', r.body().id).first()
-    assert.equal(d.agente_id, teleA.id)
-    assert.equal(d.canal, 'TELE')
+    for (const extra of [
+      {},
+      { canal: 'ASESOR' },
+      { canal: 'TELE', telemercadeo_origen_id: origenId },
+    ]) {
+      const r = await datear(client, 'TELE_A', { placa: 'TLG112', ...extra })
+      r.assertStatus(400)
+      assert.equal(r.body().code, 'TELE_REQUIERE_GESTION')
+    }
+    assert.lengthOf(await dateosDe('TLG112'), 0)
   })
 })
