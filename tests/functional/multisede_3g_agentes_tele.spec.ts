@@ -208,6 +208,7 @@ test.group('Multi-sede 3g · agentes, convenios, prospectos y telemercadeo', (gr
       .headers(comB.h)
       .json({ placa: 'MS3GD1', canal: 'ASESOR', agente_id: agA, origen: 'UI', servicio_id: RTM })
     assert.equal(r.status(), 409, JSON.stringify(r.body()))
+    assert.equal(r.body().code, 'AGENTE_OTRA_SEDE')
     const cA = await convenio(IBAGUE)
     const r2 = await client.post('/api/captacion-dateos').headers(comB.h).json({
       placa: 'MS3GD2',
@@ -218,6 +219,7 @@ test.group('Multi-sede 3g · agentes, convenios, prospectos y telemercadeo', (gr
       servicio_id: RTM,
     })
     assert.equal(r2.status(), 409, JSON.stringify(r2.body()))
+    assert.equal(r2.body().code, 'CONVENIO_OTRA_SEDE')
     assert.lengthOf(await Database.from('captacion_dateos').where('placa', 'like', 'MS3GD%'), 0)
   })
 

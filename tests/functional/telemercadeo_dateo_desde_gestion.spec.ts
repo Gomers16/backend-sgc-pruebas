@@ -69,7 +69,11 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
 
   async function agente(tipo: string, nombre: string, usuarioId: number | null) {
     const a = await AgenteCaptacion.create({
- sedeId: SEDE_ID, tipo, nombre, usuarioId } as any)
+      sedeId: SEDE_ID,
+      tipo,
+      nombre,
+      usuarioId,
+    } as any)
     agentes.push(a)
     return a
   }
@@ -323,6 +327,27 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert.isNull(cFin.cerrado_motivo)
   })
 
+  test('con gestión: convenio_id o descuento_id → 400 TELE_SIN_CONVENIO_DESCUENTO, sin dateo', async ({
+    client,
+    assert,
+  }) => {
+    const g = await gestion(client, 'TLG118', 'TELE_A')
+    const descuento = await Database.from('descuentos').where('activo', 1).first()
+    const convenio = await Database.from('convenios').where('activo', 1).first()
+    for (const extra of [{ descuento_id: descuento.id }, { convenio_id: convenio?.id ?? 1 }]) {
+      const r = await datear(client, 'TELE_A', {
+        placa: 'TLG118',
+        telemercadeo_gestion_id: g.id,
+        ...extra,
+      })
+      r.assertStatus(400)
+      assert.equal(r.body().code, 'TELE_SIN_CONVENIO_DESCUENTO')
+    }
+    assert.lengthOf(await dateosDe('TLG118'), 0)
+    const gFin = await Database.from('telemercadeo_gestiones').where('id', g.id).first()
+    assert.isNull(gFin.captacion_dateo_id)
+  })
+
   test('gestión ajena → 403 GESTION_AJENA; comercial con gestión → 403', async ({
     client,
     assert,
@@ -404,7 +429,9 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert,
   }) => {
     const [prospectoId] = await Database.table('prospectos').insert({
- sede_id: SEDE_ID, placa: 'TLG109' })
+      sede_id: SEDE_ID,
+      placa: 'TLG109',
+    })
     const g = await gestion(client, 'TLG109')
     const r = await datear(client, 'TELE_A', { placa: 'TLG109', telemercadeo_gestion_id: g.id })
     r.assertStatus(201)
@@ -430,7 +457,11 @@ test.group('Telemercadeo · dateo desde gestión', (group) => {
     assert.include(idsTele, d.body().id)
 
     // Un dateo TELE a nombre de un comercial sigue fuera de SU ficha (como antes).
-    const dc = await datear(client, 'ADMIN', { placa: 'TLG117', agente_id: comercial.id, canal: 'TELE' })
+    const dc = await datear(client, 'ADMIN', {
+      placa: 'TLG117',
+      agente_id: comercial.id,
+      canal: 'TELE',
+    })
     dc.assertStatus(201)
     const fichaCom = await client
       .get(`/api/agentes-captacion/${comercial.id}/dateos-comisiones`)

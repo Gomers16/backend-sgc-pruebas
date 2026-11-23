@@ -63,7 +63,7 @@ export interface IntentoDateo {
 
 export type ResultadoIntentoDateo =
   | { ok: true; intento: IntentoDateo }
-  | { ok: false; status: 400 | 403 | 409 | 422; message: string }
+  | { ok: false; status: 400 | 403 | 409 | 422; message: string; code?: string }
 
 /**
  * Convenio activo de un asesor convenio: el que se llama igual que el
@@ -83,10 +83,15 @@ export async function buscarConvenioDelAsesorConvenio(
   return encontrado ? Convenio.find(encontrado.id) : null
 }
 
-const falla = (status: 400 | 403 | 409 | 422, message: string): ResultadoIntentoDateo => ({
+const falla = (
+  status: 400 | 403 | 409 | 422,
+  message: string,
+  code?: string
+): ResultadoIntentoDateo => ({
   ok: false,
   status,
   message,
+  ...(code ? { code } : {}),
 })
 
 export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<ResultadoIntentoDateo> {
@@ -98,12 +103,12 @@ export async function resolverIntentoDateo(e: EntradaIntentoDateo): Promise<Resu
   // sede, es un 409 explícito, no un 400).
   if (agenteId !== null && !(await AgenteCaptacion.find(agenteId))) {
     if (await AgenteCaptacion.querySinSede().where('id', agenteId).first()) {
-      return falla(409, 'El asesor/agente pertenece a otra sede.')
+      return falla(409, 'El asesor/agente pertenece a otra sede.', 'AGENTE_OTRA_SEDE')
     }
   }
   if (e.convenioId !== null && !(await Convenio.find(e.convenioId))) {
     if (await Convenio.querySinSede().where('id', e.convenioId).first()) {
-      return falla(409, 'El convenio pertenece a otra sede.')
+      return falla(409, 'El convenio pertenece a otra sede.', 'CONVENIO_OTRA_SEDE')
     }
   }
 

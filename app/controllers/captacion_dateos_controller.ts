@@ -931,6 +931,15 @@ export default class CaptacionDateosController {
     const gestionTeleId = readOptionalNumber(request.input('telemercadeo_gestion_id') as unknown)
     let gestionTele: TelemercadeoGestion | null = null
     if (gestionTeleId !== null) {
+      // Decisión 2026-11-23: el dateo desde una gestión no lleva convenio ni descuento.
+      const conConvenio = readOptionalNumber(request.input('convenio_id') as unknown) !== null
+      const conDescuento = readOptionalNumber(request.input('descuento_id') as unknown) !== null
+      if (conConvenio || conDescuento) {
+        return response.badRequest({
+          code: 'TELE_SIN_CONVENIO_DESCUENTO',
+          message: 'El dateo desde una gestión de Telemercadeo no lleva convenio ni descuento.',
+        })
+      }
       const prep = await prepararDateoDesdeGestion(
         gestionTeleId,
         auth.user!.id,
@@ -969,7 +978,10 @@ export default class CaptacionDateosController {
       comprobanteAvanceUrl: (request.input('comprobante_avance_url') as string | undefined) ?? null,
     })
     if (!resIntento.ok) {
-      return response.status(resIntento.status).send({ message: resIntento.message })
+      return response.status(resIntento.status).send({
+        ...(resIntento.code ? { code: resIntento.code } : {}),
+        message: resIntento.message,
+      })
     }
     const intento = resIntento.intento
     const agenteId = intento.agenteId

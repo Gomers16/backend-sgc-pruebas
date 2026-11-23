@@ -398,7 +398,11 @@ export default class TicketsExcepcionDateoController {
         await trx.rollback()
         return response
           .status(resIntento.status)
-          .send({ code: 'INTENTO_DATEO_INVALIDO', message: resIntento.message })
+          .send({
+            code: 'INTENTO_DATEO_INVALIDO',
+            motivo: resIntento.code ?? null,
+            message: resIntento.message,
+          })
       }
       const intento = resIntento.intento
       if (intento.servicioIdEfectivo !== turno.servicioId) {
@@ -653,7 +657,11 @@ export default class TicketsExcepcionDateoController {
           await trx.rollback()
           return response
             .status(res.status)
-            .send({ code: 'INTENTO_DATEO_INVALIDO', message: res.message })
+            .send({
+              code: 'INTENTO_DATEO_INVALIDO',
+              motivo: res.code ?? null,
+              message: res.message,
+            })
         }
         canal = res.intento.canal
         convenioId = res.intento.convenioId
@@ -1035,7 +1043,11 @@ export default class TicketsExcepcionDateoController {
         permitirConvenioNoAsignado: true,
       })
       if (!res.ok) {
-        return cortar(res.status, { code: 'INTENTO_DATEO_INVALIDO', message: res.message })
+        return cortar(res.status, {
+          code: 'INTENTO_DATEO_INVALIDO',
+          motivo: res.code ?? null,
+          message: res.message,
+        })
       }
 
       const convenioAnterior = convenioAnteriorId
