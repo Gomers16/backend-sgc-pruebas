@@ -106,7 +106,9 @@ export default class UploadsController {
     const esVideo = (ALLOWED_VIDEO as readonly string[]).includes(ext)
     // carpeta=telemercadeo: evidencia privada de una gestión (solo imágenes).
     // Se devuelve `ruta` (no una URL pública): no la sirve GET /api/uploads/*.
-    const carpetaPedida = String(request.input('carpeta') ?? '').trim().toLowerCase()
+    const carpetaPedida = String(request.input('carpeta') ?? '')
+      .trim()
+      .toLowerCase()
     const esPrivada = carpetaPedida === 'telemercadeo'
     if (carpetaPedida && !esPrivada) {
       return response.badRequest({ message: 'carpeta inválida' })
@@ -131,7 +133,7 @@ export default class UploadsController {
         id: filename,
         url: null,
         ruta: `${carpeta}/${y}/${m}/${filename}`,
-        mime: file.type || null,
+        mime: file.type && file.subtype ? `${file.type}/${file.subtype}` : null,
         size: stat.size,
         hash: null,
       })
@@ -143,7 +145,7 @@ export default class UploadsController {
     return response.created({
       id: filename,
       url,
-      mime: file.type || null,
+      mime: file.type && file.subtype ? `${file.type}/${file.subtype}` : null,
       size: stat.size,
       hash: null,
     })

@@ -403,9 +403,20 @@ export default class UsuariosController {
     const permiso = await this.autorizarGestion(ctx, null, payload)
     if (!permiso.ok) return
 
+    // Antes de crear: sin razón social la precarga de la respuesta fallaba
+    // (500) con el usuario ya creado.
+    const razonSocialId = normalizarId(payload.razonSocialId)
+    if (typeof razonSocialId !== 'number' || Number.isNaN(razonSocialId)) {
+      return response.badRequest({ message: 'razonSocialId es requerido.' })
+    }
+    if (!(await RazonSocial.find(razonSocialId))) {
+      return response.badRequest({ message: `La razón social ${razonSocialId} no existe.` })
+    }
+
     try {
       const user = await Usuario.create({
         ...payload,
+        razonSocialId,
         sedeId: permiso.sedeId ?? undefined,
         cargoId: payload.cargoId ?? null,
         epsId: payload.epsId ?? null,

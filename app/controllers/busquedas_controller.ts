@@ -473,31 +473,6 @@ export default class BusquedasController {
       }
     }
 
-    // 5) Sugerencia por teléfono (fallback si no hay asesor detectado arriba)
-    let sugerenciaPorTelefono: {
-      canal: CanalSimple
-      agente: { id: number; nombre: string; tipo: string } | null
-    } | null = null
-
-    if (!asesorDetectado && telefono && /^\d{10}$/.test(telefono)) {
-      try {
-        const agente = await AgenteCaptacion.query()
-          .where('activo', true)
-          .andWhere('telefono', telefono)
-          .first()
-
-        if (agente) {
-          let canal: CanalSimple = 'ASESOR'
-          if ((agente as any).tipo === 'TELEMERCADEO') canal = 'TELE'
-          sugerenciaPorTelefono = {
-            canal,
-            agente: { id: agente.id, nombre: (agente as any).nombre, tipo: (agente as any).tipo },
-          }
-        }
-      } catch (e) {
-        console.error('Lookup de agente por teléfono falló:', e)
-      }
-    }
     // 5) FACHADA
     return response.ok({
       fuente: 'FACHADA',
@@ -506,9 +481,9 @@ export default class BusquedasController {
       cliente: serializeCliente(cliente),
       dateoReciente: null,
       reserva: null,
-      captacionSugerida: sugerenciaPorTelefono || { canal: 'FACHADA', agente: null },
+      captacionSugerida: { canal: 'FACHADA', agente: null },
       convenio: null,
-      asesorAsignado: sugerenciaPorTelefono?.agente ?? null,
+      asesorAsignado: null,
       origenBusqueda: placa ? 'placa' : 'telefono',
       detectadoPorConvenio: false,
       ultimaVisita,

@@ -883,7 +883,7 @@ test.group('Telemercadeo · gestiones', (group) => {
       .qs({ desde: '2031-04-01', hasta: '2031-04-30' })
     x.assertStatus(200)
     assert.include(String(x.header('content-type')), 'spreadsheetml')
-    assert.include(String(x.header('content-disposition')), 'Telemercadeo_20310401_a_20310430.xlsx')
+    assert.include(String(x.header('content-disposition')), 'Telemercadeo_PRUEBAS_QA_20310401_a_20310430.xlsx')
     assert.isUndefined(x.header('x-detalle-truncado'))
   })
 

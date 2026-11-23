@@ -89,6 +89,17 @@ function fmtBogotaAmPm(iso?: string) {
   return DateTime.fromISO(iso).setZone('America/Bogota').toFormat('dd/LL/yy hh:mm a')
 }
 
+/**
+ * bloqueadoHasta/bloqueado según la exclusividad real (buildReserva), no el
+ * computado del modelo (7 días fijos), que no conoce las horas configuradas.
+ */
+function conBloqueoReal<T extends object>(
+  out: T,
+  reserva: { vigente: boolean; bloqueaHasta: string | null }
+) {
+  return { ...out, bloqueadoHasta: reserva.bloqueaHasta, bloqueado: reserva.vigente }
+}
+
 /** Alias camelCase -> snake_case para el front */
 function toSnake(row: any) {
   return {
@@ -631,8 +642,7 @@ export default class CaptacionDateosController {
       const out = toSnake(item.serialize() as any)
 
       return response.ok({
-        ...out,
-        bloqueadoHasta: reserva.bloqueaHasta,
+        ...conBloqueoReal(out, reserva),
         maxRedateos,
       })
     } catch (e) {
@@ -780,6 +790,9 @@ export default class CaptacionDateosController {
       turnosById = Object.fromEntries(turnos.map((t) => [t.id, t]))
     }
 
+    const reservas = new Map<number, Awaited<ReturnType<typeof buildReserva>>>()
+    for (const d of result.all()) reservas.set(d.id, await buildReserva(d))
+
     const data = serialized.map((row: any) => {
       const base = {
         ...row,
@@ -790,7 +803,7 @@ export default class CaptacionDateosController {
       const snake = toSnake(base)
       const t = snake.consumido_turno_id ? turnosById[snake.consumido_turno_id] : null
       return {
-        ...snake,
+        ...conBloqueoReal(snake, reservas.get(row.id)!),
         turnoInfo: serializeTurnoInfo(t),
       }
     })
@@ -922,7 +935,7 @@ export default class CaptacionDateosController {
 
     const reserva = await buildReserva(item)
     return {
-      ...toSnake(out),
+      ...conBloqueoReal(toSnake(out), reserva),
       consecutivo_descuento: consecutivoDescuento,
       reserva,
       turnoInfo,
@@ -1388,7 +1401,7 @@ export default class CaptacionDateosController {
     out.canal = (['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'] as const).includes(out.canal)
       ? 'ASESOR'
       : out.canal
-    return response.created(toSnake(out))
+    return response.created(conBloqueoReal(toSnake(out), await buildReserva(created)))
   }
 
   /**
@@ -1849,7 +1862,7 @@ export default class CaptacionDateosController {
     }
 
     const reserva = await buildReserva(item)
-    return { ...toSnake(out), reserva, turnoInfo }
+    return { ...conBloqueoReal(toSnake(out), reserva), reserva, turnoInfo }
   }
   /** DELETE /captacion-dateos/:id */
   public async destroy({ params, response }: HttpContext) {
@@ -1937,7 +1950,7 @@ export default class CaptacionDateosController {
       ? 'ASESOR'
       : out.canal
 
-    return response.ok(toSnake(out))
+    return response.ok(conBloqueoReal(toSnake(out), await buildReserva(item)))
   }
 
   /**

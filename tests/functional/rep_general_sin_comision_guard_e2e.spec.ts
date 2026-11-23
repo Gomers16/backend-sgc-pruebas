@@ -28,6 +28,7 @@ const EVIDENCIA_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep General)', (group) => {
+  const subidas: string[] = []
   let usuarioTest: Usuario
   let agenteTest: AgenteCaptacion
   let token: string
@@ -73,6 +74,9 @@ test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep G
     await Database.rawQuery(`DELETE FROM captacion_dateos WHERE placa IN (${placeholders})`, placas)
     await agenteTest.delete()
     await usuarioTest.delete()
+    for (const url of subidas) {
+      fs.rmSync(path.join(process.cwd(), url.replace('/api/', '')), { force: true })
+    }
     try {
       fs.unlinkSync(EVIDENCIA_PATH)
     } catch {
@@ -87,6 +91,7 @@ test.group('E2E manual - guard sin_comision en recalcularComisionSiExiste (Rep G
         .header('Authorization', `Bearer ${token}`)
         .file('file', EVIDENCIA_PATH)
       res.assertStatus(201)
+      subidas.push(res.body().url)
       return res.body().url as string
     }
     return {

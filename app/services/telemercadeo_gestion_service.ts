@@ -102,6 +102,31 @@ export async function getMaxSeguimientos(
   return (await getConfigSeguimientoTele(client)).maxSeguimientos
 }
 
+/**
+ * Menor máximo aplicable en la sede: el de la configuración o el de algún
+ * asesor activo con override más bajo. Es la base de los extras del ciclo.
+ */
+export async function getMinMaxSeguimientos(client?: TransactionClientContract): Promise<number> {
+  const general = (await getConfigSeguimientoTele(client)).maxSeguimientos
+  const filas = await aplicarSede(
+    (client ?? Database)
+      .from('configuracion_seguimiento_tele_asesores as o')
+      .join('agentes_captacions as a', 'a.id', 'o.asesor_id')
+      .where('a.activo', true)
+      .where('a.tipo', TIPO_AGENTE_TELE)
+      .whereNotNull('o.max_seguimientos'),
+    'a.sede_id'
+  ).select('o.max_seguimientos')
+  return Math.min(general, ...filas.map((r: any) => Number(r.max_seguimientos)))
+}
+
+/**
+ * Límite del ciclo para un asesor. Los extras son DEL CICLO: lo suben hasta
+ * minMax + extras para todos; quien tiene un máximo propio mayor lo conserva.
+ */
+export const limiteDelCiclo = (max: number, extras: number, minMax: number) =>
+  extras > 0 ? Math.max(max, minMax + extras) : max
+
 /* ───────────────────────── Ciclo ───────────────────────── */
 
 /**
@@ -193,7 +218,11 @@ export async function estadoSeguimiento(
   servicioId: number,
   agenteId: number | null
 ): Promise<EstadoSeguimiento> {
-  const [cfg, max] = await Promise.all([getConfigSeguimientoTele(), getMaxSeguimientos(agenteId)])
+  const [cfg, max, minMax] = await Promise.all([
+    getConfigSeguimientoTele(),
+    getMaxSeguimientos(agenteId),
+    getMinMaxSeguimientos(),
+  ])
   const ciclo = await TelemercadeoCiclo.query()
     .where('placa', placa)
     .where('servicio_id', servicioId)
@@ -202,13 +231,14 @@ export async function estadoSeguimiento(
   const vigente = ciclo && !(await motivoCierre(ciclo, cfg.diasVigenciaCiclo)) ? ciclo : null
   const n = vigente?.numeroGestiones ?? 0
   const extras = vigente?.extrasAutorizados ?? 0
+  const limite = limiteDelCiclo(max, extras, minMax)
   return {
     ciclo_id: vigente?.id ?? null,
     n,
     max,
     extras_autorizados: extras,
-    limite: max + extras,
-    puede_registrar: n < max + extras,
+    limite,
+    puede_registrar: n < limite,
   }
 }
 
@@ -495,6 +525,7 @@ export async function registrarGestion(
     try {
       const cfg = await getConfigSeguimientoTele(trx)
       const max = await getMaxSeguimientos(agente.id, trx)
+      const minMax = await getMinMaxSeguimientos(trx)
 
       let ciclo = await TelemercadeoCiclo.query({ client: trx })
         .where('placa', v.placa)
@@ -529,7 +560,7 @@ export async function registrarGestion(
         }
       }
 
-      const limite = max + ciclo.extrasAutorizados
+      const limite = limiteDelCiclo(max, ciclo.extrasAutorizados, minMax)
       if (ciclo.numeroGestiones >= limite) {
         await trx.rollback()
         return falla(409, {
@@ -632,7 +663,13 @@ export async function autorizarExtra(cicloId: number, usuarioId: number, motivoR
       await trx.rollback()
       return falla(409, { code: 'CICLO_CERRADO', message: 'El ciclo ya está cerrado' })
     }
-    ciclo.extrasAutorizados += 1
+    // Cada autorización deja al menos UNA gestión más a cualquier asesor: si
+    // otro con máximo propio mayor ya subió el conteo, +1 no destrabaría.
+    const minMax = await getMinMaxSeguimientos(trx)
+    ciclo.extrasAutorizados = Math.max(
+      ciclo.extrasAutorizados + 1,
+      ciclo.numeroGestiones + 1 - minMax
+    )
     await ciclo.useTransaction(trx).save()
     await trx
       .insertQuery()
@@ -796,7 +833,11 @@ export async function seguimientoPorPlacas(
     )) as any[]
   if (!ultimas.length) return res
 
-  const [cfg, max] = await Promise.all([getConfigSeguimientoTele(), getMaxSeguimientos(agenteId)])
+  const [cfg, max, minMax] = await Promise.all([
+    getConfigSeguimientoTele(),
+    getMaxSeguimientos(agenteId),
+    getMinMaxSeguimientos(),
+  ])
 
   const aDT = (v: unknown) =>
     v instanceof Date ? DateTime.fromJSDate(v) : DateTime.fromSQL(String(v), { zone: ZONA_TELE })
@@ -838,7 +879,7 @@ export async function seguimientoPorPlacas(
     res.set(u.placa, {
       placa: u.placa,
       n: vigente ? Number(u.numero_gestiones) : 0,
-      limite: max + extras,
+      limite: limiteDelCiclo(max, extras, minMax),
       ciclo_abierto: vigente,
       ultima_gestion: {
         id: Number(u.id),

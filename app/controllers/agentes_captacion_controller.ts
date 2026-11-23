@@ -920,7 +920,7 @@ export default class AgentesCaptacionController {
 
       return {
         id: d.id,
-        canal: 'ASESOR',
+        canal: ['ASESOR_COMERCIAL', 'ASESOR_CONVENIO'].includes(d.canal) ? 'ASESOR' : d.canal,
         placa: d.placa,
         telefono: d.telefono,
         origen: d.origen,

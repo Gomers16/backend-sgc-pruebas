@@ -1,5 +1,5 @@
 // app/controllers/telemercadeo_controller.ts
-import { aplicarSede, sedeParaEscritura, configParaEditar } from '#services/sede_scope'
+import { aplicarSede, sedeParaEscritura, configParaEditar, scopeActual } from '#services/sede_scope'
 import { estadoAgenteEnSede, sqlAsesorDeLaSede } from '#services/visibilidad_sede'
 import fs from 'node:fs'
 import type { HttpContext } from '@adonisjs/core/http'
@@ -32,6 +32,8 @@ import {
   estadoSeguimiento,
   getConfigSeguimientoTele,
   getMaxSeguimientos,
+  getMinMaxSeguimientos,
+  limiteDelCiclo,
   normalizarPlacaTele,
   normalizarTelefonoTele,
   registrarGestion,
@@ -287,10 +289,12 @@ export default class TelemercadeoController {
       maxPorAgente.set(id, await getMaxSeguimientos(id))
     }
 
+    const minMax = await getMinMaxSeguimientos()
+
     const totalN = Number(total)
     return response.ok({
       data: rows.map((r: any) =>
-        this.serializarGestion(r, maxPorAgente.get(Number(r.agente_id)) ?? 3)
+        this.serializarGestion(r, maxPorAgente.get(Number(r.agente_id)) ?? 3, minMax)
       ),
       meta: {
         total: totalN,
@@ -301,7 +305,22 @@ export default class TelemercadeoController {
     })
   }
 
-  private serializarGestion(r: any, max: number) {
+  /** Sede activa para nombres de archivo: "Bogota", "Ibague", "Todas". */
+  private async etiquetaSede(): Promise<string> {
+    const s = scopeActual()
+    if (!s || s === 'sin_filtro' || s.todas || s.sedeIds.length !== 1) return 'Todas'
+    const sede = await Database.from('sedes').where('id', s.sedeIds[0]).select('nombre').first()
+    return (
+      String(sede?.nombre ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^A-Za-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || `Sede_${s.sedeIds[0]}`
+    )
+  }
+
+  private serializarGestion(r: any, max: number, minMax: number) {
+    const extras = Number(r.ciclo_extras ?? 0)
     const abierto = r.ciclo_abierto_key !== null && Boolean(r.ciclo_abierto_key)
     return {
       id: Number(r.id),
@@ -326,7 +345,10 @@ export default class TelemercadeoController {
       seguimiento: {
         ciclo_id: Number(r.ciclo_id),
         numero_en_ciclo: Number(r.numero_en_ciclo),
-        limite: max + Number(r.ciclo_extras ?? 0),
+        // Ciclo cerrado: sin límite (el actual no es el que regía entonces).
+        limite: abierto ? limiteDelCiclo(max, extras, minMax) : null,
+        // Menor límite entre los asesores de la sede: desde aquí alguien está bloqueado.
+        limite_minimo: abierto ? minMax + extras : null,
         ciclo_abierto: abierto,
         cerrado_motivo: r.ciclo_cerrado_motivo ?? null,
       },
@@ -376,7 +398,13 @@ export default class TelemercadeoController {
         'cl.nombre as cliente_nombre'
       )
       .first()
-    return ctx.response.ok(this.serializarGestion(r, await getMaxSeguimientos(Number(r.agente_id))))
+    return ctx.response.ok(
+      this.serializarGestion(
+        r,
+        await getMaxSeguimientos(Number(r.agente_id)),
+        await getMinMaxSeguimientos()
+      )
+    )
   }
 
   /**
@@ -455,7 +483,7 @@ export default class TelemercadeoController {
       .first()
 
     return response.status(res.repetida ? 200 : 201).send({
-      gestion: this.serializarGestion(r, res.seguimiento.max),
+      gestion: this.serializarGestion(r, res.seguimiento.max, await getMinMaxSeguimientos()),
       seguimiento: res.seguimiento,
       avisos,
       repetida: res.repetida,
@@ -765,7 +793,7 @@ export default class TelemercadeoController {
     }
 
     const buffer = await wb.xlsx.writeBuffer()
-    const nombre = `Telemercadeo_${r.desde.replace(/-/g, '')}_a_${r.hasta.replace(/-/g, '')}.xlsx`
+    const nombre = `Telemercadeo_${await this.etiquetaSede()}_${r.desde.replace(/-/g, '')}_a_${r.hasta.replace(/-/g, '')}.xlsx`
     response.header(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

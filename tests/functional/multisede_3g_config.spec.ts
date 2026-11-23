@@ -26,6 +26,29 @@ const TABLAS = {
   tele: 'configuracion_seguimiento_tele_global',
 } as const
 
+// Overrides de QA que ya existían (p. ej. de una prueba manual): se apartan
+// al inicio y se restauran al final. Los de Ibagué no se tocan.
+const previos: Record<string, any[]> = {}
+async function apartarOverrides() {
+  for (const t of Object.values(TABLAS)) {
+    previos[t] = await Database.from(t).where('sede_id', QA)
+  }
+  await borrarOverrides()
+}
+async function restaurarOverrides() {
+  await borrarOverrides()
+  for (const [t, filas] of Object.entries(previos)) {
+    if (filas.length) await Database.table(t).multiInsert(filas)
+  }
+  invalidateHorasExclusividadCache()
+}
+async function hayOverride(sedeId: number) {
+  for (const t of Object.values(TABLAS)) {
+    if (await Database.from(t).where('sede_id', sedeId).first()) return true
+  }
+  return false
+}
+
 async function borrarOverrides() {
   for (const t of Object.values(TABLAS)) await Database.from(t).where('sede_id', QA).delete()
   invalidateHorasExclusividadCache()
@@ -47,20 +70,24 @@ async function lecturas() {
 }
 
 test.group('Multi-sede 3g · configuración con override por sede', (group) => {
-  group.setup(borrarOverrides)
-  group.teardown(borrarOverrides)
+  group.setup(apartarOverrides)
+  group.teardown(restaurarOverrides)
 
   test('sin override: Ibagué, QA y "todas" leen la global (mismo valor que antes)', async ({
     assert,
   }) => {
     const antes = await sinFiltroDeSede(lecturas)
-    assert.deepEqual(await conSede([IBAGUE], lecturas), antes)
+    // Con un override real en Ibagué, sus lecturas no tienen por qué ser las globales.
+    if (!(await hayOverride(IBAGUE))) {
+      assert.deepEqual(await conSede([IBAGUE], lecturas), antes)
+    }
     assert.deepEqual(await conSede([QA], lecturas), antes)
     assert.deepEqual(await conSede([IBAGUE, QA], lecturas), antes)
   })
 
   test('override de QA: gana en QA; Ibagué y "todas" siguen con la global', async ({ assert }) => {
     const antes = await conSede([IBAGUE], lecturas)
+    const global = await sinFiltroDeSede(lecturas)
     const ahora = new Date()
     await Database.table(TABLAS.reserva).insert({
       sede_id: QA,
@@ -107,6 +134,6 @@ test.group('Multi-sede 3g · configuración con override por sede', (group) => {
       teleDias: 9,
     })
     assert.deepEqual(await conSede([IBAGUE], lecturas), antes)
-    assert.deepEqual(await conSede([IBAGUE, QA], lecturas), antes)
+    assert.deepEqual(await conSede([IBAGUE, QA], lecturas), global)
   })
 })

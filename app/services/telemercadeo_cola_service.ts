@@ -129,6 +129,11 @@ export interface ResultadoCola {
 }
 
 const soloDigitos = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+/**
+ * Dígitos para buscar por teléfono: solo si el texto es un número (con
+ * separadores). Una placa (ABC123) no se busca por sus dígitos.
+ */
+const digitosTelefono = (texto: string) => (/^[\d\s()+.-]+$/.test(texto) ? soloDigitos(texto) : '')
 const normPlaca = (v: unknown) =>
   String(v ?? '')
     .replace(/[\s-]/g, '')
@@ -324,7 +329,7 @@ function coincideBusqueda(f: FilaCola, q: string | null): boolean {
   if (!texto) return true
   if (f.placas.some((p) => normPlaca(p).includes(normPlaca(texto)))) return true
   if ((f.cliente_nombre ?? '').toUpperCase().includes(texto)) return true
-  const dig = soloDigitos(texto)
+  const dig = digitosTelefono(texto)
   return dig.length >= 3 && soloDigitos(f.telefono).includes(dig)
 }
 
@@ -444,7 +449,7 @@ async function baseClientesSql(hoyISO: string, rtmId: number | null, q: string |
     const like = `%${escaparLike(texto)}%`
     const partes = ['c.nombre LIKE ?', 'c.doc_numero LIKE ?']
     bindings.push(like, like)
-    const dig = soloDigitos(texto)
+    const dig = digitosTelefono(texto)
     if (dig.length >= 3) {
       partes.push(`${telefonoSql('c.telefono')} LIKE ?`)
       bindings.push(`%${dig}%`)
