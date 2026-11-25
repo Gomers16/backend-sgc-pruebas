@@ -30,6 +30,10 @@ export default class CargoSeeder extends BaseSeeder {
       // 🔧 Técnico
       { nombre: 'INGENIERO' },
       { nombre: 'INSPECTOR' },
+
+      // 🧾 Operación de sede (migración 1821000000000)
+      { nombre: 'PALETERA' },
+      { nombre: 'CAJERO(A)' },
     ]
 
     // Filtra para cargos únicos por nombre antes de crearlos
