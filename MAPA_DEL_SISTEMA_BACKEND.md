@@ -40,6 +40,8 @@
 >
 > Actualizado: 2026-11-23, después (**origen del dateo de Telemercadeo, gestión obligatoria y tickets TELE**, misma rama): migración **1820**; el asesor de Telemercadeo solo datea desde una gestión; SUPER_ADMIN/GERENCIA eligen origen con canal TELE; tickets TELE sin convenio y con origen. Ver *Telemercadeo — gestión y control*.
 >
+> Actualizado: 2026-11-25 (**cargos PALETERA y CAJERO(A) y usuarios de prueba de Bogotá**; pruebas `316ea47`, producción local `ce290df`; sin push; servidor pendiente): migración **1821**, seeder 41 y comando `usuarios:bogota-limpiar`. Ver *Usuarios, Roles y Catálogos Base*.
+>
 > **Estado de sincronización (2026-11-23):** todo lo de pruebas hasta esta fecha (Telemercadeo, Multi-sede Fases 0–7, Importación Bogotá y `fix/telemercadeo-bogota`) está en **producción local** (`C:\dev`), salvo los tests y `commands/multisede_sede_qa.ts`, que no se copian. BD local compartida: 1803–1815, 1817, **1819 y 1820 aplicadas; 1816 y 1818 pendientes a propósito**. **Servidor real: nada de esto está.** Orden del despliegue real: (1) respaldo y código; (2) todas las migraciones pendientes **menos 1816 y 1818** (apartándolas de `database/migrations`), incluidas 1819 y 1820; (3) reiniciar pm2; (4) comprobar; (5) devolver y aplicar 1816 y 1818. **No usar `deploy-server.bat`**: corre `migration:run --force` antes de reiniciar pm2 y aplicaría todas las pendientes que haya en el servidor. `DIAS_VENTANA_PRE_RTM=5` sigue en el `.env` de producción local y ya no tiene efecto (son 16 días).
 
 ---
@@ -872,6 +874,13 @@ Columna **"Cédula convenio"**, justo después de "Convenio", en:
 - `password_resets` (modelo `PasswordReset`) — existe la tabla/modelo pero **no hay lógica que la use** (coherente con que `forgotPassword`/`resetPassword` no están implementados).
 
 **Relaciones con otros módulos:** `usuario.rol_id` decide, vía `syncAgenteConUsuario`, si el usuario obtiene un `AgenteCaptacion` (módulo Captación Comercial). `sede_id`/`cargo_id`/`razon_social_id`/`entidad_salud_id` son consumidos masivamente por **Contratos (RRHH)**. `check_role_middleware.ts` protege prácticamente todas las rutas de todos los módulos comparando contra `roles.nombre`.
+
+**Usuarios de prueba de Bogotá (2026-11-25):**
+- Migración `1821000000000` (cargos `PALETERA` y `CAJERO(A)`, idempotente por nombre; aplicada en la BD local) y su entrada en `09_cargo_seeder.ts`. No depende de 1816/1818, que siguen pendientes: para aplicarla sola hay que apartarlas.
+- `database/seeders/41_usuarios_bogota_seeder.ts`: 12 usuarios (CDA Activa, sede Bogotá) con contrato laboral, salario y 6 pasos de inicio, creados con `UsuariosController.store` y `ContratosController.store` dentro de `conSede([2])`. Idempotente por cédula y correo; con `NODE_ENV=production` exige `SEED_USUARIOS_BOGOTA=1`. Salarios, fechas y afiliaciones inventados: **no va al servidor sin confirmación**.
+- Datos personales y claves en `tmp/usuarios_bogota_credenciales.json` (ignorado por git; `USUARIOS_BOGOTA_JSON` indica otra ruta). El repo remoto es público: no llevarlos al código. Lo lee y valida `database/helpers/usuarios_bogota.ts`.
+- `node ace usuarios:bogota-limpiar [--aplicar]`: borra solo esas 12 cédulas (contratos, salarios, pasos y agentes); omite a quien tenga actividad, porque `turnos_rtms.funcionario_id` es CASCADE. Sin `--aplicar` es simulación.
+- Tipo de agente: el rol COMERCIAL crea ASESOR_COMERCIAL y el cargo del contrato lo puede cambiar (TELEMERCADEO → ASESOR_TELEMERCADEO); ASESOR SERVICIO AL CLIENTE queda ASESOR_COMERCIAL.
 
 **Notas de deuda técnica detectadas:**
 - **`auth_controller.forgotPassword()` y `resetPassword()` no están implementados** (`throw new Error('Method not implemented.')`) pese a estar montados en `POST /forgot-password` y `POST /reset-password` — cualquier intento de recuperación de contraseña por esta vía revienta con 500. El modelo `PasswordReset` existe pero no se usa en ningún lado.
